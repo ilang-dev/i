@@ -66,6 +66,8 @@ pub enum UnaryOp {
     Exp(Symbol),
     Log(Symbol),
     Recip(Symbol),
+    Sqrt(Symbol),
+    Abs(Symbol),
 }
 
 #[derive(Clone, Debug)]

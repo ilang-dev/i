@@ -282,6 +282,8 @@ impl<'a> Parser<'a> {
             Token::Operator('/') => Ok(UnaryOp::Recip(self.parse_symbol()?)),
             Token::Operator('^') => Ok(UnaryOp::Exp(self.parse_symbol()?)),
             Token::Operator('$') => Ok(UnaryOp::Log(self.parse_symbol()?)),
+            Token::Operator('@') => Ok(UnaryOp::Sqrt(self.parse_symbol()?)),
+            Token::Operator('#') => Ok(UnaryOp::Abs(self.parse_symbol()?)),
             _ => Err(ParseError::InvalidToken {
                 expected: "Operator".to_string(),
             }),

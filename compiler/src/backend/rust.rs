@@ -133,6 +133,14 @@ impl RustBackend {
                 assert!(inputs.len() == 1, "Expected 1 input to op [$].");
                 format!("{}.ln()", Self::render_expr(&inputs[0]))
             }
+            '@' => {
+                assert!(inputs.len() == 1, "Expected 1 input to op [$].");
+                format!("{}.sqrt()", Self::render_expr(&inputs[0]))
+            }
+            '#' => {
+                assert!(inputs.len() == 1, "Expected 1 input to op [$].");
+                format!("{}.abs()", Self::render_expr(&inputs[0]))
+            }
             c => {
                 if inputs.len() == 1 {
                     if *c == '-' {

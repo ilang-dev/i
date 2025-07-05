@@ -264,6 +264,8 @@ impl Graph {
                     | ScalarOp::UnaryOp(UnaryOp::Recip(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Exp(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Log(in0))
+                    | ScalarOp::UnaryOp(UnaryOp::Sqrt(in0))
+                    | ScalarOp::UnaryOp(UnaryOp::Abs(in0))
                     | ScalarOp::NoOp(NoOp(in0)) => {
                         vec![(
                             self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
@@ -284,6 +286,8 @@ impl Graph {
                     | ScalarOp::BinaryOp(BinaryOp::Div(_, _)) => '/',
                     ScalarOp::UnaryOp(UnaryOp::Exp(_)) => '^',
                     ScalarOp::UnaryOp(UnaryOp::Log(_)) => '$',
+                    ScalarOp::UnaryOp(UnaryOp::Sqrt(_)) => '@',
+                    ScalarOp::UnaryOp(UnaryOp::Abs(_)) => '#',
                     ScalarOp::NoOp(_) => ' ',
                 };
 
