@@ -169,13 +169,31 @@ impl RustBackend {
             } => {
                 format!(
                     "&mut vec![{}; {}][..]",
-                    format!("{:.1}", initial_value), // using `.to_string()` won't produce decimal
+                    Self::render_expr(&initial_value),
                     format!("{}", shape.join(" * ")),
                 )
             }
             Expr::Ident(s) => s.to_string(),
             Expr::Ref(s, _mutable) => format!("{s}"),
-            Expr::Int(x) => format!("{x}"),
+            Expr::Int(x) => format!("{:.1}", x), // using `.to_string()` won't produce decimal
+            Expr::Scalar(x) => match x {
+                x if x.is_nan() => "f32::NAN".to_string(),
+                x if *x == f32::INFINITY => "f32::INFINITY".to_string(),
+                x if *x == f32::NEG_INFINITY => "f32::NEG_INFINITY".to_string(),
+                x => {
+                    let s = format!("{:.8}", x);
+                    if s.contains('.') {
+                        let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                        format!(
+                            "{}{}",
+                            trimmed,
+                            if trimmed.contains('.') { "" } else { ".0" }
+                        )
+                    } else {
+                        format!("{}.", s)
+                    }
+                }
+            },
             Expr::Op { .. } => Self::render_op(&expr),
             Expr::Indexed { ident, index } => format!("{ident}[{}]", Self::render_expr(&index),),
         }

@@ -3,10 +3,11 @@ pub mod parser;
 #[derive(Clone, Debug)]
 pub enum Expr {
     Alloc {
-        initial_value: f32,
+        initial_value: Box<Expr>, // must be of variant `Scalar`
         shape: Vec<String>,
     },
     Int(usize),
+    Scalar(f32),
     Ident(String),
     Ref(String, bool), // like Ident(_), but a ref (and tracks mutability)
     Op {

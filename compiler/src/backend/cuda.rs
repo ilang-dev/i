@@ -359,6 +359,21 @@ impl CudaBackend {
         match expr {
             Expr::Ident(s) => s.to_string(),
             Expr::Int(x) => format!("{x}"),
+            Expr::Scalar(x) => match x {
+                x if x.is_nan() => "NAN".to_string(),
+                x if *x == f32::INFINITY => "INFINITY".to_string(),
+                x if *x == f32::NEG_INFINITY => "-INFINITY".to_string(),
+                x => {
+                    let s = format!("{:.8}", x);
+                    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+                    let with_decimal = if trimmed.contains('.') {
+                        trimmed.to_string()
+                    } else {
+                        format!("{}.", trimmed)
+                    };
+                    format!("{}f", with_decimal)
+                }
+            },
             Expr::Op { .. } => Self::render_op(&expr),
             Expr::Indexed { ident, index } => format!("{ident}[{}]", Self::render_expr(&index)),
             Expr::Alloc { .. } => {

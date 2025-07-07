@@ -132,13 +132,17 @@ fn parse_expr(sexp: &Sexp) -> Expr {
                         let val = parse_float(&list[1]);
                         let dims = parse_list_of_atoms(&list[2]);
                         Expr::Alloc {
-                            initial_value: val,
+                            initial_value: Box::new(Expr::Scalar(val)),
                             shape: dims,
                         }
                     }
                     "int" => {
                         let x = parse_atom(&list[1]).parse::<usize>().unwrap_or(0);
                         Expr::Int(x)
+                    }
+                    "scal" => {
+                        let x = parse_atom(&list[1]).parse::<f32>().unwrap_or(0.);
+                        Expr::Scalar(x)
                     }
                     "id" => Expr::Ident(parse_atom(&list[1])),
                     "ref" => Expr::Ref(parse_atom(&list[1]), false),

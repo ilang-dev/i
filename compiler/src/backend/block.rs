@@ -44,8 +44,13 @@ impl BlockBackend {
             Expr::Alloc {
                 initial_value,
                 shape,
-            } => format!("(alloc {:.1} {})", initial_value, shape.join(" ")),
+            } => format!(
+                "(alloc {} {})",
+                Self::render_expr(&initial_value),
+                shape.join(" ")
+            ),
             Expr::Int(x) => format!("(int {x})"),
+            Expr::Scalar(x) => format!("(scal {x})"),
             Expr::Ident(s) => format!("(id {s})"),
             Expr::Ref(s, true) => format!("(ref! {s})"),
             Expr::Ref(s, false) => format!("(ref {s})"),
