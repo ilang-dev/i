@@ -305,7 +305,7 @@ fn shape(inputs: *const Tensor, n_inputs: usize, rank: usize, shape: *mut usize)
                     Type::Int(_) => {
                         array_dim_ind += 1;
                         let shape_vec_string = if array_arg_ind > n_input_arrays {
-                            "out".to_string()
+                            "dout".to_string()
                         } else {
                             format!("d{}", array_arg_ind - 1)
                         };

@@ -374,7 +374,7 @@ impl Lowerer {
         let alloc_statement = Statement::Declaration {
             ident: store_ident.clone(),
             value: Expr::Alloc {
-                initial_value: 0.,
+                initial_value: Box::new(Expr::Scalar(0.)),
                 shape: index.chars().map(|c| loop_idents[&c].0.clone()).collect(),
             },
             type_: Type::Array(true),
