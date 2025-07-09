@@ -110,21 +110,34 @@ impl RustBackend {
             panic!("Expected `Op` variant of `Expr`")
         };
         match op {
-            '>' => match inputs.len() {
-                1 => format!(
+            '!' => {
+                assert!(inputs.len() == 1, "Expected 1 inputs to op [!].");
+                format!(
                     "if {} > 0. {{ {} }} else {{ 0. }}",
                     Self::render_expr(&inputs[0]),
                     Self::render_expr(&inputs[0]),
-                ),
-                2 => format!(
+                )
+            }
+            '>' => {
+                assert!(inputs.len() == 2, "Expected 2 inputs to op [>].");
+                format!(
                     "if {} > {} {{ {} }} else {{ {} }}",
                     Self::render_expr(&inputs[0]),
                     Self::render_expr(&inputs[1]),
                     Self::render_expr(&inputs[0]),
                     Self::render_expr(&inputs[1]),
-                ),
-                _ => panic!("Expected 1 or 2 inputs to op [>]."),
-            },
+                )
+            }
+            '<' => {
+                assert!(inputs.len() == 2, "Expected 2 inputs to op [<].");
+                format!(
+                    "if {} < {} {{ {} }} else {{ {} }}",
+                    Self::render_expr(&inputs[0]),
+                    Self::render_expr(&inputs[1]),
+                    Self::render_expr(&inputs[0]),
+                    Self::render_expr(&inputs[1]),
+                )
+            }
             '^' => {
                 assert!(inputs.len() == 1, "Expected 1 input to op [^].");
                 format!("{}.exp()", Self::render_expr(&inputs[0]))

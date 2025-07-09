@@ -122,7 +122,7 @@ impl<'a> Tokenizer<'a> {
                 self.consume_char();
                 Ok(Token::Bar)
             }
-            '+' | '*' | '>' | '/' | '-' | '^' | '$' | '@' | '#' => {
+            '+' | '*' | '-' | '/' | '>' | '<' | '^' | '$' | '@' | '#' | '!' => {
                 self.consume_char();
                 Ok(Token::Operator(c))
             }

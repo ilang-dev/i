@@ -669,7 +669,7 @@ impl Lowerer {
             })
             .collect();
 
-        if in_exprs.len() == 1 && matches!(op, '+' | '*') {
+        if in_exprs.len() == 1 && matches!(op, '+' | '*' | '>' | '<') {
             // Pushing to front here shouldn't be a problem unless we start allowing ops of
             // arbitrary inputs.
             in_exprs.insert(0, out_expr.clone());

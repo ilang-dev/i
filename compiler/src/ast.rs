@@ -55,19 +55,22 @@ pub enum BinaryOp {
     Add(Symbol, Symbol),
     Sub(Symbol, Symbol),
     Max(Symbol, Symbol),
+    Min(Symbol, Symbol),
 }
 
 #[derive(Clone, Debug)]
 pub enum UnaryOp {
-    Prod(Symbol),
     Accum(Symbol),
-    Relu(Symbol),
+    Prod(Symbol),
     Neg(Symbol),
+    Recip(Symbol),
+    Max(Symbol),
+    Min(Symbol),
     Exp(Symbol),
     Log(Symbol),
-    Recip(Symbol),
     Sqrt(Symbol),
     Abs(Symbol),
+    Relu(Symbol),
 }
 
 #[derive(Clone, Debug)]

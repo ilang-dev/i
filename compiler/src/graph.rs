@@ -247,7 +247,8 @@ impl Graph {
                     | ScalarOp::BinaryOp(BinaryOp::Sub(in0, in1))
                     | ScalarOp::BinaryOp(BinaryOp::Mul(in0, in1))
                     | ScalarOp::BinaryOp(BinaryOp::Div(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Max(in0, in1)) => vec![
+                    | ScalarOp::BinaryOp(BinaryOp::Max(in0, in1))
+                    | ScalarOp::BinaryOp(BinaryOp::Min(in0, in1)) => vec![
                         (
                             self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
                             in0.0.clone(),
@@ -261,6 +262,8 @@ impl Graph {
                     | ScalarOp::UnaryOp(UnaryOp::Prod(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Relu(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Neg(in0))
+                    | ScalarOp::UnaryOp(UnaryOp::Max(in0))
+                    | ScalarOp::UnaryOp(UnaryOp::Min(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Recip(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Exp(in0))
                     | ScalarOp::UnaryOp(UnaryOp::Log(in0))
@@ -278,8 +281,11 @@ impl Graph {
                     | ScalarOp::BinaryOp(BinaryOp::Add(_, _)) => '+',
                     ScalarOp::UnaryOp(UnaryOp::Prod(_))
                     | ScalarOp::BinaryOp(BinaryOp::Mul(_, _)) => '*',
-                    ScalarOp::UnaryOp(UnaryOp::Relu(_))
+                    ScalarOp::UnaryOp(UnaryOp::Relu(_)) => '!',
+                    ScalarOp::UnaryOp(UnaryOp::Max(_))
                     | ScalarOp::BinaryOp(BinaryOp::Max(_, _)) => '>',
+                    ScalarOp::UnaryOp(UnaryOp::Min(_))
+                    | ScalarOp::BinaryOp(BinaryOp::Min(_, _)) => '<',
                     ScalarOp::UnaryOp(UnaryOp::Neg(_))
                     | ScalarOp::BinaryOp(BinaryOp::Sub(_, _)) => '-',
                     ScalarOp::UnaryOp(UnaryOp::Recip(_))
