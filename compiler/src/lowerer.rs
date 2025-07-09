@@ -374,7 +374,12 @@ impl Lowerer {
         let alloc_statement = Statement::Declaration {
             ident: store_ident.clone(),
             value: Expr::Alloc {
-                initial_value: Box::new(Expr::Scalar(0.)),
+                initial_value: Box::new(Expr::Scalar(match op {
+                    '>' => f32::NEG_INFINITY,
+                    '<' => f32::INFINITY,
+                    '*' => 1.,
+                    _ => 0.,
+                })),
                 shape: index.chars().map(|c| loop_idents[&c].0.clone()).collect(),
             },
             type_: Type::Array(true),
@@ -453,6 +458,34 @@ impl Lowerer {
                 .extend(child_exec_fragment.statements.clone());
         }
 
+        let initialization_loop_stack: Option<Statement> = (root && (*op == '>' || *op == '*'))
+            .then(|| Statement::Loop {
+                index: "i_".to_string(),
+                bound: Expr::Op {
+                    op: '*',
+                    inputs: loop_idents
+                        .iter()
+                        .filter(|(c, _)| index.contains(**c))
+                        .map(|(_, (bound_ident, _))| Expr::Ident(bound_ident.clone()))
+                        .collect(),
+                },
+                body: Block {
+                    statements: vec![Statement::Assignment {
+                        left: Expr::Indexed {
+                            ident: store_ident.clone(),
+                            index: Box::new(Expr::Ident("i_".to_string())),
+                        },
+                        right: Expr::Scalar(match op {
+                            '*' => 1.,
+                            '>' => f32::NEG_INFINITY,
+                            '<' => f32::INFINITY,
+                            _ => panic!("Attempted to initialize non-reduction."),
+                        }),
+                    }],
+                },
+                parallel: true,
+            });
+
         let loop_stack: Statement =
             loop_statements
                 .into_iter()
@@ -480,7 +513,12 @@ impl Lowerer {
 
         let function_ident = format!("_{}", store_ident.clone());
 
-        let exec_statements = [split_factor_assignment_statements, vec![loop_stack]].concat();
+        let exec_statements = [
+            split_factor_assignment_statements,
+            initialization_loop_stack.into_iter().collect(),
+            vec![loop_stack],
+        ]
+        .concat();
 
         let alloc_block = Block {
             statements: [
