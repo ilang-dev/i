@@ -112,34 +112,33 @@ impl Lowerer {
     ) -> Lowered {
         let id = node as *const _ as usize;
 
-        if let Some(cached) = memo.get(&id) {
-            return Lowered {
-                def_block: Block {
-                    statements: Vec::new(),
-                },
-                exec_block: Block {
-                    statements: Vec::new(),
-                },
-                ..cached.clone()
-            };
-        }
-
         let lowered = match &node.body {
             NodeBody::Leaf => self.lower_leaf_node(&node.index),
             NodeBody::Interior {
                 op,
                 schedule,
                 shape,
-            } => self.lower_interior_node(
-                &node.index,
-                &op,
-                &node.children(),
-                shape,
-                &schedule,
-                pruned_loops,
-                root,
-                memo,
-            ),
+            } => match memo.get(&id) {
+                Some(cached) => Lowered {
+                    def_block: Block {
+                        statements: Vec::new(),
+                    },
+                    exec_block: Block {
+                        statements: Vec::new(),
+                    },
+                    ..cached.clone()
+                },
+                None => self.lower_interior_node(
+                    &node.index,
+                    &op,
+                    &node.children(),
+                    shape,
+                    &schedule,
+                    pruned_loops,
+                    root,
+                    memo,
+                ),
+            },
         };
 
         memo.insert(id, lowered.clone());
