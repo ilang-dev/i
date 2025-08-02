@@ -82,6 +82,18 @@ impl Component {
         self.fanout(other)
     }
 
+    #[pyo3(name = "pair")]
+    fn pair(&self, other: &Component) -> PyResult<Component> {
+        Ok(Component {
+            graph: self.graph.pair(&other.graph),
+        })
+    }
+
+    #[pyo3(name = "__matmul__")]
+    fn _pair(&self, other: &Component) -> PyResult<Component> {
+        self.pair(other)
+    }
+
     #[pyo3(signature = (*args))]
     fn exec(&self, args: &Bound<'_, PyTuple>) -> PyResult<PyTensor> {
         let mut tensors: Vec<PyTensor> = args.extract()?;
