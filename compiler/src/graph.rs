@@ -206,6 +206,12 @@ impl Graph {
         left
     }
 
+    pub fn pair(&self, other: &Self) -> Self {
+        let mut left = self.deepcopy();
+        left.roots.extend(other.deepcopy().roots);
+        left
+    }
+
     fn add_node(
         &mut self,
         index: String,
