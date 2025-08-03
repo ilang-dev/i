@@ -110,15 +110,13 @@ impl Lowerer {
         root: bool,
         memo: &mut HashMap<usize, Lowered>,
     ) -> Lowered {
-        let id = node as *const _ as usize;
-
         let lowered = match &node.body {
             NodeBody::Leaf => self.lower_leaf_node(&node.index),
             NodeBody::Interior {
                 op,
                 schedule,
                 shape,
-            } => match memo.get(&id) {
+            } => match memo.get(&node.id) {
                 Some(cached) => Lowered {
                     def_block: Block {
                         statements: Vec::new(),
@@ -141,7 +139,7 @@ impl Lowerer {
             },
         };
 
-        memo.insert(id, lowered.clone());
+        memo.insert(node.id, lowered.clone());
 
         lowered
     }

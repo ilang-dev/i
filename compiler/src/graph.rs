@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 use crate::ast::{
     BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, Schedule, UnaryOp,
 };
+
+static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 type NodeRef = Arc<Mutex<Node>>;
 
@@ -20,6 +25,7 @@ pub enum NodeBody {
 
 #[derive(Clone, Debug)]
 pub struct Node {
+    pub id: usize,
     pub index: String,
     pub body: NodeBody,
     parents: Vec<NodeRef>,
@@ -88,6 +94,7 @@ impl Graph {
             }
 
             let new_node = Arc::new(Mutex::new(Node {
+                id: node.id,
                 index: node.index.clone(),
                 body: node.body.clone(),
                 parents: Vec::new(),
@@ -220,6 +227,7 @@ impl Graph {
         children: Vec<(NodeRef, String)>,
     ) -> NodeRef {
         let node = Arc::new(Mutex::new(Node {
+            id: NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             index: index.clone(),
             body,
             parents: parents.clone(),
