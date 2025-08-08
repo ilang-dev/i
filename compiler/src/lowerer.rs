@@ -17,7 +17,7 @@ struct Lowered {
     def_block: Block,
     alloc_block: Block,
     exec_block: Block,
-    def_args: Vec<Arg>, // only populated for kernel fragemnts, empty for full kernels
+    def_args: Vec<Arg>, // only populated for kernel fragments, empty for full kernels
     loop_idents: HashMap<char, (String, String)>,
     store_ident: String,
     shape: Vec<(usize, usize)>,
@@ -230,7 +230,7 @@ impl Lowerer {
         // recursively lower children
         // note: the reason this is a fold instead of a map is because the loop_idents are
         //       determined jointly with all siblings. those idents determined by the first child
-        //       are past to the lower call of the subsequent siblings.
+        //       are passed to the lower call of the subsequent siblings.
         let (
             child_def_blocks,
             child_alloc_blocks,
