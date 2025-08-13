@@ -15,7 +15,7 @@ pub struct Lowerer {
 #[derive(Clone, Debug)]
 struct Lowered {
     def_block: Block,
-    alloc_block: Block,
+    alloc_statements: HashMap<String, Statement>, // (ident, Statement::Alloc)
     exec_block: Block,
     def_args: Vec<Arg>, // only populated for kernel fragments, empty for full kernels
     loop_idents: HashMap<char, (String, String)>,
@@ -55,6 +55,10 @@ impl Lowerer {
             &mut memo,
         );
 
+        let mut alloc_statements: Vec<_> = lowered.alloc_statements.into_iter().collect();
+        alloc_statements.sort_by_key(|(k, _)| k.clone());
+        let alloc_statements: Vec<_> = alloc_statements.into_iter().map(|(_, v)| v).collect();
+
         //let lowered = self.lower_node(&graph.root().lock().unwrap(), HashSet::new(), true);
         Program {
             rank: Statement::Function {
@@ -92,17 +96,12 @@ impl Lowerer {
                 ident: "f".to_string(),
                 args: self.input_args.clone(),
                 body: Block {
-                    statements: [
-                        lowered.alloc_block.statements,
-                        lowered.exec_block.statements,
-                    ]
-                    .concat(),
+                    statements: [alloc_statements, lowered.exec_block.statements].concat(),
                 },
             },
         }
     }
 
-    /// Return function def block, alloc block, exec block, (bound, iterator) ident map, store ident
     fn lower_node(
         &mut self,
         node: &Node,
@@ -144,7 +143,6 @@ impl Lowerer {
         lowered
     }
 
-    /// Return function def block, alloc block, exec block, (bound, iterator) ident map, store ident
     fn lower_leaf_node(&mut self, index: &String) -> Lowered {
         let arg_ident = format!("in{}", self.input_array_counter);
         self.input_array_counter += 1;
@@ -176,7 +174,7 @@ impl Lowerer {
 
         Lowered {
             def_block: Block::default(),
-            alloc_block: Block::default(),
+            alloc_statements: HashMap::new(),
             exec_block: Block::default(),
             def_args: Vec::new(),
             loop_idents: loop_idents,
@@ -189,7 +187,6 @@ impl Lowerer {
         }
     }
 
-    /// Return function def block, alloc block, exec block, (bound, iterator) ident map, store ident
     fn lower_interior_node(
         &mut self,
         index: &String,
@@ -233,7 +230,7 @@ impl Lowerer {
         //       are passed to the lower call of the subsequent siblings.
         let (
             child_def_blocks,
-            child_alloc_blocks,
+            child_alloc_statements,
             mut child_exec_blocks, // mut so fragments can be pulled out for fusion
             mut child_def_args,
             loop_idents,
@@ -241,7 +238,7 @@ impl Lowerer {
             child_shapes,
         ): (
             Vec<Block>,
-            Vec<Block>,
+            HashMap<String, Statement>,
             Vec<Block>,
             Vec<Arg>,
             HashMap<char, (String, String)>,
@@ -250,7 +247,7 @@ impl Lowerer {
         ) = children.iter().enumerate().fold(
             (
                 vec![],
-                vec![],
+                HashMap::new(),
                 vec![],
                 vec![],
                 HashMap::new(),
@@ -259,7 +256,7 @@ impl Lowerer {
             ),
             |(
                 mut def_blocks,
-                mut alloc_blocks,
+                mut alloc_statements,
                 mut exec_blocks,
                 mut def_args,
                 mut loop_idents,
@@ -281,7 +278,7 @@ impl Lowerer {
 
                 let Lowered {
                     def_block: child_def_block,
-                    alloc_block: child_alloc_block,
+                    alloc_statements: child_alloc_statements,
                     exec_block: child_exec_block,
                     def_args: child_def_args,
                     loop_idents: child_loop_idents,
@@ -296,7 +293,7 @@ impl Lowerer {
                     .collect();
 
                 def_blocks.push(child_def_block);
-                alloc_blocks.push(child_alloc_block);
+                alloc_statements.extend(child_alloc_statements);
                 exec_blocks.push(child_exec_block);
                 Self::merge_args(&mut def_args, child_def_args);
                 loop_idents.extend(child_loop_idents);
@@ -305,7 +302,7 @@ impl Lowerer {
 
                 (
                     def_blocks,
-                    alloc_blocks,
+                    alloc_statements,
                     exec_blocks,
                     def_args,
                     loop_idents,
@@ -368,19 +365,25 @@ impl Lowerer {
             })
             .collect();
 
-        let alloc_statement = Statement::Declaration {
-            ident: store_ident.clone(),
-            value: Expr::Alloc {
-                initial_value: Box::new(Expr::Scalar(match op {
-                    '>' => f32::NEG_INFINITY,
-                    '<' => f32::INFINITY,
-                    '*' => 1.,
-                    _ => 0.,
-                })),
-                shape: index.chars().map(|c| loop_idents[&c].0.clone()).collect(),
-            },
-            type_: Type::Array(true),
-        };
+        let mut alloc_statements = child_alloc_statements;
+        if !root {
+            alloc_statements.insert(
+                store_ident.clone(),
+                Statement::Declaration {
+                    ident: store_ident.clone(),
+                    value: Expr::Alloc {
+                        initial_value: Box::new(Expr::Scalar(match op {
+                            '>' => f32::NEG_INFINITY,
+                            '<' => f32::INFINITY,
+                            '*' => 1.,
+                            _ => 0.,
+                        })),
+                        shape: index.chars().map(|c| loop_idents[&c].0.clone()).collect(),
+                    },
+                    type_: Type::Array(true),
+                },
+            );
+        }
 
         // TODO: The mapping should probably be done in the present function instead of passing
         //       the hashmap here.
@@ -517,17 +520,6 @@ impl Lowerer {
         ]
         .concat();
 
-        let alloc_block = Block {
-            statements: [
-                child_alloc_blocks
-                    .into_iter()
-                    .flat_map(|block| block.statements)
-                    .collect(),
-                if root { vec![] } else { vec![alloc_statement] }, // TODO: Make not hacky.
-            ]
-            .concat(),
-        };
-
         // this will get drained for full kernels and returned populated for fragments
         let mut def_args: Vec<Arg> = [
             child_store_idents
@@ -620,7 +612,7 @@ impl Lowerer {
 
         Lowered {
             def_block,
-            alloc_block,
+            alloc_statements,
             exec_block,
             def_args,
             loop_idents,
