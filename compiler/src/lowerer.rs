@@ -263,12 +263,12 @@ impl Lowerer {
                 mut child_store_idents,
                 mut child_shapes,
             ),
-             (ind, (child, index))| {
+             (ind, (child, child_index))| {
                 // for mapping between child indexing and current node indexing
                 let child_to_current_index: HashMap<char, char> =
-                    child.index.chars().zip(index.chars()).collect();
+                    child.index.chars().zip(child_index.chars()).collect();
                 let current_to_child_index: HashMap<char, char> =
-                    index.chars().zip(child.index.chars()).collect();
+                    child_index.chars().zip(child.index.chars()).collect();
 
                 let pruned_loops: HashSet<(char, usize)> = schedule.loop_order
                     [..schedule.compute_levels[ind]]
