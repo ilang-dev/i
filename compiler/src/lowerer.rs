@@ -824,8 +824,13 @@ impl Lowerer {
 
         vec![
             Statement::Declaration {
-                ident: base_iterator_ident.clone(),
+                ident: "tmp".to_string(),
                 value: reconstructed_index,
+                type_: Type::Int(false),
+            },
+            Statement::Declaration {
+                ident: base_iterator_ident.clone(),
+                value: Expr::Ident("tmp".to_string()),
                 type_: Type::Int(false),
             },
             Statement::Skip {
