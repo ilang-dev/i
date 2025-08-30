@@ -289,7 +289,7 @@ impl Lowerer {
                 let child_loop_idents: HashMap<char, (String, String)> = child_loop_idents
                     .into_iter()
                     .map(|(c, x)| (*child_to_current_index.get(&c).unwrap_or(&c), x))
-                    //.filter(|(c, _)| !loop_idents.contains_key(c))
+                    .filter(|(c, _)| !loop_idents.contains_key(c))
                     .collect();
 
                 def_blocks.push(child_def_block);
