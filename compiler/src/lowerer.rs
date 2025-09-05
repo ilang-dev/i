@@ -326,45 +326,6 @@ impl Lowerer {
             }
         };
 
-        // create split factor idents
-        let split_factor_idents: HashMap<char, Vec<String>> = schedule
-            .splits
-            .iter()
-            .map(|(char_index, split_list)| {
-                (
-                    *char_index,
-                    split_list
-                        .iter()
-                        .enumerate()
-                        .map(|(ind, _split_factor)| {
-                            let split_factor_ident = format!(
-                                "{}_{ind}_{}",
-                                loop_idents[char_index].0, self.split_factor_count
-                            );
-                            self.split_factor_count += 1;
-                            split_factor_ident
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-
-        // create assignment statement for each split factor ident
-        let split_factor_assignment_statements: Vec<Statement> = schedule
-            .splits
-            .iter()
-            .flat_map(|(char_index, split_factors)| {
-                split_factors
-                    .iter()
-                    .zip(split_factor_idents[char_index].iter())
-                    .map(|(factor, ident)| Statement::Declaration {
-                        ident: ident.clone(),
-                        value: Expr::Int(*factor),
-                        type_: Type::Int(false),
-                    })
-            })
-            .collect();
-
         let mut alloc_statements = child_alloc_statements;
         if !root {
             alloc_statements.insert(
@@ -420,7 +381,7 @@ impl Lowerer {
                 .iter()
                 .map(|(c, (ident, _))| (*c, ident.clone()))
                 .collect(),
-            &split_factor_idents,
+            &schedule.splits,
             &index,
         );
 
@@ -514,7 +475,6 @@ impl Lowerer {
         let function_ident = format!("_{}", store_ident.clone());
 
         let exec_statements = [
-            split_factor_assignment_statements,
             initialization_loop_stack.into_iter().collect(),
             vec![loop_stack],
         ]
@@ -682,7 +642,7 @@ impl Lowerer {
         schedule: &Schedule,
         base_iterator_idents: &HashMap<char, String>,
         bound_idents: &HashMap<char, String>,
-        split_factor_idents: &HashMap<char, Vec<String>>,
+        split_factors: &HashMap<char, Vec<usize>>,
         index: &String,
     ) -> Vec<Statement> {
         let mut statements = vec![];
@@ -712,11 +672,9 @@ impl Lowerer {
                 (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
                 (Some(_splits), 0) => Self::create_split_bound_expr(
                     &bound_idents[&char_index],
-                    &split_factor_idents[&char_index],
+                    &split_factors[&char_index],
                 ),
-                (Some(_splits), rank) => {
-                    Expr::Ident(split_factor_idents[&char_index][*rank - 1].clone())
-                }
+                (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
             };
 
             statements.push(Statement::Loop {
@@ -727,7 +685,7 @@ impl Lowerer {
                         Self::create_index_reconstruction_statements(
                             &base_iterator_idents[&char_index],
                             &bound_idents[&char_index],
-                            &split_factor_idents[&char_index],
+                            &split_factors[&char_index],
                         )
                     } else {
                         vec![]
@@ -740,15 +698,12 @@ impl Lowerer {
         statements
     }
 
-    fn create_split_bound_expr(
-        base_bound_ident: &String,
-        split_factors_idents: &Vec<String>,
-    ) -> Expr {
+    fn create_split_bound_expr(base_bound_ident: &String, split_factors: &Vec<usize>) -> Expr {
         let tile_width_expr = Expr::Op {
             op: '*',
-            inputs: split_factors_idents
+            inputs: split_factors
                 .iter()
-                .map(|ident| Expr::Ident(ident.clone()))
+                .map(|factor| Expr::Int(*factor))
                 .collect(),
         };
 
@@ -775,11 +730,11 @@ impl Lowerer {
     fn create_index_reconstruction_statements(
         base_iterator_ident: &String,
         base_bound_ident: &String,
-        split_factors_idents: &Vec<String>,
+        split_factors: &Vec<usize>,
     ) -> Vec<Statement> {
-        let factor_loop_widths: Vec<Expr> = split_factors_idents
+        let factor_loop_widths: Vec<Expr> = split_factors
             .iter()
-            .map(|ident| Expr::Ident(ident.clone()))
+            .map(|factor| Expr::Int(*factor))
             .collect();
 
         // number of elements per iteration of base loop
@@ -791,7 +746,7 @@ impl Lowerer {
         let mut widths = factor_loop_widths;
         widths.insert(0, base_loop_tile_width);
 
-        let factor_loop_iterator: Vec<Expr> = (0..split_factors_idents.len())
+        let factor_loop_iterator: Vec<Expr> = (0..split_factors.len())
             .map(|ind| Expr::Ident(format!("{}_{ind}", base_iterator_ident.clone())))
             .collect();
 
