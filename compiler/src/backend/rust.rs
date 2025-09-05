@@ -100,6 +100,8 @@ impl RustBackend {
     fn render_type(type_: &Type) -> String {
         match type_ {
             Type::Int(_) => "usize".to_string(),
+            Type::Scalar(_) => "f32".to_string(),
+            //Type::Scalar(mutable) => format!("{}f32", if *mutable { "mut " } else { "" }),
             Type::Array(mutable) | Type::ArrayRef(mutable) => {
                 format!("&{}[f32]", if *mutable { "mut " } else { "" })
             }
@@ -378,7 +380,10 @@ fn f(inputs: *const Tensor, n_inputs: usize, output: *mut TensorMut) {{
                 value,
                 type_,
             } => {
-                let (Type::Int(mutable) | Type::Array(mutable) | Type::ArrayRef(mutable)) = type_;
+                let (Type::Int(mutable)
+                | Type::Scalar(mutable)
+                | Type::Array(mutable)
+                | Type::ArrayRef(mutable)) = type_;
                 format!(
                     "let {}{ident}: {} = {};",
                     if *mutable { "mut " } else { "" },
@@ -400,7 +405,8 @@ fn f(inputs: *const Tensor, n_inputs: usize, output: *mut TensorMut) {{
                 "#[no_mangle]\nfn {ident}({}) {{{}}}",
                 args.iter()
                     .map(|Arg { type_, ident }| {
-                        let (Type::Int(_) | Type::Array(_) | Type::ArrayRef(_)) = type_;
+                        let (Type::Int(_) | Type::Scalar(_) | Type::Array(_) | Type::ArrayRef(_)) =
+                            type_;
                         format!("{}: {}", Self::render_expr(ident), Self::render_type(type_),)
                     })
                     .collect::<Vec<_>>()

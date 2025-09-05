@@ -104,6 +104,7 @@ impl CBackend {
     fn render_type(t: &Type) -> String {
         match t {
             Type::Int(_) => "size_t".to_string(),
+            Type::Scalar(_) => "float".to_string(),
             Type::Array(m) | Type::ArrayRef(m) => {
                 if *m {
                     "float*".to_string()

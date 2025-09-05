@@ -268,6 +268,7 @@ impl CudaBackend {
     fn render_type(type_: &Type) -> String {
         match type_ {
             Type::Int(_) => "int".to_string(),
+            Type::Scalar(_) => "float".to_string(),
             Type::Array(_) | Type::ArrayRef(_) => "float*".to_string(),
         }
     }

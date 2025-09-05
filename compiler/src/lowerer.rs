@@ -339,7 +339,10 @@ impl Lowerer {
                             '*' => 1.,
                             _ => 0.,
                         })),
-                        shape: index.chars().map(|c| loop_idents[&c].0.clone()).collect(),
+                        shape: index
+                            .chars()
+                            .map(|c| Expr::Ident(loop_idents[&c].0.clone()))
+                            .collect(),
                     },
                     type_: Type::Array(true),
                 },
@@ -840,11 +843,13 @@ impl Lowerer {
                 _ => false,
             }) {
                 let incoming_mutable = match &arg.type_ {
-                    Type::Int(m) | Type::Array(m) | Type::ArrayRef(m) => *m,
+                    Type::Int(m) | Type::Scalar(m) | Type::Array(m) | Type::ArrayRef(m) => *m,
                 };
                 if incoming_mutable {
                     match &mut existing.type_ {
-                        Type::Int(em) | Type::Array(em) | Type::ArrayRef(em) => *em = true,
+                        Type::Int(em) | Type::Scalar(em) | Type::Array(em) | Type::ArrayRef(em) => {
+                            *em = true
+                        }
                     }
                 }
             } else {

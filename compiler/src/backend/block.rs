@@ -32,6 +32,8 @@ impl BlockBackend {
         match t {
             Type::Int(false) => "i".into(),
             Type::Int(true) => "i!".into(),
+            Type::Scalar(false) => "s".into(),
+            Type::Scalar(true) => "s!".into(),
             Type::Array(false) => "a".into(),
             Type::Array(true) => "a!".into(),
             Type::ArrayRef(false) => "ar".into(),

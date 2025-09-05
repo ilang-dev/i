@@ -30,6 +30,7 @@ pub struct Arg {
 #[derive(Clone, Debug)]
 pub enum Type {
     Int(bool),
+    Scalar(bool),
     Array(bool),
     ArrayRef(bool),
 }
