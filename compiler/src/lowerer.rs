@@ -326,6 +326,31 @@ impl Lowerer {
             }
         };
 
+        let bound_idents: HashMap<char, String> = loop_idents
+            .iter()
+            .map(|(c, (ident, _))| (*c, ident.clone()))
+            .collect();
+        let split_factors = &schedule.splits;
+        let mut bound_exprs = schedule
+            .loop_order
+            .iter()
+            .rev()
+            .map(|(char_index, rank)| {
+                let splits = schedule.splits.get(char_index);
+                match (splits, rank) {
+                    (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
+                    (Some(_splits), 0) => Self::create_split_bound_expr(
+                        &bound_idents[&char_index],
+                        &split_factors[&char_index],
+                    ),
+                    (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
+                }
+            })
+            .collect::<Vec<Expr>>();
+        if bound_exprs.is_empty() {
+            bound_exprs.push(Expr::Int(1));
+        }
+
         let mut alloc_statements = child_alloc_statements;
         if !root {
             alloc_statements.insert(
@@ -339,10 +364,7 @@ impl Lowerer {
                             '*' => 1.,
                             _ => 0.,
                         })),
-                        shape: index
-                            .chars()
-                            .map(|c| Expr::Ident(loop_idents[&c].0.clone()))
-                            .collect(),
+                        shape: bound_exprs.clone(),
                     },
                     type_: Type::Array(true),
                 },
@@ -351,24 +373,14 @@ impl Lowerer {
 
         // TODO: The mapping should probably be done in the present function instead of passing
         //       the hashmap here.
-        // TODO: stop splitting ident map
         let op_statement = Self::create_op_statement(
             op,
-            // bound_idents
-            &loop_idents
-                .iter()
-                .map(|(c, (ident, _))| (*c, ident.clone()))
-                .collect(),
-            // base_iterator_idents
+            &bound_exprs,
             &loop_idents
                 .iter()
                 .map(|(c, (_, ident))| (*c, ident.clone()))
                 .collect(),
             &child_store_idents,
-            &children
-                .iter()
-                .map(|(child, index)| index.clone())
-                .collect(),
             &store_ident,
             &index,
         );
@@ -586,38 +598,30 @@ impl Lowerer {
 
     fn create_op_statement(
         op: &char,
-        bound_idents: &HashMap<char, String>,
+        bound_exprs: &Vec<Expr>,
         base_iterator_idents: &HashMap<char, String>,
         child_store_idents: &Vec<String>,
-        child_indices: &Vec<String>,
         store_ident: &String,
         index: &String,
     ) -> Statement {
-        assert_eq!(child_store_idents.len(), child_indices.len());
+        let affine_index = Self::create_affine_index(
+            index
+                .chars()
+                .map(|c| base_iterator_idents[&c].clone())
+                .collect(),
+            bound_exprs,
+        );
 
         let out_expr = Expr::Indexed {
             ident: store_ident.clone(),
-            index: Box::new(Self::create_affine_index(
-                index
-                    .chars()
-                    .map(|c| base_iterator_idents[&c].clone())
-                    .collect(),
-                index.chars().map(|c| bound_idents[&c].clone()).collect(),
-            )),
+            index: Box::new(affine_index.clone()),
         };
 
         let mut in_exprs: Vec<Expr> = child_store_idents
             .iter()
-            .zip(child_indices.iter())
-            .map(|(ident, index)| Expr::Indexed {
+            .map(|ident| Expr::Indexed {
                 ident: ident.clone(),
-                index: Box::new(Self::create_affine_index(
-                    index
-                        .chars()
-                        .map(|c| base_iterator_idents[&c].clone())
-                        .collect(),
-                    index.chars().map(|c| bound_idents[&c].clone()).collect(),
-                )),
+                index: Box::new(affine_index.clone()),
             })
             .collect();
 
@@ -798,7 +802,18 @@ impl Lowerer {
         ]
     }
 
-    fn create_affine_index(indices: Vec<String>, bounds: Vec<String>) -> Expr {
+    fn create_affine_index(indices: Vec<String>, bounds: &Vec<Expr>) -> Expr {
+        if bounds.len() == 1 && bounds[0] == Expr::Int(1) {
+            return Expr::Int(0);
+        }
+
+        let indices = bounds
+            .iter()
+            .rev()
+            .zip(indices.iter().rev())
+            .map(|(bound, index)| index)
+            .rev()
+            .collect::<Vec<_>>();
         let d = indices.len();
         let mut sum_expr = None;
         for k in 0..d {
@@ -807,9 +822,9 @@ impl Lowerer {
                 product_expr = Some(match product_expr {
                     Some(expr) => Expr::Op {
                         op: '*',
-                        inputs: vec![expr, Expr::Ident(bounds[m].clone())],
+                        inputs: vec![expr, bounds[m].clone()],
                     },
-                    None => Expr::Ident(bounds[m].clone()),
+                    None => bounds[m].clone(),
                 });
             }
             let partial_expr = match product_expr {
