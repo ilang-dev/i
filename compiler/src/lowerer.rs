@@ -371,15 +371,23 @@ impl Lowerer {
             );
         }
 
-        // TODO: The mapping should probably be done in the present function instead of passing
-        //       the hashmap here.
+        let base_iterator_idents: HashMap<char, String> = loop_idents
+            .iter()
+            .map(|(c, (_, ident))| (*c, ident.clone()))
+            .collect();
+
+        let affine_index_expr = Self::create_affine_index(
+            index
+                .chars()
+                .map(|c| base_iterator_idents[&c].clone())
+                .collect(),
+            &bound_exprs,
+        );
+
         let op_statement = Self::create_op_statement(
+            &affine_index_expr,
             op,
             &bound_exprs,
-            &loop_idents
-                .iter()
-                .map(|(c, (_, ident))| (*c, ident.clone()))
-                .collect(),
             &child_store_idents,
             &store_ident,
             &index,
@@ -392,10 +400,7 @@ impl Lowerer {
                 .iter()
                 .map(|(c, (_, ident))| (*c, ident.clone()))
                 .collect(),
-            &loop_idents
-                .iter()
-                .map(|(c, (ident, _))| (*c, ident.clone()))
-                .collect(),
+            &base_iterator_idents,
             &schedule.splits,
             &index,
         );
@@ -597,31 +602,23 @@ impl Lowerer {
     }
 
     fn create_op_statement(
+        affine_index_expr: &Expr,
         op: &char,
         bound_exprs: &Vec<Expr>,
-        base_iterator_idents: &HashMap<char, String>,
         child_store_idents: &Vec<String>,
         store_ident: &String,
         index: &String,
     ) -> Statement {
-        let affine_index = Self::create_affine_index(
-            index
-                .chars()
-                .map(|c| base_iterator_idents[&c].clone())
-                .collect(),
-            bound_exprs,
-        );
-
         let out_expr = Expr::Indexed {
             ident: store_ident.clone(),
-            index: Box::new(affine_index.clone()),
+            index: Box::new(affine_index_expr.clone()),
         };
 
         let mut in_exprs: Vec<Expr> = child_store_idents
             .iter()
             .map(|ident| Expr::Indexed {
                 ident: ident.clone(),
-                index: Box::new(affine_index.clone()),
+                index: Box::new(affine_index_expr.clone()),
             })
             .collect();
 
