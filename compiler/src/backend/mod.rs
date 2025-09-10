@@ -2,7 +2,6 @@ use std::{io::Error, path::PathBuf};
 
 use crate::block::Program;
 
-pub mod block;
 pub mod c;
 pub mod cuda;
 pub mod rust;

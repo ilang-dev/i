@@ -1,5 +1,3 @@
-pub mod parser;
-
 #[derive(Clone, Debug)]
 pub enum Expr {
     Alloc {
