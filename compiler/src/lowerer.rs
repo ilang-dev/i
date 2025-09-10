@@ -20,6 +20,7 @@ struct Lowered {
     def_args: Vec<Arg>, // only populated for kernel fragments, empty for full kernels
     loop_idents: HashMap<char, (String, String)>,
     store_ident: String,
+    indexing_expr: Option<Expr>,
     shape: Vec<(usize, usize)>,
 }
 
@@ -179,6 +180,7 @@ impl Lowerer {
             def_args: Vec::new(),
             loop_idents: loop_idents,
             store_ident: arg_ident,
+            indexing_expr: None,
             shape: index
                 .chars()
                 .enumerate()
@@ -235,6 +237,7 @@ impl Lowerer {
             mut child_def_args,
             loop_idents,
             child_store_idents,
+            child_indexing_exprs,
             child_shapes,
         ): (
             Vec<Block>,
@@ -243,6 +246,7 @@ impl Lowerer {
             Vec<Arg>,
             HashMap<char, (String, String)>,
             Vec<String>,
+            Vec<Option<Expr>>,
             Vec<Vec<(usize, usize)>>,
         ) = children.iter().enumerate().fold(
             (
@@ -253,6 +257,7 @@ impl Lowerer {
                 HashMap::new(),
                 vec![],
                 vec![],
+                vec![],
             ),
             |(
                 mut def_blocks,
@@ -261,6 +266,7 @@ impl Lowerer {
                 mut def_args,
                 mut loop_idents,
                 mut child_store_idents,
+                mut child_indexing_exprs,
                 mut child_shapes,
             ),
              (ind, (child, child_index))| {
@@ -283,6 +289,7 @@ impl Lowerer {
                     def_args: child_def_args,
                     loop_idents: child_loop_idents,
                     store_ident: child_store_ident,
+                    indexing_expr: child_indexing_expr,
                     shape: child_shape,
                 } = self.lower_node(&child, pruned_loops, false, memo);
 
@@ -298,6 +305,7 @@ impl Lowerer {
                 Self::merge_args(&mut def_args, child_def_args);
                 loop_idents.extend(child_loop_idents);
                 child_store_idents.push(child_store_ident);
+                child_indexing_exprs.push(child_indexing_expr);
                 child_shapes.push(child_shape);
 
                 (
@@ -307,6 +315,7 @@ impl Lowerer {
                     def_args,
                     loop_idents,
                     child_store_idents,
+                    child_indexing_exprs,
                     child_shapes,
                 )
             },
@@ -376,7 +385,7 @@ impl Lowerer {
             .map(|(c, (_, ident))| (*c, ident.clone()))
             .collect();
 
-        let affine_index_expr = Self::create_affine_index(
+        let indexing_expr = Self::create_affine_index(
             index
                 .chars()
                 .map(|c| base_iterator_idents[&c].clone())
@@ -384,8 +393,14 @@ impl Lowerer {
             &bound_exprs,
         );
 
+        let resolved_child_indexing_exprs = child_indexing_exprs
+            .iter()
+            .map(|expr| expr.clone().unwrap_or(indexing_expr.clone()))
+            .collect::<Vec<_>>();
+
         let op_statement = Self::create_op_statement(
-            &affine_index_expr,
+            &indexing_expr,
+            &resolved_child_indexing_exprs,
             op,
             &bound_exprs,
             &child_store_idents,
@@ -396,11 +411,11 @@ impl Lowerer {
         // TODO: stop splitting ident map
         let mut loop_statements: Vec<Statement> = Self::create_empty_loop_statements(
             &schedule,
+            &base_iterator_idents,
             &loop_idents
                 .iter()
-                .map(|(c, (_, ident))| (*c, ident.clone()))
+                .map(|(c, (ident, _))| (*c, ident.clone()))
                 .collect(),
-            &base_iterator_idents,
             &schedule.splits,
             &index,
         );
@@ -597,12 +612,14 @@ impl Lowerer {
             def_args,
             loop_idents,
             store_ident,
+            indexing_expr: Some(indexing_expr),
             shape,
         }
     }
 
     fn create_op_statement(
-        affine_index_expr: &Expr,
+        indexing_expr: &Expr,
+        child_indexing_exprs: &Vec<Expr>,
         op: &char,
         bound_exprs: &Vec<Expr>,
         child_store_idents: &Vec<String>,
@@ -611,14 +628,15 @@ impl Lowerer {
     ) -> Statement {
         let out_expr = Expr::Indexed {
             ident: store_ident.clone(),
-            index: Box::new(affine_index_expr.clone()),
+            index: Box::new(indexing_expr.clone()),
         };
 
         let mut in_exprs: Vec<Expr> = child_store_idents
             .iter()
-            .map(|ident| Expr::Indexed {
+            .zip(child_indexing_exprs)
+            .map(|(ident, indexing_expr)| Expr::Indexed {
                 ident: ident.clone(),
-                index: Box::new(affine_index_expr.clone()),
+                index: Box::new(indexing_expr.clone()),
             })
             .collect();
 
