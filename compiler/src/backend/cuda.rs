@@ -291,7 +291,11 @@ impl CudaBackend {
                 } = value
                 {
                     // TODO maybe declaration and allocation should be separate
-                    let shape_str = shape.join("*");
+                    let shape_str = shape
+                        .iter()
+                        .map(|expr| Self::render_expr(&expr))
+                        .collect::<Vec<_>>()
+                        .join("*");
                     let mut output = format!("float *{ident};cudaMalloc(&{ident},{shape_str}*4);");
                     output += "err = cudaGetLastError();";
                     output += &format!("if (err != cudaSuccess) {{fprintf(stderr, \"cudaMalloc for {ident} failed: %s\\n\", cudaGetErrorString(err));}}");

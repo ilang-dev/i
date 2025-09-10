@@ -1,8 +1,8 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Alloc {
         initial_value: Box<Expr>, // must be of variant `Scalar`
-        shape: Vec<String>,
+        shape: Vec<Expr>,
     },
     Int(usize),
     Scalar(f32),

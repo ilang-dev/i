@@ -202,7 +202,11 @@ impl CBackend {
             } => {
                 format!(
                     "ilang_alloc_f32((size_t)({}), ({}))",
-                    shape.join(" * "),
+                    shape
+                        .iter()
+                        .map(|expr| Self::render_expr(&expr))
+                        .collect::<Vec<_>>()
+                        .join(" * "),
                     Self::render_expr(initial_value)
                 )
             }

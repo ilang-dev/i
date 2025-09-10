@@ -185,7 +185,14 @@ impl RustBackend {
                 format!(
                     "&mut vec![{}; {}][..]",
                     Self::render_expr(&initial_value),
-                    format!("{}", shape.join(" * ")),
+                    format!(
+                        "{}",
+                        shape
+                            .iter()
+                            .map(|expr| Self::render_expr(&expr))
+                            .collect::<Vec<_>>()
+                            .join(" * ")
+                    ),
                 )
             }
             Expr::Ident(s) => s.to_string(),
