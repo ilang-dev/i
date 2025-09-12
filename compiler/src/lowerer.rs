@@ -304,8 +304,22 @@ impl Lowerer {
                 exec_blocks.push(child_exec_block);
                 Self::merge_args(&mut def_args, child_def_args);
                 loop_idents.extend(child_loop_idents);
+
+                let iterator_idents = child_index
+                    .chars()
+                    .map(|c| loop_idents[&c].clone())
+                    .map(|(_, c)| c)
+                    .collect::<Vec<_>>();
+                let bound_exprs = child_index
+                    .chars()
+                    .map(|c| loop_idents[&c].clone())
+                    .map(|(c, _)| Expr::Ident(c))
+                    .collect::<Vec<_>>();
+                let child_indexing_expr = child_indexing_expr
+                    .unwrap_or(Self::create_affine_index(iterator_idents, &bound_exprs));
+
                 child_store_idents.push(child_store_ident);
-                child_indexing_exprs.push(child_indexing_expr);
+                child_indexing_exprs.push(Some(child_indexing_expr));
                 child_shapes.push(child_shape);
 
                 (
@@ -340,22 +354,30 @@ impl Lowerer {
             .map(|(c, (ident, _))| (*c, ident.clone()))
             .collect();
         let split_factors = &schedule.splits;
-        let mut bound_exprs = schedule
-            .loop_order
-            .iter()
-            .rev()
-            .map(|(char_index, rank)| {
-                let splits = schedule.splits.get(char_index);
-                match (splits, rank) {
-                    (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
-                    (Some(_splits), 0) => Self::create_split_bound_expr(
-                        &bound_idents[&char_index],
-                        &split_factors[&char_index],
-                    ),
-                    (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
-                }
-            })
-            .collect::<Vec<Expr>>();
+        let mut bound_exprs = if root {
+            // index according to physical output size
+            index
+                .chars()
+                .map(|c| Expr::Ident(loop_idents[&c].0.clone()))
+                .collect::<Vec<Expr>>()
+        } else {
+            // index according to "logical" shape accounting for splits
+            schedule
+                .loop_order
+                .iter()
+                .map(|(char_index, rank)| {
+                    let splits = schedule.splits.get(char_index);
+                    match (splits, rank) {
+                        (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
+                        (Some(_splits), 0) => Self::create_split_bound_expr(
+                            &bound_idents[&char_index],
+                            &split_factors[&char_index],
+                        ),
+                        (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
+                    }
+                })
+                .collect::<Vec<Expr>>()
+        };
         if bound_exprs.is_empty() {
             bound_exprs.push(Expr::Int(1));
         }
@@ -380,18 +402,28 @@ impl Lowerer {
             );
         }
 
+        let iterator_idents: Vec<String> = if root {
+            index.chars().map(|c| loop_idents[&c].1.clone()).collect()
+        } else {
+            schedule
+                .loop_order
+                .iter()
+                .map(|(index, rank)| {
+                    if schedule.splits.contains_key(index) {
+                        format!("{}_{rank}", loop_idents[&index].1.clone())
+                    } else {
+                        loop_idents[&index].1.clone()
+                    }
+                })
+                .collect()
+        };
+
         let base_iterator_idents: HashMap<char, String> = loop_idents
             .iter()
             .map(|(c, (_, ident))| (*c, ident.clone()))
             .collect();
 
-        let indexing_expr = Self::create_affine_index(
-            index
-                .chars()
-                .map(|c| base_iterator_idents[&c].clone())
-                .collect(),
-            &bound_exprs,
-        );
+        let indexing_expr = Self::create_affine_index(iterator_idents, &bound_exprs);
 
         let resolved_child_indexing_exprs = child_indexing_exprs
             .iter()
@@ -418,6 +450,7 @@ impl Lowerer {
                 .collect(),
             &schedule.splits,
             &index,
+            root,
         );
 
         // partition fragments from blocks
@@ -666,6 +699,7 @@ impl Lowerer {
         bound_idents: &HashMap<char, String>,
         split_factors: &HashMap<char, Vec<usize>>,
         index: &String,
+        root: bool,
     ) -> Vec<Statement> {
         let mut statements = vec![];
 
@@ -680,12 +714,9 @@ impl Lowerer {
         for (char_index, rank) in schedule.loop_order.iter().rev() {
             let splits = schedule.splits.get(char_index);
 
-            let index = if splits.is_some() && *rank > 0 {
-                format!(
-                    "{}_{}",
-                    base_iterator_idents[&char_index].clone(),
-                    (*rank - 1)
-                )
+            let base_iterator_ident = &base_iterator_idents[&char_index];
+            let index = if splits.is_some() {
+                format!("{}_{rank}", base_iterator_ident)
             } else {
                 base_iterator_idents[&char_index].clone()
             };
@@ -708,6 +739,7 @@ impl Lowerer {
                             &base_iterator_idents[&char_index],
                             &bound_idents[&char_index],
                             &split_factors[&char_index],
+                            root,
                         )
                     } else {
                         vec![]
@@ -753,6 +785,7 @@ impl Lowerer {
         base_iterator_ident: &String,
         base_bound_ident: &String,
         split_factors: &Vec<usize>,
+        root: bool,
     ) -> Vec<Statement> {
         let factor_loop_widths: Vec<Expr> = split_factors
             .iter()
@@ -769,11 +802,16 @@ impl Lowerer {
         widths.insert(0, base_loop_tile_width);
 
         let factor_loop_iterator: Vec<Expr> = (0..split_factors.len())
-            .map(|ind| Expr::Ident(format!("{}_{ind}", base_iterator_ident.clone())))
+            .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident.clone(), ind + 1)))
             .collect();
 
         let mut iterators = factor_loop_iterator;
-        iterators.insert(0, Expr::Ident(base_iterator_ident.clone()));
+        iterators.insert(
+            0,
+            Expr::Ident(
+                format!("{base_iterator_ident}_0"), //base_iterator_ident.clone()
+            ),
+        );
 
         // highest rank iterator iterates elementwise; all others iterate tilewise;
         // remove prior to total_width calculation
@@ -801,13 +839,8 @@ impl Lowerer {
 
         vec![
             Statement::Declaration {
-                ident: "tmp".to_string(),
-                value: reconstructed_index,
-                type_: Type::Int(false),
-            },
-            Statement::Declaration {
                 ident: base_iterator_ident.clone(),
-                value: Expr::Ident("tmp".to_string()),
+                value: reconstructed_index,
                 type_: Type::Int(false),
             },
             Statement::Skip {
