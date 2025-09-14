@@ -97,7 +97,7 @@ impl<'a> Tokenizer<'a> {
             return Ok(Token::Int(self.consume_int()));
         }
 
-        if c.is_alphabetic() || c.is_numeric() || c == '_' || c == '(' || c == ')' || c == ',' {
+        if c.is_alphabetic() || c.is_numeric() || c == '_' || c == '(' || c == ')' {
             return Ok(Token::Symbol(self.consume_str()));
         }
 
@@ -160,8 +160,7 @@ impl<'a> Tokenizer<'a> {
                 || self.peek_char() == '_'
                 || self.peek_char() == '\''
                 || self.peek_char() == '('
-                || self.peek_char() == ')'
-                || self.peek_char() == ',')
+                || self.peek_char() == ')')
         {
             self.consume_char();
         }
