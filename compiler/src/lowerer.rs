@@ -785,56 +785,30 @@ impl Lowerer {
         base_iterator_ident: &String,
         base_bound_ident: &String,
         split_factors: &Vec<usize>,
-        root: bool,
+        _root: bool,
     ) -> Vec<Statement> {
-        let factor_loop_widths: Vec<Expr> = split_factors
-            .iter()
-            .map(|factor| Expr::Int(*factor))
+        let iterators: Vec<Expr> = (0..=split_factors.len())
+            .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident, ind)))
             .collect();
 
-        // number of elements per iteration of base loop
-        let base_loop_tile_width = Expr::Op {
-            op: '*',
-            inputs: factor_loop_widths.clone(),
-        };
-
-        let mut widths = factor_loop_widths;
-        widths.insert(0, base_loop_tile_width);
-
-        let factor_loop_iterator: Vec<Expr> = (0..split_factors.len())
-            .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident.clone(), ind + 1)))
-            .collect();
-
-        let mut iterators = factor_loop_iterator;
-        iterators.insert(
-            0,
-            Expr::Ident(
-                format!("{base_iterator_ident}_0"), //base_iterator_ident.clone()
-            ),
-        );
-
-        // highest rank iterator iterates elementwise; all others iterate tilewise;
-        // remove prior to total_width calculation
-        let ultimate_iterator = iterators
-            .pop()
-            .expect("Expected non-empty iterator list for index reconstruction");
-        let _ = widths.pop();
-
-        assert_eq!(widths.len(), iterators.len());
-        let mut total_width: Vec<Expr> = widths
-            .into_iter()
-            .zip(iterators.into_iter())
-            .map(|(width, iterator)| Expr::Op {
-                op: '*',
-                inputs: vec![width, iterator],
-            })
-            .collect();
-
-        total_width.push(ultimate_iterator);
+        let mut weights: Vec<Expr> = Vec::with_capacity(split_factors.len() + 1);
+        let mut acc: usize = split_factors.iter().product();
+        weights.push(Expr::Int(acc));
+        for f in split_factors.iter().take(split_factors.len()) {
+            acc /= *f;
+            weights.push(Expr::Int(acc));
+        }
 
         let reconstructed_index = Expr::Op {
             op: '+',
-            inputs: total_width,
+            inputs: iterators
+                .into_iter()
+                .zip(weights.into_iter())
+                .map(|(it, w)| Expr::Op {
+                    op: '*',
+                    inputs: vec![w, it],
+                })
+                .collect(),
         };
 
         vec![
