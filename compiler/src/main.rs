@@ -54,12 +54,12 @@ fn main() -> Result<(), String> {
     }
 
     // Validate the source type
-    if !(source == "i" || source == "ir") {
+    if !(source == "i") {
         return Err(format!("Error: Unsupported source '{}'", source));
     }
 
     // Validate the target platform
-    if !(target == "rust" || target == "ir" || target == "cuda") {
+    if !(target == "rust" || target == "cuda") {
         return Err(format!("Error: Unsupported target '{}'", target));
     }
 
@@ -92,13 +92,11 @@ fn main() -> Result<(), String> {
             // lower
             Lowerer::new().lower(&graph)
         }
-        "ir" => block::parser::parse(&input),
         &_ => unreachable!(),
     };
 
     let formatted_code = match target {
         "rust" => format_rust_code(RustBackend::render(&block)),
-        "ir" => BlockBackend::render(&block),
         "cuda" => CudaBackend::render(&block),
         &_ => unreachable!(),
     };
