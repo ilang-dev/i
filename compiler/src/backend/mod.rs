@@ -4,11 +4,9 @@ use crate::block::Program;
 
 pub mod c;
 pub mod cuda;
-pub mod rust;
 
 pub use c::CBackend;
 pub use cuda::CudaBackend;
-pub use rust::RustBackend;
 
 pub trait Render {
     fn render(program: &Program) -> String;

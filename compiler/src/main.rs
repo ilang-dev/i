@@ -7,8 +7,8 @@ mod parser;
 mod tokenizer;
 
 use backend::cuda::CudaBackend;
+use backend::c::CBackend;
 
-use crate::backend::rust::RustBackend;
 use crate::backend::Render;
 use crate::graph::Graph;
 use crate::lowerer::Lowerer;
@@ -17,14 +17,6 @@ use crate::parser::Parser;
 use std::io::Read;
 use std::{env, fs, io, process::Command};
 
-// Formats Rust code using rustfmt
-fn format_rust_code(code: String) -> String {
-    let path = "/tmp/tmp.rs";
-    fs::write(&path, code).unwrap();
-    Command::new("rustfmt").arg(&path).status().unwrap();
-    fs::read_to_string(&path).unwrap()
-}
-
 fn main() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
 
@@ -32,7 +24,7 @@ fn main() -> Result<(), String> {
     let mut input_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut source = "i";
-    let mut target = "rust";
+    let mut target = "c";
 
     let mut iter = args.iter().skip(1); // Skip the program name
     while let Some(arg) = iter.next() {
@@ -59,7 +51,7 @@ fn main() -> Result<(), String> {
     }
 
     // Validate the target platform
-    if !(target == "rust" || target == "cuda") {
+    if !(target == "c" || target == "cuda") {
         return Err(format!("Error: Unsupported target '{}'", target));
     }
 
@@ -95,8 +87,8 @@ fn main() -> Result<(), String> {
         &_ => unreachable!(),
     };
 
-    let formatted_code = match target {
-        "rust" => format_rust_code(RustBackend::render(&block)),
+    let code = match target {
+        "c" => CBackend::render(&block),
         "cuda" => CudaBackend::render(&block),
         &_ => unreachable!(),
     };
@@ -104,13 +96,13 @@ fn main() -> Result<(), String> {
     // Write output
     if let Some(path) = output_path {
         if path == "-" {
-            println!("{}", formatted_code);
+            println!("{}", code);
         } else {
-            fs::write(path, formatted_code)
+            fs::write(path, code)
                 .map_err(|e| format!("Failed to write output file: {}", e))?;
         }
     } else {
-        println!("{}", formatted_code);
+        println!("{}", code);
     }
 
     Ok(())
@@ -122,7 +114,7 @@ fn print_help() {
         r#"Usage: ic [OPTIONS] [INPUT] [OUTPUT]
 
 Options:
-  -t, --target <TARGET>  Specify the target platform (default: rust)
+  -t, --target <TARGET>  Specify the target platform (default: c)
   -h, --help             Print this help message
 
 Arguments:
