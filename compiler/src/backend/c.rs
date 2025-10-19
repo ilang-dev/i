@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::backend::{Backend, Build, Render};
-use crate::block::{Arg, Block, Expr, Program, Statement, Type};
+use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -78,15 +78,17 @@ static inline float* ilang_alloc_f32(size_t n, float v) {{
     return p;
 }}
 
-{rank}
-{shape}
+{count}
+{ranks}
+{shapes}
 {library}
 {exec}
 "#,
-            rank = Self::render_rank(&program.rank),
-            shape = Self::render_shape(&program.shape),
+            count = Self::render_statement(&program.count),
+            ranks = Self::render_statement(&program.ranks),
+            shapes = Self::render_statement(&program.shapes),
             library = Self::render_block(&program.library),
-            exec = Self::render_exec(&program.exec)
+            exec = Self::render_statement(&program.exec)
         )
     }
 }
@@ -215,106 +217,125 @@ impl CBackend {
             Expr::Int(x) => format!("{}", x),
             Expr::Scalar(x) => Self::render_float_literal(*x),
             Expr::Op { .. } => Self::render_op(expr),
-            Expr::Indexed { ident, index } => {
-                format!("{ident}[{}]", Self::render_expr(index))
+            Expr::Indexed { expr, index } => {
+                format!("{}[{}]", Self::render_expr(expr), Self::render_expr(index))
             }
         }
     }
 
-    fn render_rank(statement: &Statement) -> String {
-        if let Statement::Function { body, .. } = statement {
-            format!("size_t rank() {{\n{}\n}}\n", Self::render_block(body))
-        } else {
-            panic!("Non-function for rank")
-        }
-    }
-
-    fn render_shape(statement: &Statement) -> String {
-        if let Statement::Function { args, body, .. } = statement {
-            let mut inputs_arrays = args
-                .iter()
-                .filter(|a| matches!(a.type_, Type::ArrayRef(_)))
-                .collect::<Vec<_>>();
-            let _ = inputs_arrays.pop();
-
-            let n_input_arrays = inputs_arrays.len();
-            let input_shape_vecs_string = (0..n_input_arrays)
-                .map(|ind| format!("const size_t* d{ind} = inputs[{ind}].shape;"))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let output_shape_vec_string = "size_t* shape_vec = (size_t*)shape;";
-
-            format!(
-                "void shape(const Tensor* inputs, size_t n_inputs, size_t rank_val, size_t* shape) {{\n{input_shape_vecs_string}\n{output_shape_vec_string}\n{}\n}}\n",
-                Self::render_block(body)
-            )
-        } else {
-            panic!("Non-function for shape")
-        }
-    }
-
-    fn render_exec(statement: &Statement) -> String {
-        if let Statement::Function { args, body, .. } = statement {
-            let mut inputs_arrays = args
-                .iter()
-                .filter(|a| matches!(a.type_, Type::ArrayRef(_)))
-                .collect::<Vec<_>>();
-            let _ = inputs_arrays.pop();
-
-            let n_input_arrays = inputs_arrays.len();
-            let input_shape_vecs_string = (0..n_input_arrays)
-                .map(|ind| format!("const size_t* d{ind} = inputs[{ind}].shape;"))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let input_arrays_string = (0..n_input_arrays)
-                .map(|ind| format!("const float* in{ind} = inputs[{ind}].data;"))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let mut bound_variable_string = String::new();
-            let mut array_arg_ind = 0usize;
-            let mut array_dim_ind = 0usize;
-            let mut n_inputs_arrays_seen = 0usize;
-
-            for arg in args {
-                match arg.type_ {
-                    Type::ArrayRef(_) => {
-                        array_arg_ind += 1;
-                        array_dim_ind = 0;
-                        n_inputs_arrays_seen = array_arg_ind - 1;
-                    }
-                    Type::Int(_) => {
-                        array_dim_ind += 1;
-                        let shape_vec_string = if array_arg_ind > n_input_arrays {
-                            "dout".to_string()
-                        } else {
-                            format!("d{}", n_inputs_arrays_seen)
-                        };
-                        let Expr::Ident(ref bound_ident) = arg.ident else {
-                            panic!()
-                        };
-                        bound_variable_string.push_str(&format!(
-                            "size_t {bound_ident} = {shape_vec_string}[{}];\n",
-                            array_dim_ind - 1
-                        ));
-                    }
-                    _ => {}
-                }
+    fn render_function_signature(signature: &FunctionSignature) -> String {
+        match signature {
+            FunctionSignature::Count => format!("size_t count()"),
+            FunctionSignature::Ranks => format!("void ranks(size_t* ranks)"),
+            FunctionSignature::Shapes => format!("void shapes(size_t** shapes)"),
+            FunctionSignature::Exec => {
+                format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
-
-            let output_shape_vec_string = "const size_t* dout = output->shape;";
-            let output_array_string = "float* out = output->data;";
-
-            format!(
-                "void f(const Tensor* inputs, size_t n_inputs, TensorMut* output) {{\n{input_shape_vecs_string}\n{output_shape_vec_string}\n{input_arrays_string}\n{output_array_string}\n{bound_variable_string}\n{}\n}}\n",
-                Self::render_block(body)
-            )
-        } else {
-            panic!("Non-function for exec")
+            FunctionSignature::Kernel(ident) => {
+                format!("void {ident}(const Tensor* inputs, TensorMut* outputs)")
+            }
         }
     }
+
+    //fn render_ranks_function(statement: &Statement) -> String {
+    //    if let Statement::Function(Function::Ranks(ranks)) = statement {
+    //        format!(
+    //            "void ranks(size_t* ranks) {{ {} }}",
+    //            ranks
+    //                .iter()
+    //                .enumerate()
+    //                .map(|(ind, rank)| format!("ranks[{ind}] = {rank};"))
+    //                .collect::<Vec<_>>()
+    //                .join("\n")
+    //        )
+    //    } else {
+    //        panic!("Non-function for rank")
+    //    }
+    //}
+
+    //fn render_shapes_function(statement: &Statement) -> String {
+    //    if let Statement::Function(Function::Shapes(shapes)) = statement {
+    //        format!(
+    //            "void shapes(size_t** shapes) {{ {} }}",
+    //            shapes
+    //                .iter()
+    //                .enumerate()
+    //                .map(|(shape_ind, shape)| shape
+    //                    .iter()
+    //                    .enumerate()
+    //                    .map(|(dim_ind, dim)| format!("shapes[{shape_ind}][{dim_ind}] = {dim};"))
+    //                    .collect::<Vec<_>>()
+    //                    .join("\n"))
+    //                .collect::<Vec<_>>()
+    //                .join("\n")
+    //        )
+    //    } else {
+    //        panic!("Non-function for rank")
+    //    }
+    //}
+
+    //fn render_exec(statement: &Statement) -> String {
+    //    "// TODO".to_string()
+    //    //if let Statement::Function { args, body, .. } = statement {
+    //    //    let mut inputs_arrays = args
+    //    //        .iter()
+    //    //        .filter(|a| matches!(a.type_, Type::ArrayRef(_)))
+    //    //        .collect::<Vec<_>>();
+    //    //    let _ = inputs_arrays.pop();
+
+    //    //    let n_input_arrays = inputs_arrays.len();
+    //    //    let input_shape_vecs_string = (0..n_input_arrays)
+    //    //        .map(|ind| format!("const size_t* d{ind} = inputs[{ind}].shape;"))
+    //    //        .collect::<Vec<_>>()
+    //    //        .join("\n");
+
+    //    //    let input_arrays_string = (0..n_input_arrays)
+    //    //        .map(|ind| format!("const float* in{ind} = inputs[{ind}].data;"))
+    //    //        .collect::<Vec<_>>()
+    //    //        .join("\n");
+
+    //    //    let mut bound_variable_string = String::new();
+    //    //    let mut array_arg_ind = 0usize;
+    //    //    let mut array_dim_ind = 0usize;
+    //    //    let mut n_inputs_arrays_seen = 0usize;
+
+    //    //    for arg in args {
+    //    //        match arg.type_ {
+    //    //            Type::ArrayRef(_) => {
+    //    //                array_arg_ind += 1;
+    //    //                array_dim_ind = 0;
+    //    //                n_inputs_arrays_seen = array_arg_ind - 1;
+    //    //            }
+    //    //            Type::Int(_) => {
+    //    //                array_dim_ind += 1;
+    //    //                let shape_vec_string = if array_arg_ind > n_input_arrays {
+    //    //                    "dout".to_string()
+    //    //                } else {
+    //    //                    format!("d{}", n_inputs_arrays_seen)
+    //    //                };
+    //    //                let Expr::Ident(ref bound_ident) = arg.ident else {
+    //    //                    panic!()
+    //    //                };
+    //    //                bound_variable_string.push_str(&format!(
+    //    //                    "size_t {bound_ident} = {shape_vec_string}[{}];\n",
+    //    //                    array_dim_ind - 1
+    //    //                ));
+    //    //            }
+    //    //            _ => {}
+    //    //        }
+    //    //    }
+
+    //    //    let output_shape_vec_string = "const size_t* dout = output->shape;";
+    //    //    let output_array_string = "float* out = output->data;";
+
+    //    //    format!(
+    //    //        "void f(const Tensor* inputs, size_t n_inputs, TensorMut* output) {{\n{input_shape_vecs_string}\n{output_shape_vec_string}\n{input_arrays_string}\n{output_array_string}\n{bound_variable_string}\n{}\n}}\n",
+    //    //        Self::render_block(body)
+    //    //    )
+    //    //} else {
+    //    //    panic!("Non-function for exec")
+    //    //}
+    //}
 
     fn render_statement(statement: &Statement) -> String {
         match statement {
@@ -345,16 +366,11 @@ impl CBackend {
                     Self::render_block(body)
                 )
             }
-            Statement::Function { ident, args, body } => {
-                let sig = args
-                    .iter()
-                    .map(|Arg { type_, ident }| {
-                        format!("{} {}", Self::render_type(type_), Self::render_expr(ident))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("void {ident}({sig}) {{\n{}\n}}\n", Self::render_block(body))
-            }
+            Statement::Function { signature, body } => format!(
+                "{}{{{}}}",
+                Self::render_function_signature(signature),
+                Self::render_block(body)
+            ),
             Statement::Return { value } => {
                 format!("return {};", Self::render_expr(value))
             }

@@ -3,9 +3,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 
 use compiler::{
-    backend::{rust::RustBackend, Build, Render},
+    backend::{c::CBackend, Build, Render},
     graph::Graph,
-    lowerer::Lowerer,
+    l2::Lowerer,
     parser::Parser,
 };
 
@@ -43,7 +43,15 @@ impl Component {
     }
 
     fn __str__(&self) -> PyResult<String> {
-        Ok(format!("{:#?}", &self.graph))
+        //Ok(format!("{:#?}", &self.graph))
+        Ok(format!("{:#?}", Lowerer::new().lower(&self.graph)))
+    }
+
+    fn _code(&self) -> PyResult<String> {
+        Ok(format!(
+            "{}",
+            &CBackend::render(&Lowerer::new().lower(&self.graph))
+        ))
     }
 
     #[pyo3(name = "chain")]
@@ -110,7 +118,8 @@ impl Component {
             .collect::<Vec<_>>();
 
         let block = Lowerer::new().lower(&self.graph);
-        let dylib_path = RustBackend::build(&RustBackend::render(&block)).unwrap();
+        let dylib_path = CBackend::build(&CBackend::render(&block)).unwrap();
+        let dylib_path = "lib.so";
 
         unsafe {
             let dylib = Library::new(&dylib_path).unwrap();

@@ -2,16 +2,17 @@ mod ast;
 mod backend;
 mod block;
 mod graph;
-mod lowerer;
+//mod lowerer;
+mod l2;
 mod parser;
 mod tokenizer;
 
-use backend::cuda::CudaBackend;
 use backend::c::CBackend;
+//use backend::cuda::CudaBackend;
 
 use crate::backend::Render;
 use crate::graph::Graph;
-use crate::lowerer::Lowerer;
+use crate::l2::Lowerer;
 use crate::parser::Parser;
 
 use std::io::Read;
@@ -89,7 +90,7 @@ fn main() -> Result<(), String> {
 
     let code = match target {
         "c" => CBackend::render(&block),
-        "cuda" => CudaBackend::render(&block),
+        //"cuda" => CudaBackend::render(&block),
         &_ => unreachable!(),
     };
 
@@ -98,8 +99,7 @@ fn main() -> Result<(), String> {
         if path == "-" {
             println!("{}", code);
         } else {
-            fs::write(path, code)
-                .map_err(|e| format!("Failed to write output file: {}", e))?;
+            fs::write(path, code).map_err(|e| format!("Failed to write output file: {}", e))?;
         }
     } else {
         println!("{}", code);

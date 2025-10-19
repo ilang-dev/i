@@ -3,10 +3,10 @@ use std::{io::Error, path::PathBuf};
 use crate::block::Program;
 
 pub mod c;
-pub mod cuda;
+//pub mod cuda;
 
 pub use c::CBackend;
-pub use cuda::CudaBackend;
+//pub use cuda::CudaBackend;
 
 pub trait Render {
     fn render(program: &Program) -> String;

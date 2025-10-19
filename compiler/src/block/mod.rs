@@ -13,7 +13,7 @@ pub enum Expr {
         inputs: Vec<Expr>,
     },
     Indexed {
-        ident: String, // TODO: Should be Expr (Ident)
+        expr: Box<Expr>, // Should be of variant `Expr::Ident` or `Expr::Indexed`
         index: Box<Expr>,
     },
 }
@@ -31,6 +31,15 @@ pub enum Type {
     Scalar(bool),
     Array(bool),
     ArrayRef(bool),
+}
+
+#[derive(Clone, Debug)]
+pub enum FunctionSignature {
+    Count,
+    Ranks,
+    Shapes,
+    Exec,
+    Kernel(String),
 }
 
 #[derive(Clone, Debug)]
@@ -59,8 +68,7 @@ pub enum Statement {
         value: Expr,
     },
     Function {
-        ident: String,
-        args: Vec<Arg>, // type, ident
+        signature: FunctionSignature,
         body: Block,
     },
     Call {
@@ -76,8 +84,9 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub rank: Statement,  // Should be `Statement::Function`
-    pub shape: Statement, // Should be `Statement::Function`
-    pub library: Block,   // Should consist only of `Statement::Function`s
-    pub exec: Statement,  // Should be `Statement::Function`
+    pub count: Statement,  // Should be `Statement::Function`
+    pub ranks: Statement,  // Should be `Statement::Function`
+    pub shapes: Statement, // Should be `Statement::Function`
+    pub library: Block,    // Should consist only of `Statement::Function`s
+    pub exec: Statement,   // Should be `Statement::Function`
 }
