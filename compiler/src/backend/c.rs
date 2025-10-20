@@ -220,6 +220,7 @@ impl CBackend {
             Expr::Indexed { expr, index } => {
                 format!("{}[{}]", Self::render_expr(expr), Self::render_expr(index))
             }
+            Expr::ShapeOf(expr) => format!("{}.shape", Self::render_expr(expr)),
         }
     }
 

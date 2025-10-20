@@ -16,6 +16,7 @@ pub enum Expr {
         expr: Box<Expr>, // Should be of variant `Expr::Ident` or `Expr::Indexed`
         index: Box<Expr>,
     },
+    ShapeOf(Box<Expr>),
 }
 
 // Should this be an Expr variant?
