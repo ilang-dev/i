@@ -73,7 +73,8 @@ pub enum Statement {
     },
     Call {
         ident: String,
-        args: Vec<Arg>, // need type info to know whether to render ref
+        in_args: Vec<Expr>,  // must be of variant `Expr::Ident`
+        out_args: Vec<Expr>, // must be of variant `Expr::Ident`
     }, // This is a Statement because it's only ever used as one
 }
 

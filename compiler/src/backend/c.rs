@@ -232,7 +232,7 @@ impl CBackend {
                 format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
             FunctionSignature::Kernel(ident) => {
-                format!("void {ident}(const Tensor* inputs, TensorMut* outputs)")
+                format!("void {ident}(const Tensor* inputs, TensorMut output)")
             }
         }
     }
@@ -374,10 +374,15 @@ impl CBackend {
             Statement::Return { value } => {
                 format!("return {};", Self::render_expr(value))
             }
-            Statement::Call { ident, args } => {
-                let a = args
+            Statement::Call {
+                ident,
+                in_args,
+                out_args,
+            } => {
+                let a = in_args
                     .iter()
-                    .map(|Arg { ident, .. }| Self::render_expr(ident))
+                    .chain(out_args.iter())
+                    .map(|arg| Self::render_expr(arg))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{ident}({});", a)

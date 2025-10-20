@@ -336,7 +336,7 @@ impl Graph {
         }
     }
 
-    fn leaves(&self) -> Vec<NodeRef> {
+    pub fn leaves(&self) -> Vec<NodeRef> {
         use std::collections::HashSet;
         let mut out = Vec::new();
         let mut seen = HashSet::new();

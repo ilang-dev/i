@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Graph, Node, NodeBody};
@@ -34,12 +36,42 @@ impl Lowerer {
         // - [actually not this] kernel call site
 
         let mut library = Block::default();
+        let mut exec_block = Block::default();
 
-        let (ranks, shapes): (Vec<usize>, Vec<Vec<usize>>) = graph
-            .roots()
+        let node_id_to_input_index: HashMap<usize, usize> = graph
+            .leaves()
             .iter()
-            .map(|node| Self::lower_node(&node.lock().unwrap(), &mut library))
-            .unzip();
+            .enumerate()
+            .map(|(ind, node)| (node.lock().unwrap().id, ind))
+            .collect();
+
+        // TODO put this note in the appropriate place, or otherwise document
+        // "shapes" are encoded as (usize, usize) "addresses" pointing to
+        // (input index, dimension index)
+
+        // TODO: can this really not be an iterator? this is so ugly
+        let mut topo_inds: Vec<usize> = vec![];
+        let mut ranks: Vec<usize> = vec![];
+        let mut shapes: Vec<Vec<(usize, usize)>> = vec![];
+        for node in graph.roots() {
+            let (topo_ind, rank, shape) = Self::lower_node(
+                &node.lock().unwrap(),
+                &mut library,
+                &mut exec_block,
+                &node_id_to_input_index,
+            );
+            topo_inds.push(topo_ind);
+            ranks.push(rank);
+            shapes.push(shape);
+        }
+        //let (topo_inds, ranks, shapes): (Vec<usize>, Vec<usize>, Vec<Vec<usize>>) = graph
+        //    .roots()
+        //    .iter()
+        //    .map(|node| Self::lower_node(&node.lock().unwrap(), &mut library))
+        //    .unzip(); // unzip only works on 2-tuples
+
+        // TODO convert from shape addressed to expressions
+        let shapes = vec![vec![2, 2], vec![2, 2]];
 
         Program {
             count: Self::count(graph.roots().len()),
@@ -48,15 +80,90 @@ impl Lowerer {
             library,
             exec: Statement::Function {
                 signature: FunctionSignature::Exec,
-                body: Block::default(),
-            }, // TODO
+                body: exec_block,
+            },
         }
     }
 
-    /// Lower node. Update library, return (rank, shape)
-    fn lower_node(node: &Node, library: &mut Block) -> (usize, Vec<usize>) {
-        (3, vec![3, 4, 5]) // TODO
+    /// Lower node. Update library, return (topolical index, rank, shape address)
+    fn lower_node(
+        node: &Node,
+        library: &mut Block,
+        exec_block: &mut Block,
+        node_id_to_input_index: &HashMap<usize, usize>,
+    ) -> (usize, usize, Vec<(usize, usize)>) {
+        let topo_ind = library.statements.len();
+        let library_function_ident = format!("f{topo_ind}");
+        let buffer_ident = format!("s{topo_ind}");
+
+        let NodeBody::Interior {
+            op,
+            schedule,
+            shape,
+        } = &node.body
+        else {
+            return (
+                topo_ind,
+                node.index.len(),
+                vec![(0, 0), (0, 1)], // TODO
+                                      // get the input index, query its shape
+                                      //(0..node.index.len())).map(|ind| format!("{}"))
+            );
+        };
+
+        // obviously don't recurse on leaf nodes
+
+        // TODO create library function
+        //      this only requires children to be lowered first in fusion cases
+        library.statements.push(Statement::Function {
+            signature: FunctionSignature::Kernel(library_function_ident.clone()),
+            body: Block::default(), // TODO
+        });
+
+        // create allocation
+        if let NodeBody::Interior {
+            op,
+            schedule,
+            shape,
+        } = &node.body
+        {
+            exec_block.statements.push(Statement::Declaration {
+                ident: buffer_ident.clone(),
+                value: Expr::Alloc {
+                    initial_value: Box::new(match op {
+                        '>' => Expr::Scalar(f32::NEG_INFINITY),
+                        '<' => Expr::Scalar(f32::INFINITY),
+                        '*' => Expr::Scalar(1.),
+                        _ => Expr::Scalar(0.),
+                    }),
+                    shape: vec![], // Vec<Expr>, // TODO
+                },
+                type_: Type::Array(true),
+            });
+        };
+
+        // TODO create call site
+        //      need to know child buffer idents
+        //      need to know own buffer ident
+        //      need kernel ident
+        exec_block.statements.push(Statement::Call {
+            ident: library_function_ident,
+            in_args: vec![], // TODO idents of child buffers (having been lowered)
+            out_args: vec![Expr::Ident(buffer_ident)],
+        });
+
+        // TODO create drop
+
+        (
+            topo_ind,
+            node.index.len(),
+            vec![(0, 0), (0, 1)], // TODO
+        )
     }
+
+    ///// Get allocation declaration
+    //fn create_alloc_declaration(node: &Node, topo_ind: usize) -> Statement {
+    //}
 
     /// Get IR for `count` function
     fn count(count: usize) -> Statement {
