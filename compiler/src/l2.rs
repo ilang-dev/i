@@ -113,16 +113,16 @@ impl Lowerer {
         let library_function_ident = format!("f{topo_ind}");
         let buffer_ident = format!("s{topo_ind}");
 
-        // TODO the library function needs shape in terms of children
+        let local_shape_addrs = Self::get_local_shape_addrs(node);
 
-        // TODO create library function
-        //      this only requires children to be lowered first in fusion cases
+        // TODO the library function needs shape in terms of children
+        // TODO alloc needs shape in terms of inputs (Expr)
+
+        // create library function
         self.library.statements.push(Statement::Function {
             signature: FunctionSignature::Kernel(library_function_ident.clone()),
             body: Block::default(), // TODO
         });
-
-        // TODO alloc needs shape in terms of inputs (Expr)
 
         // create allocation
         self.exec_block.statements.push(Statement::Declaration {
@@ -139,10 +139,7 @@ impl Lowerer {
             type_: Type::Array(true),
         });
 
-        // TODO create call site
-        //      need to know child buffer idents
-        //      need to know own buffer ident
-        //      need kernel ident
+        // create call site
         self.exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
             in_args: child_store_idents,
@@ -158,6 +155,26 @@ impl Lowerer {
             node.index.len(),
             vec![(0, 0), (0, 1)], // TODO use child shape addrs; depends on fusion
         )
+    }
+
+    /// Compute shape address from index and child indices
+    /// written by ChatGPT
+    fn get_local_shape_addrs(node: &Node) -> Vec<(usize, usize)> {
+        let child_indexes: Vec<String> = node
+            .children()
+            .iter()
+            .map(|(_, child_ind)| child_ind.clone())
+            .collect();
+        let map: HashMap<char, (usize, usize)> = {
+            let mut m = HashMap::new();
+            for (i, s) in child_indexes.iter().enumerate() {
+                for (d, c) in s.chars().enumerate() {
+                    m.entry(c).or_insert((i, d));
+                }
+            }
+            m
+        };
+        node.index.chars().map(|c| *map.get(&c).unwrap()).collect()
     }
 
     ///// Get allocation declaration
