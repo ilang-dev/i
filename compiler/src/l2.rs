@@ -70,9 +70,6 @@ impl Lowerer {
         //    .map(|node| Self::lower_node(&node.lock().unwrap(), &mut library))
         //    .unzip(); // unzip only works on 2-tuples
 
-        // TODO convert from shape addressed to expressions
-        //let shapes = vec![vec![2, 2], vec![2, 2]];
-
         Program {
             count: Self::count(graph.roots().len()),
             ranks: Self::ranks(&ranks),
@@ -105,13 +102,15 @@ impl Lowerer {
             return (
                 topo_ind,
                 node.index.len(),
-                vec![(0, 0), (0, 1)], // TODO
-                                      // get the input index, query its shape
-                                      //(0..node.index.len())).map(|ind| format!("{}"))
+                (0..node.index.len())
+                    .map(|dim_ind| (node_id_to_input_index[&node.id], dim_ind))
+                    .collect(),
             );
         };
 
         // obviously don't recurse on leaf nodes
+
+        // TODO the library function needs shape in terms of children
 
         // TODO create library function
         //      this only requires children to be lowered first in fusion cases
@@ -120,27 +119,22 @@ impl Lowerer {
             body: Block::default(), // TODO
         });
 
+        // TODO alloc needs shape in terms of inputs (Expr)
+
         // create allocation
-        if let NodeBody::Interior {
-            op,
-            schedule,
-            shape,
-        } = &node.body
-        {
-            exec_block.statements.push(Statement::Declaration {
-                ident: buffer_ident.clone(),
-                value: Expr::Alloc {
-                    initial_value: Box::new(match op {
-                        '>' => Expr::Scalar(f32::NEG_INFINITY),
-                        '<' => Expr::Scalar(f32::INFINITY),
-                        '*' => Expr::Scalar(1.),
-                        _ => Expr::Scalar(0.),
-                    }),
-                    shape: vec![], // Vec<Expr>, // TODO
-                },
-                type_: Type::Array(true),
-            });
-        };
+        exec_block.statements.push(Statement::Declaration {
+            ident: buffer_ident.clone(),
+            value: Expr::Alloc {
+                initial_value: Box::new(match op {
+                    '>' => Expr::Scalar(f32::NEG_INFINITY),
+                    '<' => Expr::Scalar(f32::INFINITY),
+                    '*' => Expr::Scalar(1.),
+                    _ => Expr::Scalar(0.),
+                }),
+                shape: vec![], // Vec<Expr>, // TODO
+            },
+            type_: Type::Array(true),
+        });
 
         // TODO create call site
         //      need to know child buffer idents
@@ -154,10 +148,12 @@ impl Lowerer {
 
         // TODO create drop
 
+        // TODO the shape returned must be in terms of the inputs
+
         (
             topo_ind,
             node.index.len(),
-            vec![(0, 0), (0, 1)], // TODO
+            vec![(0, 0), (0, 1)], // TODO use child shape addrs; depends on fusion
         )
     }
 
