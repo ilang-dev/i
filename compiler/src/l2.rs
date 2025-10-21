@@ -55,20 +55,15 @@ impl Lowerer {
         // (input index, dimension index)
 
         // TODO: can this really not be an iterator? this is so ugly
-        let mut topo_inds: Vec<usize> = vec![];
+        let mut store_idents: Vec<Expr> = vec![];
         let mut ranks: Vec<usize> = vec![];
         let mut shapes: Vec<Vec<(usize, usize)>> = vec![];
         for node in graph.roots() {
-            let (topo_ind, rank, shape) = self.lower_node(&node.lock().unwrap());
-            topo_inds.push(topo_ind);
+            let (store_ident, rank, shape) = self.lower_node(&node.lock().unwrap());
+            store_idents.push(store_ident);
             ranks.push(rank);
             shapes.push(shape);
         }
-        //let (topo_inds, ranks, shapes): (Vec<usize>, Vec<usize>, Vec<Vec<usize>>) = graph
-        //    .roots()
-        //    .iter()
-        //    .map(|node| Self::lower_node(&node.lock().unwrap(), &mut library))
-        //    .unzip(); // unzip only works on 2-tuples
 
         Program {
             count: Self::count(graph.roots().len()),
@@ -82,38 +77,40 @@ impl Lowerer {
         }
     }
 
-    /// Lower node. Update library, return (topolical index, rank, shape address)
-    fn lower_node(&mut self, node: &Node) -> (usize, usize, Vec<(usize, usize)>) {
-        let topo_ind = self.library.statements.len();
-        let library_function_ident = format!("f{topo_ind}");
-        let buffer_ident = format!("s{topo_ind}");
-
+    /// Lower node. Update library, return (buffer ident, rank, shape address)
+    fn lower_node(&mut self, node: &Node) -> (Expr, usize, Vec<(usize, usize)>) {
         let NodeBody::Interior {
             op,
             schedule,
             shape,
         } = &node.body
         else {
-            return (
-                topo_ind,
-                node.index.len(),
-                (0..node.index.len())
-                    .map(|dim_ind| (self.node_id_to_input_index[&node.id], dim_ind))
-                    .collect(),
-            );
+            let input_ind = self.node_id_to_input_index[&node.id];
+            let store_ident = Expr::Indexed {
+                expr: Box::new(Expr::Ident("inputs".into())),
+                index: Box::new(Expr::Int(input_ind)),
+            };
+            let rank = node.index.len();
+            let shape_addr = (0..node.index.len())
+                .map(|dim_ind| (input_ind, dim_ind))
+                .collect();
+            return (store_ident, rank, shape_addr);
         };
 
-        // TODO obviously don't recurse on leaf nodes
-
-        let mut child_topo_inds: Vec<usize> = vec![];
+        // lower children
+        let mut child_store_idents: Vec<Expr> = vec![];
         let mut child_ranks: Vec<usize> = vec![];
         let mut child_shapes: Vec<Vec<(usize, usize)>> = vec![];
         for (node, _) in node.children() {
-            let (topo_ind, rank, shape) = self.lower_node(&node);
-            child_topo_inds.push(topo_ind);
+            let (store_ident, rank, shape) = self.lower_node(&node);
+            child_store_idents.push(store_ident);
             child_ranks.push(rank);
             child_shapes.push(shape);
         }
+
+        let topo_ind = self.library.statements.len();
+        let library_function_ident = format!("f{topo_ind}");
+        let buffer_ident = format!("s{topo_ind}");
 
         // TODO the library function needs shape in terms of children
 
@@ -147,8 +144,8 @@ impl Lowerer {
         //      need kernel ident
         self.exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
-            in_args: vec![], // TODO idents of child buffers (having been lowered)
-            out_args: vec![Expr::Ident(buffer_ident)],
+            in_args: child_store_idents,
+            out_args: vec![Expr::Ident(buffer_ident.clone())],
         });
 
         // TODO create drop
@@ -156,7 +153,7 @@ impl Lowerer {
         // TODO the shape returned must be in terms of the inputs
 
         (
-            topo_ind,
+            Expr::Ident(buffer_ident),
             node.index.len(),
             vec![(0, 0), (0, 1)], // TODO use child shape addrs; depends on fusion
         )
