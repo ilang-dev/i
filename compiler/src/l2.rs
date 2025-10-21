@@ -85,6 +85,7 @@ impl Lowerer {
             shape,
         } = &node.body
         else {
+            // handle leaf nodes
             let input_ind = self.node_id_to_input_index[&node.id];
             let store_ident = Expr::Indexed {
                 expr: Box::new(Expr::Ident("inputs".into())),
