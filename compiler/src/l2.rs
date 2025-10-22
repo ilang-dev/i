@@ -25,8 +25,6 @@ impl Lowerer {
     // must map any relevant input values to idents (tensors and dims), perform any
     // allocations (and eventually frees), and launch kernels
     pub fn lower(&mut self, graph: &Graph) -> Program {
-        // TODO remove `&self` arg
-
         // TODO what needs to be passed up from the recursion?
         //      - rank value
         //      - whatever necessary to populate `shapes`
@@ -57,7 +55,7 @@ impl Lowerer {
         // TODO: can this really not be an iterator? this is so ugly
         let mut store_idents: Vec<Expr> = vec![];
         let mut ranks: Vec<usize> = vec![];
-        let mut shapes: Vec<Vec<(usize, usize)>> = vec![];
+        let mut shapes: Vec<Vec<Expr>> = vec![];
         for node in graph.roots() {
             let (store_ident, rank, shape) = self.lower_node(&node.lock().unwrap());
             store_idents.push(store_ident);
@@ -78,7 +76,7 @@ impl Lowerer {
     }
 
     /// Lower node. Update library, return (buffer ident, rank, shape address)
-    fn lower_node(&mut self, node: &Node) -> (Expr, usize, Vec<(usize, usize)>) {
+    fn lower_node(&mut self, node: &Node) -> (Expr, usize, Vec<Expr>) {
         let NodeBody::Interior {
             op,
             schedule,
@@ -93,7 +91,10 @@ impl Lowerer {
             };
             let rank = node.index.len();
             let shape_addr = (0..node.index.len())
-                .map(|dim_ind| (input_ind, dim_ind))
+                .map(|dim_ind| Expr::Indexed {
+                    expr: Box::new(Expr::ShapeOf(Box::new(store_ident.clone()))),
+                    index: Box::new(Expr::Int(dim_ind)),
+                })
                 .collect();
             return (store_ident, rank, shape_addr);
         };
@@ -101,7 +102,7 @@ impl Lowerer {
         // lower children
         let mut child_store_idents: Vec<Expr> = vec![];
         let mut child_ranks: Vec<usize> = vec![];
-        let mut child_shapes: Vec<Vec<(usize, usize)>> = vec![];
+        let mut child_shapes: Vec<Vec<Expr>> = vec![];
         for (node, _) in node.children() {
             let (store_ident, rank, shape) = self.lower_node(&node);
             child_store_idents.push(store_ident);
@@ -113,8 +114,6 @@ impl Lowerer {
         let library_function_ident = format!("f{topo_ind}");
         let buffer_ident = format!("s{topo_ind}");
 
-        let local_shape_addrs = Self::get_local_shape_addrs(node);
-
         // TODO the library function needs shape in terms of children
         // TODO alloc needs shape in terms of inputs (Expr)
 
@@ -123,6 +122,11 @@ impl Lowerer {
             signature: FunctionSignature::Kernel(library_function_ident.clone()),
             body: Block::default(), // TODO
         });
+
+        let shape: Vec<_> = Self::get_local_shape_addrs(node)
+            .iter()
+            .map(|(input_ind, dim_ind)| child_shapes[*input_ind][*dim_ind].clone())
+            .collect();
 
         // create allocation
         self.exec_block.statements.push(Statement::Declaration {
@@ -134,7 +138,7 @@ impl Lowerer {
                     '*' => Expr::Scalar(1.),
                     _ => Expr::Scalar(0.),
                 }),
-                shape: vec![], // Vec<Expr>, // TODO
+                shape: shape.clone(), // TODO account for fusion
             },
             type_: Type::Array(true),
         });
@@ -148,13 +152,12 @@ impl Lowerer {
 
         // TODO create drop
 
-        // TODO the shape returned must be in terms of the inputs
-
-        (
-            Expr::Ident(buffer_ident),
-            node.index.len(),
-            vec![(0, 0), (0, 1)], // TODO use child shape addrs; depends on fusion
-        )
+        // TODO I think the shape output here can be seen as tracking the semantic
+        //      shape rather than the shape of the physical buffers. All this is used
+        //      for is determining the output shape from the input shape which does
+        //      depend on the intermediate buffer layout, but only the semantics of
+        //      the expression. (probably write this down somewhere)
+        (Expr::Ident(buffer_ident), node.index.len(), shape)
     }
 
     /// Compute shape address from index and child indices
@@ -176,10 +179,6 @@ impl Lowerer {
         };
         node.index.chars().map(|c| *map.get(&c).unwrap()).collect()
     }
-
-    ///// Get allocation declaration
-    //fn create_alloc_declaration(node: &Node, topo_ind: usize) -> Statement {
-    //}
 
     /// Get IR for `count` function
     fn count(count: usize) -> Statement {
@@ -214,7 +213,7 @@ impl Lowerer {
     }
 
     /// Get IR for `shapes` function
-    fn shapes(shapes: &Vec<Vec<(usize, usize)>>) -> Statement {
+    fn shapes(shapes: &Vec<Vec<Expr>>) -> Statement {
         Statement::Function {
             signature: FunctionSignature::Shapes,
             body: Block {
@@ -222,27 +221,54 @@ impl Lowerer {
                     .iter()
                     .enumerate()
                     .flat_map(|(shape_ind, shape)| {
-                        shape
-                            .iter()
-                            .map(move |(input_ind, dim_ind)| Statement::Assignment {
+                        shape.iter().enumerate().map(move |(dim_ind, dim_expr)| {
+                            Statement::Assignment {
                                 left: Expr::Indexed {
                                     expr: Box::new(Expr::Indexed {
                                         expr: Box::new(Expr::Ident("shape".into())),
                                         index: Box::new(Expr::Int(shape_ind)),
                                     }),
-                                    index: Box::new(Expr::Int(*dim_ind)),
+                                    index: Box::new(Expr::Int(dim_ind)),
                                 },
-                                right: Expr::Indexed {
-                                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
-                                        expr: Box::new(Expr::Ident("inputs".into())),
-                                        index: Box::new(Expr::Int(*input_ind)),
-                                    }))),
-                                    index: Box::new(Expr::Int(*dim_ind)),
-                                },
-                            })
+                                right: dim_expr.clone(), // TODO avoid clone by taking ownership of input?
+                            }
+                        })
                     })
                     .collect(),
             },
         }
     }
+
+    ///// Get IR for `shapes` function
+    //fn _shapes(shapes: &Vec<Vec<Expr>>) -> Statement {
+    //    Statement::Function {
+    //        signature: FunctionSignature::Shapes,
+    //        body: Block {
+    //            statements: shapes
+    //                .iter()
+    //                .enumerate()
+    //                .flat_map(|(shape_ind, shape)| {
+    //                    shape
+    //                        .iter()
+    //                        .map(move |(input_ind, dim_ind)| Statement::Assignment {
+    //                            left: Expr::Indexed {
+    //                                expr: Box::new(Expr::Indexed {
+    //                                    expr: Box::new(Expr::Ident("shape".into())),
+    //                                    index: Box::new(Expr::Int(shape_ind)),
+    //                                }),
+    //                                index: Box::new(Expr::Int(*dim_ind)),
+    //                            },
+    //                            right: Expr::Indexed {
+    //                                expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+    //                                    expr: Box::new(Expr::Ident("inputs".into())),
+    //                                    index: Box::new(Expr::Int(*input_ind)),
+    //                                }))),
+    //                                index: Box::new(Expr::Int(*dim_ind)),
+    //                            },
+    //                        })
+    //                })
+    //                .collect(),
+    //        },
+    //    }
+    //}
 }
