@@ -238,37 +238,4 @@ impl Lowerer {
             },
         }
     }
-
-    ///// Get IR for `shapes` function
-    //fn _shapes(shapes: &Vec<Vec<Expr>>) -> Statement {
-    //    Statement::Function {
-    //        signature: FunctionSignature::Shapes,
-    //        body: Block {
-    //            statements: shapes
-    //                .iter()
-    //                .enumerate()
-    //                .flat_map(|(shape_ind, shape)| {
-    //                    shape
-    //                        .iter()
-    //                        .map(move |(input_ind, dim_ind)| Statement::Assignment {
-    //                            left: Expr::Indexed {
-    //                                expr: Box::new(Expr::Indexed {
-    //                                    expr: Box::new(Expr::Ident("shape".into())),
-    //                                    index: Box::new(Expr::Int(shape_ind)),
-    //                                }),
-    //                                index: Box::new(Expr::Int(*dim_ind)),
-    //                            },
-    //                            right: Expr::Indexed {
-    //                                expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
-    //                                    expr: Box::new(Expr::Ident("inputs".into())),
-    //                                    index: Box::new(Expr::Int(*input_ind)),
-    //                                }))),
-    //                                index: Box::new(Expr::Int(*dim_ind)),
-    //                            },
-    //                        })
-    //                })
-    //                .collect(),
-    //        },
-    //    }
-    //}
 }
