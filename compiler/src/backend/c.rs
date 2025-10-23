@@ -232,9 +232,10 @@ impl CBackend {
             FunctionSignature::Exec => {
                 format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
-            FunctionSignature::Kernel(ident) => {
-                format!("void {ident}(const Tensor* inputs, TensorMut output)")
-            }
+            FunctionSignature::Kernel(ident) => format!(
+                "void {}(const Tensor* inputs, TensorMut output)",
+                Self::render_expr(ident)
+            ),
         }
     }
 
@@ -353,7 +354,11 @@ impl CBackend {
                 type_,
             } => {
                 let ty = Self::render_type(type_);
-                format!("{ty} {ident} = {};", Self::render_expr(value))
+                format!(
+                    "{ty} {} = {};",
+                    Self::render_expr(ident),
+                    Self::render_expr(value)
+                )
             }
             Statement::Skip { index, bound } => {
                 format!("if (({}) >= ({})) {{ continue; }}", index, bound)
@@ -386,7 +391,7 @@ impl CBackend {
                     .map(|arg| Self::render_expr(arg))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{ident}({});", a)
+                format!("{}({});", Self::render_expr(ident), a)
             }
         }
     }

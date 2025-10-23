@@ -40,7 +40,7 @@ pub enum FunctionSignature {
     Ranks,
     Shapes,
     Exec,
-    Kernel(String),
+    Kernel(Expr), // Inner `Expr` must be of variant `Ident`
 }
 
 #[derive(Clone, Debug)]
@@ -50,7 +50,7 @@ pub enum Statement {
         right: Expr,
     },
     Declaration {
-        ident: String,
+        ident: Expr, // must be an "LValue"
         value: Expr,
         type_: Type,
     },
@@ -73,7 +73,7 @@ pub enum Statement {
         body: Block,
     },
     Call {
-        ident: String,
+        ident: Expr,         // must be of variant `Expr::Ident`
         in_args: Vec<Expr>,  // must be of variant `Expr::Ident`
         out_args: Vec<Expr>, // must be of variant `Expr::Ident`
     }, // This is a Statement because it's only ever used as one

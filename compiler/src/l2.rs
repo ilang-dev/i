@@ -56,8 +56,8 @@ impl Lowerer {
         let mut store_idents: Vec<Expr> = vec![];
         let mut ranks: Vec<usize> = vec![];
         let mut shapes: Vec<Vec<Expr>> = vec![];
-        for node in graph.roots() {
-            let (store_ident, rank, shape) = self.lower_node(&node.lock().unwrap());
+        for (root_ind, node) in graph.roots().iter().enumerate() {
+            let (store_ident, rank, shape) = self.lower_node(&node.lock().unwrap(), Some(root_ind));
             store_idents.push(store_ident);
             ranks.push(rank);
             shapes.push(shape);
@@ -76,7 +76,7 @@ impl Lowerer {
     }
 
     /// Lower node. Update library, return (buffer ident, rank, shape address)
-    fn lower_node(&mut self, node: &Node) -> (Expr, usize, Vec<Expr>) {
+    fn lower_node(&mut self, node: &Node, root_ind: Option<usize>) -> (Expr, usize, Vec<Expr>) {
         let NodeBody::Interior {
             op,
             schedule,
@@ -104,15 +104,21 @@ impl Lowerer {
         let mut child_ranks: Vec<usize> = vec![];
         let mut child_shapes: Vec<Vec<Expr>> = vec![];
         for (node, _) in node.children() {
-            let (store_ident, rank, shape) = self.lower_node(&node);
+            let (store_ident, rank, shape) = self.lower_node(&node, None);
             child_store_idents.push(store_ident);
             child_ranks.push(rank);
             child_shapes.push(shape);
         }
 
         let topo_ind = self.library.statements.len();
-        let library_function_ident = format!("f{topo_ind}");
-        let buffer_ident = format!("s{topo_ind}");
+        let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
+        let buffer_ident = match root_ind {
+            None => Expr::Ident(format!("s{topo_ind}")),
+            Some(root_ind) => Expr::Indexed {
+                expr: Box::new(Expr::Ident("outputs".into())),
+                index: Box::new(Expr::Int(root_ind)),
+            },
+        };
 
         // TODO the library function needs shape in terms of children
         // TODO alloc needs shape in terms of inputs (Expr)
@@ -129,25 +135,27 @@ impl Lowerer {
             .collect();
 
         // create allocation
-        self.exec_block.statements.push(Statement::Declaration {
-            ident: buffer_ident.clone(),
-            value: Expr::Alloc {
-                initial_value: Box::new(match op {
-                    '>' => Expr::Scalar(f32::NEG_INFINITY),
-                    '<' => Expr::Scalar(f32::INFINITY),
-                    '*' => Expr::Scalar(1.),
-                    _ => Expr::Scalar(0.),
-                }),
-                shape: shape.clone(), // TODO account for fusion
-            },
-            type_: Type::Array(true),
-        });
+        if root_ind.is_none() {
+            self.exec_block.statements.push(Statement::Declaration {
+                ident: buffer_ident.clone(),
+                value: Expr::Alloc {
+                    initial_value: Box::new(match op {
+                        '>' => Expr::Scalar(f32::NEG_INFINITY),
+                        '<' => Expr::Scalar(f32::INFINITY),
+                        '*' => Expr::Scalar(1.),
+                        _ => Expr::Scalar(0.),
+                    }),
+                    shape: shape.clone(), // TODO account for fusion
+                },
+                type_: Type::Array(true),
+            });
+        }
 
         // create call site
         self.exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
             in_args: child_store_idents,
-            out_args: vec![Expr::Ident(buffer_ident.clone())],
+            out_args: vec![buffer_ident.clone()],
         });
 
         // TODO create drop
@@ -157,7 +165,7 @@ impl Lowerer {
         //      for is determining the output shape from the input shape which does
         //      depend on the intermediate buffer layout, but only the semantics of
         //      the expression. (probably write this down somewhere)
-        (Expr::Ident(buffer_ident), node.index.len(), shape)
+        (buffer_ident, node.index.len(), shape)
     }
 
     /// Compute shape address from index and child indices
