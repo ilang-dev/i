@@ -12,7 +12,7 @@ use backend::c::CBackend;
 
 use crate::backend::Render;
 use crate::graph::Graph;
-use crate::l2::Lowerer;
+use crate::l2::lower;
 use crate::parser::Parser;
 
 use std::io::Read;
@@ -83,7 +83,7 @@ fn main() -> Result<(), String> {
             };
 
             // lower
-            Lowerer::new().lower(&graph)
+            lower(&graph)
         }
         &_ => unreachable!(),
     };
