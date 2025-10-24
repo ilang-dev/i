@@ -52,21 +52,17 @@ impl Lowerer {
         // "shapes" are encoded as (usize, usize) "addresses" pointing to
         // (input index, dimension index)
 
-        // TODO: can this really not be an iterator? this is so ugly
-        let mut store_idents: Vec<Expr> = vec![];
-        let mut ranks: Vec<usize> = vec![];
-        let mut shapes: Vec<Vec<Expr>> = vec![];
-        for (root_ind, node) in graph.roots().iter().enumerate() {
-            let (store_ident, rank, shape) = self.lower_node(&node.lock().unwrap(), Some(root_ind));
-            store_idents.push(store_ident);
-            ranks.push(rank);
-            shapes.push(shape);
-        }
+        let lowereds: Vec<(Expr, usize, Vec<Expr>)> = graph
+            .roots()
+            .iter()
+            .enumerate()
+            .map(|(root_ind, node)| self.lower_node(&node.lock().unwrap(), Some(root_ind)))
+            .collect();
 
         Program {
             count: Self::count(graph.roots().len()),
-            ranks: Self::ranks(&ranks),
-            shapes: Self::shapes(&shapes),
+            ranks: Self::ranks(&lowereds.iter().map(|l| l.1).collect()),
+            shapes: Self::shapes(&lowereds.iter().map(|l| l.2.clone()).collect()),
             library: self.library.clone(), // TODO can we avoid clone?
             exec: Statement::Function {
                 signature: FunctionSignature::Exec,
@@ -99,16 +95,13 @@ impl Lowerer {
             return (store_ident, rank, shape_addr);
         };
 
-        // lower children
-        let mut child_store_idents: Vec<Expr> = vec![];
-        let mut child_ranks: Vec<usize> = vec![];
-        let mut child_shapes: Vec<Vec<Expr>> = vec![];
-        for (node, _) in node.children() {
-            let (store_ident, rank, shape) = self.lower_node(&node, None);
-            child_store_idents.push(store_ident);
-            child_ranks.push(rank);
-            child_shapes.push(shape);
-        }
+        let children_lowereds: Vec<(Expr, usize, Vec<Expr>)> = node
+            .children()
+            .iter()
+            .map(|(node, _)| self.lower_node(&node, None))
+            .collect();
+        let child_store_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.0.clone()).collect();
+        let child_shapes: Vec<Vec<Expr>> = children_lowereds.iter().map(|l| l.2.clone()).collect();
 
         let topo_ind = self.library.statements.len();
         let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
