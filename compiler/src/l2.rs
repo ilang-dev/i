@@ -58,12 +58,12 @@ pub fn lower(graph: &Graph) -> Program {
 
     Program {
         count: count(graph.roots().len()),
-        ranks: ranks(&lowereds.iter().map(|l| l.1).collect()),
-        shapes: shapes(&lowereds.iter().map(|l| l.2.clone()).collect()),
-        library: library.clone(), // TODO can we avoid clone?
+        ranks: ranks(lowereds.iter().map(|l| l.1).collect()),
+        shapes: shapes(lowereds.into_iter().map(|l| l.2).collect()),
+        library: library,
         exec: Statement::Function {
             signature: FunctionSignature::Exec,
-            body: exec_block.clone(), // TODO can we avoid clone?
+            body: exec_block,
         },
     }
 }
@@ -197,7 +197,7 @@ fn count(count: usize) -> Statement {
 }
 
 /// Get IR for `ranks` function
-fn ranks(ranks: &Vec<usize>) -> Statement {
+fn ranks(ranks: Vec<usize>) -> Statement {
     Statement::Function {
         signature: FunctionSignature::Ranks,
         body: Block {
@@ -217,7 +217,7 @@ fn ranks(ranks: &Vec<usize>) -> Statement {
 }
 
 /// Get IR for `shapes` function
-fn shapes(shapes: &Vec<Vec<Expr>>) -> Statement {
+fn shapes(shapes: Vec<Vec<Expr>>) -> Statement {
     Statement::Function {
         signature: FunctionSignature::Shapes,
         body: Block {
