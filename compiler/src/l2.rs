@@ -133,18 +133,15 @@ fn lower_node(
     // TODO this depends on whether or not node is fused
     // create allocation
     if root_ind.is_none() {
-        exec_block.statements.push(Statement::Declaration {
-            ident: buffer_ident.clone(),
-            value: Expr::Alloc {
-                initial_value: Box::new(match op {
-                    '>' => Expr::Scalar(f32::NEG_INFINITY),
-                    '<' => Expr::Scalar(f32::INFINITY),
-                    '*' => Expr::Scalar(1.),
-                    _ => Expr::Scalar(0.),
-                }),
-                shape: shape.clone(), // TODO account for fusion
-            },
-            type_: Type::Array(true),
+        exec_block.statements.push(Statement::Alloc {
+            index: topo_ind,
+            initial_value: Box::new(match op {
+                '>' => Expr::Scalar(f32::NEG_INFINITY),
+                '<' => Expr::Scalar(f32::INFINITY),
+                '*' => Expr::Scalar(1.),
+                _ => Expr::Scalar(0.),
+            }),
+            shape: shape.clone(), // TODO account for fusion
         });
     }
 

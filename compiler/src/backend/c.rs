@@ -200,20 +200,6 @@ impl CBackend {
 
     fn render_expr(expr: &Expr) -> String {
         match expr {
-            Expr::Alloc {
-                initial_value,
-                shape,
-            } => {
-                format!(
-                    "ilang_alloc_f32((size_t)({}), ({}))",
-                    shape
-                        .iter()
-                        .map(|expr| Self::render_expr(&expr))
-                        .collect::<Vec<_>>()
-                        .join(" * "),
-                    Self::render_expr(initial_value)
-                )
-            }
             Expr::Ident(s) => s.to_string(),
             Expr::Ref(s, _mutable) => s.to_string(),
             Expr::Int(x) => format!("{}", x),
@@ -265,6 +251,23 @@ impl CBackend {
                     Self::render_expr(right)
                 )
             }
+            Statement::Alloc {
+                index,
+                initial_value,
+                shape,
+            } => format!(
+                "
+                    size_t shape{index}[] = {{ {} }};
+                    TensorMut* s{index} = alloc_tensor({}, shape{index}, {});
+                ",
+                shape
+                    .iter()
+                    .map(|dim| Self::render_expr(dim))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                shape.len(),
+                Self::render_expr(initial_value),
+            ),
             Statement::Declaration {
                 ident,
                 value,

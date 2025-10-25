@@ -1,9 +1,5 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
-    Alloc {
-        initial_value: Box<Expr>, // must be of variant `Scalar`
-        shape: Vec<Expr>,
-    },
     Int(usize),
     Scalar(f32),
     Ident(String),
@@ -48,6 +44,11 @@ pub enum Statement {
     Assignment {
         left: Expr, // Should LValue become it's own enum?
         right: Expr,
+    },
+    Alloc {
+        index: usize,
+        initial_value: Box<Expr>, // must be of variant `Scalar`
+        shape: Vec<Expr>,
     },
     Declaration {
         ident: Expr, // must be an "LValue"
