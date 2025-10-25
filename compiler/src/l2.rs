@@ -122,7 +122,7 @@ fn lower_node(
     // create library function
     library.statements.push(Statement::Function {
         signature: FunctionSignature::Kernel(library_function_ident.clone()),
-        body: Block::default(), // TODO
+        body: library_function(&node),
     });
 
     let shape: Vec<_> = get_local_shape_addrs(node)
@@ -130,6 +130,7 @@ fn lower_node(
         .map(|(input_ind, dim_ind)| child_shapes[*input_ind][*dim_ind].clone())
         .collect();
 
+    // TODO this depends on whether or not node is fused
     // create allocation
     if root_ind.is_none() {
         exec_block.statements.push(Statement::Declaration {
@@ -147,6 +148,9 @@ fn lower_node(
         });
     }
 
+    // TODO this is messed up in the case of fusing nodes (they must adopt their fusings children)
+    // TODO this is also messed up in general beacuse we need to pass arrays of tensors, not
+    //      dynamic args lists
     // create call site
     exec_block.statements.push(Statement::Call {
         ident: library_function_ident,
@@ -162,6 +166,30 @@ fn lower_node(
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
     (buffer_ident, node.index.len(), shape)
+}
+
+fn library_function(node: &Node) -> Block {
+    // TODO maybe can map node ids to input/output indices
+    // TODO input/ouptut arg indices must be prepared for call site according to function body
+
+    // we could be lowering:
+    // - non-fused node which does not fuse
+    //   - build loops
+    //   - take children as inputs
+    //   -
+    // - non-fused node which does fuse
+    // - fused node which does not fuse
+    // - fused node which does fuse
+
+    // if node is fused:
+    // - adjust buffer allocation
+    // - don't write library function
+    // - somehow return fragment
+
+    // if node fuses:
+    // - get fused's fragment, write into function body
+    // - adjust call site according to fused's childrne
+    Block::default()
 }
 
 /// Compute shape address from index and child indices
