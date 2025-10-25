@@ -234,7 +234,7 @@ fn ranks(ranks: Vec<usize>) -> Statement {
                 .enumerate()
                 .map(|(ind, rank)| Statement::Assignment {
                     left: Expr::Indexed {
-                        expr: Box::new(Expr::Ident("rank".into())),
+                        expr: Box::new(Expr::Ident("ranks".into())),
                         index: Box::new(Expr::Int(ind)),
                     },
                     right: Expr::Int(*rank),
@@ -257,7 +257,7 @@ fn shapes(shapes: Vec<Vec<Expr>>) -> Statement {
                         Statement::Assignment {
                             left: Expr::Indexed {
                                 expr: Box::new(Expr::Indexed {
-                                    expr: Box::new(Expr::Ident("shape".into())),
+                                    expr: Box::new(Expr::Ident("shapes".into())),
                                     index: Box::new(Expr::Int(shape_ind)),
                                 }),
                                 index: Box::new(Expr::Int(dim_ind)),
