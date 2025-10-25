@@ -63,19 +63,21 @@ impl Render for CBackend {
 typedef struct {{
     const float* data;
     const size_t* shape;
-    size_t ndim;
+    size_t rank;
 }} Tensor;
 
 typedef struct {{
     float* data;
     const size_t* shape;
-    size_t ndim;
+    size_t rank;
 }} TensorMut;
 
-static inline float* ilang_alloc_f32(size_t n, float v) {{
-    float* p = (float*)malloc(n * sizeof(float));
-    for (size_t i = 0; i < n; ++i) p[i] = v;
-    return p;
+static inline TensorMut alloc_tensor(size_t rank, const size_t* shape, float v) {{
+    size_t n = 1;
+    for (size_t i = 0; i < rank; ++i) n *= shape[i];
+    float* data = (float*)malloc(n * sizeof(float));
+    for (size_t i = 0; i < n; ++i) data[i] = v;
+    return (TensorMut){{ .data = data, .shape = shape, .rank = rank }};
 }}
 
 {count}
@@ -228,7 +230,9 @@ impl CBackend {
         match signature {
             FunctionSignature::Count => format!("size_t count()"),
             FunctionSignature::Ranks => format!("void ranks(size_t* ranks)"),
-            FunctionSignature::Shapes => format!("void shapes(size_t** shapes)"),
+            FunctionSignature::Shapes => {
+                format!("void shapes(const Tensor* inputs, size_t** shapes)")
+            }
             FunctionSignature::Exec => {
                 format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
