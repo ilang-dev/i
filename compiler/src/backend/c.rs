@@ -233,7 +233,7 @@ impl CBackend {
                 format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
             FunctionSignature::Kernel(ident) => format!(
-                "void {}(const Tensor* inputs, TensorMut output)",
+                "void {}(const Tensor* inputs, TensorMut* outputs)",
                 Self::render_expr(ident)
             ),
         }
