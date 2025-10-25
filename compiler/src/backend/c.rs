@@ -339,6 +339,19 @@ impl CBackend {
     //    //}
     //}
 
+    fn render_ref_list(exprs: &Vec<Expr>, mutable: bool) -> String {
+        format!(
+            "({}Tensor{} *[]){{{}}}",
+            if mutable { "" } else { "const " },
+            if mutable { "Mut" } else { "" },
+            exprs
+                .iter()
+                .map(|expr| format!("&{}", Self::render_expr(expr)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
     fn render_statement(statement: &Statement) -> String {
         match statement {
             Statement::Assignment { left, right } => {
@@ -385,13 +398,12 @@ impl CBackend {
                 in_args,
                 out_args,
             } => {
-                let a = in_args
-                    .iter()
-                    .chain(out_args.iter())
-                    .map(|arg| Self::render_expr(arg))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({});", Self::render_expr(ident), a)
+                format!(
+                    "{}({}, {});",
+                    Self::render_expr(ident),
+                    Self::render_ref_list(&in_args, false),
+                    Self::render_ref_list(&out_args, true),
+                )
             }
         }
     }
