@@ -135,13 +135,13 @@ fn lower_node(
     if root_ind.is_none() {
         exec_block.statements.push(Statement::Alloc {
             index: topo_ind,
-            initial_value: Box::new(match op {
-                '>' => Expr::Scalar(f32::NEG_INFINITY),
-                '<' => Expr::Scalar(f32::INFINITY),
-                '*' => Expr::Scalar(1.),
-                _ => Expr::Scalar(0.),
-            }),
-            shape: shape.clone(), // TODO account for fusion
+            initial_value: Box::new(Expr::Scalar(match op {
+                '>' => f32::NEG_INFINITY,
+                '<' => f32::INFINITY,
+                '*' => 1.,
+                _ => 0.,
+            })),
+            shape: shape.clone(), // TODO account for splits and fusion
         });
     }
 
