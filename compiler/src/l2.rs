@@ -189,26 +189,6 @@ fn library_function(node: &Node) -> Block {
     Block::default()
 }
 
-/// Compute shape address from index and child indices
-/// written by ChatGPT
-fn get_local_shape_addrs(node: &Node) -> Vec<(usize, usize)> {
-    let child_indexes: Vec<String> = node
-        .children()
-        .iter()
-        .map(|(_, child_ind)| child_ind.clone())
-        .collect();
-    let map: HashMap<char, (usize, usize)> = {
-        let mut m = HashMap::new();
-        for (i, s) in child_indexes.iter().enumerate() {
-            for (d, c) in s.chars().enumerate() {
-                m.entry(c).or_insert((i, d));
-            }
-        }
-        m
-    };
-    node.index.chars().map(|c| *map.get(&c).unwrap()).collect()
-}
-
 /// Get IR for `count` function
 fn count(count: usize) -> Statement {
     Statement::Function {
