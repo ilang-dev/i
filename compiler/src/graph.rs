@@ -314,7 +314,7 @@ impl Graph {
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
-                    shape: infer_shape(&out.0, children.iter().map(|child| &child.1).collect()),
+                    shape: get_shape_addrs(&out.0, children.iter().map(|child| &child.1).collect()),
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
@@ -393,19 +393,12 @@ impl Graph {
     }
 }
 
-fn infer_shape(index: &String, child_indices: Vec<&String>) -> Vec<(usize, usize)> {
-    let index_map: HashMap<char, (usize, usize)> = child_indices
-        .iter()
-        .enumerate()
-        .rev()
-        .flat_map(|(child_ind, child_index)| {
-            child_index
-                .chars()
-                .rev()
-                .enumerate()
-                .map(move |(char_ind, c)| (c, (child_ind, child_index.len() - 1 - char_ind)))
-        })
-        .collect();
-
-    index.chars().map(|c| index_map[&c]).collect()
+fn get_shape_addrs(index: &String, children_indices: Vec<&String>) -> Vec<(usize, usize)> {
+    let mut map: HashMap<char, (usize, usize)> = HashMap::new();
+    for (child_ind, child_index) in children_indices.iter().enumerate() {
+        for (dim_ind, c) in child_index.chars().enumerate() {
+            map.entry(c).or_insert((child_ind, dim_ind));
+        }
+    }
+    index.chars().map(|c| map[&c]).collect()
 }
