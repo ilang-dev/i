@@ -117,7 +117,6 @@ fn lower_node(
     };
 
     // TODO the library function needs shape in terms of children
-    // TODO alloc needs shape in terms of inputs (Expr)
 
     // create library function
     library.statements.push(Statement::Function {
@@ -125,12 +124,27 @@ fn lower_node(
         body: library_function(&node),
     });
 
-    let shape: Vec<_> = get_local_shape_addrs(node)
+    // `Expr`s for the dims of the node without regard to splitting or fusion
+    let semantic_shape_exprs: Vec<Expr> = shape
         .iter()
-        .map(|(input_ind, dim_ind)| child_shapes[*input_ind][*dim_ind].clone())
+        .map(|(input_ind, dim_ind, _split_factors)| child_shapes[*input_ind][*dim_ind].clone())
         .collect();
 
-    // TODO this depends on whether or not node is fused
+    // `Expr`s for the dims of the buffer accounting for splitting
+    // TODO account for fusion as well
+    let buffer_shape_exprs: Vec<Expr> = shape
+        .iter()
+        .flat_map(|(input_ind, dim_ind, split_factors)| {
+            let buffer_expr = child_shapes[*input_ind][*dim_ind].clone();
+            match split_factors {
+                None => vec![buffer_expr],
+                Some(factors) => std::iter::once(create_split_bound_expr(buffer_expr, factors))
+                    .chain(factors.iter().copied().map(Expr::Int))
+                    .collect(),
+            }
+        })
+        .collect();
+
     // create allocation
     if root_ind.is_none() {
         exec_block.statements.push(Statement::Alloc {
@@ -141,7 +155,7 @@ fn lower_node(
                 '*' => 1.,
                 _ => 0.,
             })),
-            shape: shape.clone(), // TODO account for splits and fusion
+            shape: buffer_shape_exprs,
         });
     }
 
@@ -162,7 +176,7 @@ fn lower_node(
     //      for is determining the output shape from the input shape which does
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
-    (buffer_ident, node.index.len(), shape)
+    (buffer_ident, node.index.len(), semantic_shape_exprs)
 }
 
 fn library_function(node: &Node) -> Block {
@@ -245,5 +259,32 @@ fn shapes(shapes: Vec<Vec<Expr>>) -> Statement {
                 })
                 .collect(),
         },
+    }
+}
+
+// TODO: take split_factors: &Vec<Expr> instead of mapping in this function
+fn create_split_bound_expr(buffer_ident: Expr, split_factors: &Vec<usize>) -> Expr {
+    let tile_width_expr = Expr::Op {
+        op: '*',
+        inputs: split_factors
+            .iter()
+            .map(|factor| Expr::Int(*factor))
+            .collect(),
+    };
+
+    let numerator = Expr::Op {
+        op: '-',
+        inputs: vec![
+            Expr::Op {
+                op: '+',
+                inputs: vec![buffer_ident, tile_width_expr.clone()],
+            },
+            Expr::Int(1),
+        ],
+    };
+
+    Expr::Op {
+        op: '/',
+        inputs: vec![numerator, tile_width_expr],
     }
 }

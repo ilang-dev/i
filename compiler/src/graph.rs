@@ -19,7 +19,7 @@ pub enum NodeBody {
     Interior {
         op: char,
         schedule: Schedule,
-        shape: Vec<(usize, usize)>,
+        shape: Vec<(usize, usize, Option<Vec<usize>>)>,
     },
 }
 
@@ -314,7 +314,11 @@ impl Graph {
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
-                    shape: get_shape_addrs(&out.0, children.iter().map(|child| &child.1).collect()),
+                    shape: get_shape_addrs(
+                        &out.0,
+                        children.iter().map(|child| &child.1).collect(),
+                        schedule,
+                    ),
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
@@ -393,12 +397,17 @@ impl Graph {
     }
 }
 
-fn get_shape_addrs(index: &String, children_indices: Vec<&String>) -> Vec<(usize, usize)> {
-    let mut map: HashMap<char, (usize, usize)> = HashMap::new();
+fn get_shape_addrs(
+    index: &String,
+    children_indices: Vec<&String>,
+    schedule: &Schedule,
+) -> Vec<(usize, usize, Option<Vec<usize>>)> {
+    let mut map: HashMap<char, (usize, usize, Option<Vec<usize>>)> = HashMap::new();
     for (child_ind, child_index) in children_indices.iter().enumerate() {
         for (dim_ind, c) in child_index.chars().enumerate() {
-            map.entry(c).or_insert((child_ind, dim_ind));
+            map.entry(c)
+                .or_insert((child_ind, dim_ind, schedule.splits.get(&c).cloned()));
         }
     }
-    index.chars().map(|c| map[&c]).collect()
+    index.chars().map(|c| map[&c].clone()).collect()
 }
