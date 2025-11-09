@@ -124,12 +124,6 @@ fn lower_node(
         body: library_function(&node),
     });
 
-    // `Expr`s for the dims of the node without regard to splitting or fusion
-    let semantic_shape_exprs: Vec<Expr> = shape
-        .iter()
-        .map(|(input_ind, dim_ind, _split_factors)| child_shapes[*input_ind][*dim_ind].clone())
-        .collect();
-
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
     let buffer_shape_exprs: Vec<Expr> = shape
@@ -170,6 +164,12 @@ fn lower_node(
     });
 
     // TODO create drop
+
+    // `Expr`s for the dims of the node without regard to splitting or fusion
+    let semantic_shape_exprs: Vec<Expr> = shape
+        .iter()
+        .map(|(input_ind, dim_ind, _split_factors)| child_shapes[*input_ind][*dim_ind].clone())
+        .collect();
 
     // TODO I think the shape output here can be seen as tracking the semantic
     //      shape rather than the shape of the physical buffers. All this is used
