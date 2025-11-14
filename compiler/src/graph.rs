@@ -29,7 +29,6 @@ pub enum NodeBody {
         schedule: Schedule,
         semantic_shape: Vec<BoundAddr>,
         buffer_shape: Vec<BoundAddr>,
-        shape: Vec<(usize, usize, Option<Vec<usize>>)>,
     },
 }
 
@@ -321,12 +320,6 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
-                let shape = get_shape_addrs(
-                    &out.0,
-                    children.iter().map(|child| &child.1).collect(),
-                    schedule,
-                );
-
                 let shape_table =
                     get_shape_table(children.iter().map(|child| &child.1).collect(), schedule);
 
@@ -362,7 +355,6 @@ impl Graph {
                     schedule: schedule.clone(),
                     semantic_shape,
                     buffer_shape,
-                    shape,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
@@ -454,13 +446,4 @@ fn get_shape_table(
         }
     }
     table
-}
-
-fn get_shape_addrs(
-    index: &String,
-    children_indices: Vec<&String>,
-    schedule: &Schedule,
-) -> Vec<(usize, usize, Option<Vec<usize>>)> {
-    let shape_table = get_shape_table(children_indices, schedule);
-    index.chars().map(|c| shape_table[&c].clone()).collect()
 }

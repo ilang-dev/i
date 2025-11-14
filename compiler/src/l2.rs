@@ -79,7 +79,6 @@ fn lower_node(
     let NodeBody::Interior {
         op,
         schedule,
-        shape,
         semantic_shape,
         buffer_shape,
     } = &node.body
