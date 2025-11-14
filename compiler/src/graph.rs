@@ -28,6 +28,7 @@ pub enum NodeBody {
         op: char,
         schedule: Schedule,
         semantic_shape: Vec<BoundAddr>,
+        buffer_shape: Vec<BoundAddr>,
         shape: Vec<(usize, usize, Option<Vec<usize>>)>,
     },
 }
@@ -338,10 +339,29 @@ impl Graph {
                     })
                     .collect();
 
+                let buffer_shape: Vec<BoundAddr> = out
+                    .0
+                    .chars()
+                    .flat_map(|c| {
+                        let (input_ind, dim_ind, split_factors) = &shape_table[&c];
+                        match split_factors {
+                            None => vec![BoundAddr::Base(*input_ind, *dim_ind)],
+                            Some(factors) => std::iter::once(BoundAddr::Split(
+                                *input_ind,
+                                *dim_ind,
+                                factors.clone(),
+                            ))
+                            .chain(factors.iter().map(|factor| BoundAddr::Factor(*factor)))
+                            .collect(),
+                        }
+                    })
+                    .collect();
+
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
                     semantic_shape,
+                    buffer_shape,
                     shape,
                 };
                 self.add_node(out.0.clone(), body, parents, children)

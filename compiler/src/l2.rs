@@ -81,6 +81,7 @@ fn lower_node(
         schedule,
         shape,
         semantic_shape,
+        buffer_shape,
     } = &node.body
     else {
         // handle leaf nodes
@@ -127,16 +128,13 @@ fn lower_node(
 
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
-    //let buffer_shape_exprs = vec![];
-    let buffer_shape_exprs: Vec<Expr> = shape
+    let buffer_shape_exprs: Vec<Expr> = buffer_shape
         .iter()
-        .flat_map(|(input_ind, dim_ind, split_factors)| {
-            let buffer_expr = child_shapes[*input_ind][*dim_ind].clone();
-            match split_factors {
-                None => vec![buffer_expr],
-                Some(factors) => std::iter::once(create_split_bound_expr(buffer_expr, factors))
-                    .chain(factors.iter().copied().map(Expr::Int))
-                    .collect(),
+        .map(|bound_addr| match bound_addr {
+            BoundAddr::Base(input_ind, dim_ind) => child_shapes[*input_ind][*dim_ind].clone(),
+            BoundAddr::Factor(factor) => Expr::Int(*factor),
+            BoundAddr::Split(input_ind, dim_ind, factors) => {
+                create_split_bound_expr(child_shapes[*input_ind][*dim_ind].clone(), factors)
             }
         })
         .collect();
