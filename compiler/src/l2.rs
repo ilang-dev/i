@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{Graph, Node, NodeBody};
+use crate::graph::{BoundAddr, Graph, Node, NodeBody};
 
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -80,6 +80,7 @@ fn lower_node(
         op,
         schedule,
         shape,
+        semantic_shape,
     } = &node.body
     else {
         // handle leaf nodes
@@ -126,6 +127,7 @@ fn lower_node(
 
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
+    //let buffer_shape_exprs = vec![];
     let buffer_shape_exprs: Vec<Expr> = shape
         .iter()
         .flat_map(|(input_ind, dim_ind, split_factors)| {
@@ -166,9 +168,12 @@ fn lower_node(
     // TODO create drop
 
     // `Expr`s for the dims of the node without regard to splitting or fusion
-    let semantic_shape_exprs: Vec<Expr> = shape
+    let semantic_shape_exprs = semantic_shape
         .iter()
-        .map(|(input_ind, dim_ind, _split_factors)| child_shapes[*input_ind][*dim_ind].clone())
+        .filter_map(|bound_addr| match bound_addr {
+            BoundAddr::Base(input_ind, dim_ind) => Some(child_shapes[*input_ind][*dim_ind].clone()),
+            _ => panic!("Found non-`Base` variant `BoundAddr` in semantic shape"),
+        })
         .collect();
 
     // TODO I think the shape output here can be seen as tracking the semantic

@@ -13,12 +13,21 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 type NodeRef = Arc<Mutex<Node>>;
 
+// TODO write a docstring
+#[derive(Clone, Debug)]
+pub enum BoundAddr {
+    Base(usize, usize),
+    Factor(usize),
+    Split(usize, usize, Vec<usize>),
+}
+
 #[derive(Clone, Debug)]
 pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
         schedule: Schedule,
+        semantic_shape: Vec<BoundAddr>,
         shape: Vec<(usize, usize, Option<Vec<usize>>)>,
     },
 }
@@ -311,14 +320,29 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
+                let shape = get_shape_addrs(
+                    &out.0,
+                    children.iter().map(|child| &child.1).collect(),
+                    schedule,
+                );
+
+                let shape_table =
+                    get_shape_table(children.iter().map(|child| &child.1).collect(), schedule);
+
+                let semantic_shape: Vec<BoundAddr> = out
+                    .0
+                    .chars()
+                    .map(|c| {
+                        let (input_ind, dim_ind, _splits) = &shape_table[&c];
+                        BoundAddr::Base(*input_ind, *dim_ind)
+                    })
+                    .collect();
+
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
-                    shape: get_shape_addrs(
-                        &out.0,
-                        children.iter().map(|child| &child.1).collect(),
-                        schedule,
-                    ),
+                    semantic_shape,
+                    shape,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
@@ -397,17 +421,26 @@ impl Graph {
     }
 }
 
+fn get_shape_table(
+    children_indices: Vec<&String>,
+    schedule: &Schedule,
+) -> HashMap<char, (usize, usize, Option<Vec<usize>>)> {
+    let mut table: HashMap<char, (usize, usize, Option<Vec<usize>>)> = HashMap::new();
+    for (child_ind, child_index) in children_indices.iter().enumerate() {
+        for (dim_ind, c) in child_index.chars().enumerate() {
+            table
+                .entry(c)
+                .or_insert((child_ind, dim_ind, schedule.splits.get(&c).cloned()));
+        }
+    }
+    table
+}
+
 fn get_shape_addrs(
     index: &String,
     children_indices: Vec<&String>,
     schedule: &Schedule,
 ) -> Vec<(usize, usize, Option<Vec<usize>>)> {
-    let mut map: HashMap<char, (usize, usize, Option<Vec<usize>>)> = HashMap::new();
-    for (child_ind, child_index) in children_indices.iter().enumerate() {
-        for (dim_ind, c) in child_index.chars().enumerate() {
-            map.entry(c)
-                .or_insert((child_ind, dim_ind, schedule.splits.get(&c).cloned()));
-        }
-    }
-    index.chars().map(|c| map[&c].clone()).collect()
+    let shape_table = get_shape_table(children_indices, schedule);
+    index.chars().map(|c| shape_table[&c].clone()).collect()
 }
