@@ -20,7 +20,7 @@ pub enum NodeBody {
         op: char,
         schedule: Schedule,
         shape_addrs: Vec<(usize, usize)>,
-        split_factors: Vec<Vec<usize>>,
+        split_factor_lists: Vec<Vec<usize>>,
     },
 }
 
@@ -322,14 +322,14 @@ impl Graph {
                     }
                 }
 
-                let (shape_addrs, split_factors): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
+                let (shape_addrs, split_factor_lists): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
                     out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
                     shape_addrs,
-                    split_factors,
+                    split_factor_lists,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }

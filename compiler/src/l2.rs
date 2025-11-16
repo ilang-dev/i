@@ -80,7 +80,7 @@ fn lower_node(
         op,
         schedule,
         shape_addrs,
-        split_factors,
+        split_factor_lists,
     } = &node.body
     else {
         // handle leaf nodes
@@ -129,7 +129,7 @@ fn lower_node(
     // TODO account for fusion as well
     let buffer_shape_exprs: Vec<Expr> = shape_addrs
         .iter()
-        .zip(split_factors.iter())
+        .zip(split_factor_lists.iter())
         .flat_map(|((input_ind, dim_ind), factors)| {
             let base_shape_expr = child_shapes[*input_ind][*dim_ind].clone();
             match factors.is_empty() {
