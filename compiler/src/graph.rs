@@ -312,25 +312,18 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
-                let shape_table =
-                    get_shape_table(children.iter().map(|child| &child.1).collect(), schedule);
+                let mut shape_table: HashMap<char, ((usize, usize), Vec<usize>)> = HashMap::new();
+                for (child_ind, (_, child_index)) in children.iter().enumerate() {
+                    for (dim_ind, c) in child_index.chars().enumerate() {
+                        shape_table.entry(c).or_insert((
+                            (child_ind, dim_ind),
+                            schedule.splits.get(&c).cloned().unwrap_or(vec![]),
+                        ));
+                    }
+                }
 
-                let shape_addrs = out
-                    .0
-                    .chars()
-                    .map(|c| {
-                        let (input_ind, dim_ind, _split_factors) = &shape_table[&c];
-                        (*input_ind, *dim_ind)
-                    })
-                    .collect();
-                let split_factors = out
-                    .0
-                    .chars()
-                    .map(|c| {
-                        let (_input_ind, _dim_ind, split_factors) = &shape_table[&c];
-                        split_factors.clone()
-                    })
-                    .collect();
+                let (shape_addrs, split_factors): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
+                    out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
                 let body = NodeBody::Interior {
                     op,
