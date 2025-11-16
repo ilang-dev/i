@@ -13,22 +13,14 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 type NodeRef = Arc<Mutex<Node>>;
 
-// TODO write a docstring
-#[derive(Clone, Debug)]
-pub enum BoundAddr {
-    Base(usize, usize),
-    Factor(usize),
-    Split(usize, usize, Vec<usize>),
-}
-
 #[derive(Clone, Debug)]
 pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
         schedule: Schedule,
-        semantic_shape: Vec<BoundAddr>,
-        buffer_shape: Vec<BoundAddr>,
+        shape_addrs: Vec<(usize, usize)>,
+        split_factors: Vec<Vec<usize>>,
     },
 }
 
@@ -323,38 +315,28 @@ impl Graph {
                 let shape_table =
                     get_shape_table(children.iter().map(|child| &child.1).collect(), schedule);
 
-                let semantic_shape: Vec<BoundAddr> = out
+                let shape_addrs = out
                     .0
                     .chars()
                     .map(|c| {
-                        let (input_ind, dim_ind, _splits) = &shape_table[&c];
-                        BoundAddr::Base(*input_ind, *dim_ind)
+                        let (input_ind, dim_ind, _split_factors) = &shape_table[&c];
+                        (*input_ind, *dim_ind)
                     })
                     .collect();
-
-                let buffer_shape: Vec<BoundAddr> = out
+                let split_factors = out
                     .0
                     .chars()
-                    .flat_map(|c| {
-                        let (input_ind, dim_ind, split_factors) = &shape_table[&c];
-                        match split_factors {
-                            None => vec![BoundAddr::Base(*input_ind, *dim_ind)],
-                            Some(factors) => std::iter::once(BoundAddr::Split(
-                                *input_ind,
-                                *dim_ind,
-                                factors.clone(),
-                            ))
-                            .chain(factors.iter().map(|factor| BoundAddr::Factor(*factor)))
-                            .collect(),
-                        }
+                    .map(|c| {
+                        let (_input_ind, _dim_ind, split_factors) = &shape_table[&c];
+                        split_factors.clone()
                     })
                     .collect();
 
                 let body = NodeBody::Interior {
                     op,
                     schedule: schedule.clone(),
-                    semantic_shape,
-                    buffer_shape,
+                    shape_addrs,
+                    split_factors,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
@@ -436,13 +418,15 @@ impl Graph {
 fn get_shape_table(
     children_indices: Vec<&String>,
     schedule: &Schedule,
-) -> HashMap<char, (usize, usize, Option<Vec<usize>>)> {
-    let mut table: HashMap<char, (usize, usize, Option<Vec<usize>>)> = HashMap::new();
+) -> HashMap<char, (usize, usize, Vec<usize>)> {
+    let mut table: HashMap<char, (usize, usize, Vec<usize>)> = HashMap::new();
     for (child_ind, child_index) in children_indices.iter().enumerate() {
         for (dim_ind, c) in child_index.chars().enumerate() {
-            table
-                .entry(c)
-                .or_insert((child_ind, dim_ind, schedule.splits.get(&c).cloned()));
+            table.entry(c).or_insert((
+                child_ind,
+                dim_ind,
+                schedule.splits.get(&c).cloned().unwrap_or(vec![]),
+            ));
         }
     }
     table

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{BoundAddr, Graph, Node, NodeBody};
+use crate::graph::{Graph, Node, NodeBody};
 
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -79,8 +79,8 @@ fn lower_node(
     let NodeBody::Interior {
         op,
         schedule,
-        semantic_shape,
-        buffer_shape,
+        shape_addrs,
+        split_factors,
     } = &node.body
     else {
         // handle leaf nodes
@@ -127,13 +127,19 @@ fn lower_node(
 
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
-    let buffer_shape_exprs: Vec<Expr> = buffer_shape
+    let buffer_shape_exprs: Vec<Expr> = shape_addrs
         .iter()
-        .map(|bound_addr| match bound_addr {
-            BoundAddr::Base(input_ind, dim_ind) => child_shapes[*input_ind][*dim_ind].clone(),
-            BoundAddr::Factor(factor) => Expr::Int(*factor),
-            BoundAddr::Split(input_ind, dim_ind, factors) => {
-                create_split_bound_expr(child_shapes[*input_ind][*dim_ind].clone(), factors)
+        .zip(split_factors.iter())
+        .flat_map(|((input_ind, dim_ind), factors)| {
+            let base_shape_expr = child_shapes[*input_ind][*dim_ind].clone();
+            match factors.is_empty() {
+                true => vec![base_shape_expr],
+                false => std::iter::once(create_split_bound_expr(
+                    child_shapes[*input_ind][*dim_ind].clone(),
+                    factors,
+                ))
+                .chain(factors.iter().map(|factor| Expr::Int(*factor)))
+                .collect(),
             }
         })
         .collect();
@@ -165,12 +171,9 @@ fn lower_node(
     // TODO create drop
 
     // `Expr`s for the dims of the node without regard to splitting or fusion
-    let semantic_shape_exprs = semantic_shape
+    let semantic_shape_exprs = shape_addrs
         .iter()
-        .filter_map(|bound_addr| match bound_addr {
-            BoundAddr::Base(input_ind, dim_ind) => Some(child_shapes[*input_ind][*dim_ind].clone()),
-            _ => panic!("Found non-`Base` variant `BoundAddr` in semantic shape"),
-        })
+        .map(|(input_ind, dim_ind)| child_shapes[*input_ind][*dim_ind].clone())
         .collect();
 
     // TODO I think the shape output here can be seen as tracking the semantic
