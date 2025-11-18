@@ -78,7 +78,6 @@ fn lower_node(
 ) -> (Expr, usize, Vec<Expr>) {
     let NodeBody::Interior {
         op,
-        schedule,
         shape_addrs,
         split_factor_lists,
     } = &node.body

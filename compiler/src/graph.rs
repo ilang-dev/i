@@ -18,7 +18,6 @@ pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
-        schedule: Schedule,
         shape_addrs: Vec<(usize, usize)>,
         split_factor_lists: Vec<Vec<usize>>,
     },
@@ -327,7 +326,6 @@ impl Graph {
 
                 let body = NodeBody::Interior {
                     op,
-                    schedule: schedule.clone(),
                     shape_addrs,
                     split_factor_lists,
                 };
