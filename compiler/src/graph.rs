@@ -14,7 +14,7 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 type NodeRef = Arc<Mutex<Node>>;
 
 #[derive(Clone, Debug)]
-pub struct Loop {
+pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub bound_addr: BoundAddr,
 }
@@ -36,7 +36,7 @@ pub enum NodeBody {
         op: char,
         shape_addrs: Vec<(usize, usize)>,
         split_factor_lists: Vec<Vec<usize>>,
-        loops: Vec<Loop>,
+        loop_specs: Vec<LoopSpec>,
     },
 }
 
@@ -361,13 +361,13 @@ impl Graph {
 
                 // TODO this could be cleaned up by computing a loop order first and then unifying
                 //      these branches
-                let loops: Vec<Loop> = if schedule.loop_order.is_empty() {
+                let loop_specs: Vec<LoopSpec> = if schedule.loop_order.is_empty() {
                     char_indexes
                         .iter()
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
                             let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
-                            let base_loop = Loop {
+                            let base_loop = LoopSpec {
                                 group: loop_group,
                                 bound_addr: BoundAddr::Base {
                                     input_ind: *input_ind,
@@ -376,7 +376,7 @@ impl Graph {
                                 },
                             };
                             std::iter::once(base_loop).chain(split_factors.iter().map(
-                                move |factor| Loop {
+                                move |factor| LoopSpec {
                                     group: loop_group,
                                     bound_addr: BoundAddr::Factor(*factor),
                                 },
@@ -400,7 +400,7 @@ impl Graph {
                                 (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
                             };
 
-                            Loop {
+                            LoopSpec {
                                 group: loop_group,
                                 bound_addr,
                             }
@@ -408,13 +408,13 @@ impl Graph {
                         .collect()
                 };
 
-                //// TODO validate number of loops: one per unique char index plus one per split
+                //// TODO validate number of loop_specs: one per unique char index plus one per split
 
                 let body = NodeBody::Interior {
                     op,
                     shape_addrs,
                     split_factor_lists,
-                    loops,
+                    loop_specs,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
