@@ -14,12 +14,29 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 type NodeRef = Arc<Mutex<Node>>;
 
 #[derive(Clone, Debug)]
+pub struct Loop {
+    pub group: usize, // base loops and their corresponding split loops share a group
+    pub bound_addr: BoundAddr,
+}
+
+#[derive(Clone, Debug)]
+pub enum BoundAddr {
+    Base {
+        input_ind: usize,
+        dim_ind: usize,
+        split_factors: Vec<usize>,
+    },
+    Factor(usize),
+}
+
+#[derive(Clone, Debug)]
 pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
         shape_addrs: Vec<(usize, usize)>,
         split_factor_lists: Vec<Vec<usize>>,
+        loops: Vec<Loop>,
     },
 }
 
@@ -324,10 +341,80 @@ impl Graph {
                 let (shape_addrs, split_factor_lists): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
                     out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
+                let mut unique_char_indices = HashSet::<char>::new();
+                let char_indexes: Vec<char> = out
+                    .0
+                    .chars()
+                    .chain(
+                        children
+                            .iter()
+                            .flat_map(|(_, child_index)| child_index.chars()),
+                    )
+                    .filter(move |c| unique_char_indices.insert(*c))
+                    .collect();
+
+                let loop_groups: HashMap<char, usize> = char_indexes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (*c, i))
+                    .collect();
+
+                // TODO this could be cleaned up by computing a loop order first and then unifying
+                //      these branches
+                let loops: Vec<Loop> = if schedule.loop_order.is_empty() {
+                    char_indexes
+                        .iter()
+                        .flat_map(|c| {
+                            let loop_group = loop_groups[&c];
+                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
+                            let base_loop = Loop {
+                                group: loop_group,
+                                bound_addr: BoundAddr::Base {
+                                    input_ind: *input_ind,
+                                    dim_ind: *dim_ind,
+                                    split_factors: split_factors.clone(),
+                                },
+                            };
+                            std::iter::once(base_loop).chain(split_factors.iter().map(
+                                move |factor| Loop {
+                                    group: loop_group,
+                                    bound_addr: BoundAddr::Factor(*factor),
+                                },
+                            ))
+                        })
+                        .collect()
+                } else {
+                    schedule
+                        .loop_order
+                        .iter()
+                        .map(|(c, split_factor_ind)| {
+                            let loop_group = loop_groups[&c];
+                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
+
+                            let bound_addr = match (split_factors.is_empty(), split_factor_ind) {
+                                (false, 0) | (true, _) => BoundAddr::Base {
+                                    input_ind: *input_ind,
+                                    dim_ind: *dim_ind,
+                                    split_factors: split_factors.clone(),
+                                },
+                                (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
+                            };
+
+                            Loop {
+                                group: loop_group,
+                                bound_addr,
+                            }
+                        })
+                        .collect()
+                };
+
+                //// TODO validate number of loops: one per unique char index plus one per split
+
                 let body = NodeBody::Interior {
                     op,
                     shape_addrs,
                     split_factor_lists,
+                    loops,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }

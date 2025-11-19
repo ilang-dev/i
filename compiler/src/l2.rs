@@ -80,6 +80,7 @@ fn lower_node(
         op,
         shape_addrs,
         split_factor_lists,
+        loops,
     } = &node.body
     else {
         // handle leaf nodes
