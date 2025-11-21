@@ -16,6 +16,7 @@ type NodeRef = Arc<Mutex<Node>>;
 #[derive(Clone, Debug)]
 pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
+    pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
     pub bound_addr: BoundAddr,
 }
 
@@ -369,15 +370,17 @@ impl Graph {
                             let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
                             let base_loop = LoopSpec {
                                 group: loop_group,
+                                ind: 0,
                                 bound_addr: BoundAddr::Base {
                                     input_ind: *input_ind,
                                     dim_ind: *dim_ind,
                                     split_factors: split_factors.clone(),
                                 },
                             };
-                            std::iter::once(base_loop).chain(split_factors.iter().map(
-                                move |factor| LoopSpec {
+                            std::iter::once(base_loop).chain(split_factors.iter().enumerate().map(
+                                move |(ind, factor)| LoopSpec {
                                     group: loop_group,
+                                    ind,
                                     bound_addr: BoundAddr::Factor(*factor),
                                 },
                             ))
@@ -402,6 +405,7 @@ impl Graph {
 
                             LoopSpec {
                                 group: loop_group,
+                                ind: *split_factor_ind,
                                 bound_addr,
                             }
                         })
