@@ -288,6 +288,7 @@ impl CBackend {
             Statement::Loop {
                 index, bound, body, ..
             } => {
+                let index: String = Self::render_expr(index);
                 format!(
                     "for (size_t {index} = 0; {index} < ({}); ++{index}) {{\n{}\n}}",
                     Self::render_expr(bound),

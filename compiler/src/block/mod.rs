@@ -60,7 +60,7 @@ pub enum Statement {
         bound: Expr,
     },
     Loop {
-        index: String,
+        index: Expr,
         bound: Expr,
         body: Block,
         parallel: bool,
