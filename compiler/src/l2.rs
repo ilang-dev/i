@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{Graph, Node, NodeBody};
+use crate::graph::{BoundAddr, Graph, LoopSpec, Node, NodeBody};
 
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -119,10 +119,97 @@ fn lower_node(
 
     // TODO the library function needs shape in terms of children
 
+    let n_loop_groups = loop_specs
+        .iter()
+        .map(|LoopSpec { group, .. }| *group)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut running_loop_counts_by_group: Vec<usize> = vec![0; n_loop_groups];
+    let mut total_loop_counts_by_group = running_loop_counts_by_group.clone();
+    for i in loop_specs.iter().map(|LoopSpec { group, .. }| *group) {
+        total_loop_counts_by_group[i] += 1;
+    }
+
+    let empty_loops: Vec<Statement> = loop_specs
+        .iter()
+        .map(
+            |LoopSpec {
+                 group,
+                 bound_addr,
+                 index_reconstruction,
+                 ..
+             }| {
+                let (bound, index): (Expr, Expr) = match bound_addr {
+                    BoundAddr::Base {
+                        input_ind,
+                        dim_ind,
+                        split_factors,
+                    } => match split_factors.len() {
+                        0 => (
+                            Expr::Ident(format!("b{group}")),
+                            Expr::Ident(format!("i{group}")),
+                        ),
+                        i => (
+                            create_split_bound_expr(
+                                child_shapes[*input_ind][*dim_ind].clone(),
+                                split_factors,
+                            ),
+                            Expr::Ident(format!("i{group}_0")),
+                        ),
+                    },
+                    BoundAddr::Factor(factor) => {
+                        running_loop_counts_by_group[*group] += 1;
+                        let factor_ind = running_loop_counts_by_group[*group];
+                        (
+                            Expr::Int(*factor),
+                            Expr::Ident(format!("i{group}_{factor_ind}")),
+                        )
+                    }
+                };
+
+                let body = Block {
+                    statements: match index_reconstruction {
+                        Some(split_factors) => {
+                            create_index_reconstruction_statements(&index, &bound, &split_factors)
+                        }
+                        None => vec![],
+                    },
+                };
+
+                Statement::Loop {
+                    index,
+                    bound,
+                    body,
+                    parallel: true,
+                }
+            },
+        )
+        .collect();
+
+    let op_statement = Statement::Return {
+        value: Expr::Int(0),
+    };
+
+    let loop_stack: Statement =
+        empty_loops
+            .into_iter()
+            .rev()
+            .fold(op_statement, |loop_stack, mut loop_| {
+                if let Statement::Loop { ref mut body, .. } = loop_ {
+                    body.statements.push(loop_stack);
+                }
+                loop_
+            });
+
+    let library_function = Block {
+        statements: vec![loop_stack],
+    };
+
     // create library function
     library.statements.push(Statement::Function {
         signature: FunctionSignature::Kernel(library_function_ident.clone()),
-        body: library_function(&node),
+        body: library_function,
     });
 
     // `Expr`s for the dims of the buffer accounting for splitting
@@ -184,29 +271,27 @@ fn lower_node(
     (buffer_ident, node.index.len(), semantic_shape_exprs)
 }
 
-fn library_function(node: &Node) -> Block {
-    // TODO maybe can map node ids to input/output indices
-    // TODO input/ouptut arg indices must be prepared for call site according to function body
+// NOTES ON LIBRARY FUNCTION LOWERING
+// TODO maybe can map node ids to input/output indices
+// TODO input/ouptut arg indices must be prepared for call site according to function body
 
-    // we could be lowering:
-    // - non-fused node which does not fuse
-    //   - build loops
-    //   - take children as inputs
-    //   -
-    // - non-fused node which does fuse
-    // - fused node which does not fuse
-    // - fused node which does fuse
+// we could be lowering:
+// - non-fused node which does not fuse
+//   - build loops
+//   - take children as inputs
+//   -
+// - non-fused node which does fuse
+// - fused node which does not fuse
+// - fused node which does fuse
 
-    // if node is fused:
-    // - adjust buffer allocation
-    // - don't write library function
-    // - somehow return fragment
+// if node is fused:
+// - adjust buffer allocation
+// - don't write library function
+// - somehow return fragment
 
-    // if node fuses:
-    // - get fused's fragment, write into function body
-    // - adjust call site according to fused's childrne
-    Block::default()
-}
+// if node fuses:
+// - get fused's fragment, write into function body
+// - adjust call site according to fused's childrne
 
 /// Get IR for `count` function
 fn count(count: usize) -> Statement {
@@ -298,7 +383,6 @@ fn create_index_reconstruction_statements(
     base_iterator_ident: &Expr,
     base_bound_ident: &Expr,
     split_factors: &Vec<usize>,
-    _root: bool,
 ) -> Vec<Statement> {
     let Expr::Ident(base_iterator_string) = base_iterator_ident else {
         panic!("Got non-Ident base ident.")
