@@ -388,7 +388,11 @@ impl Graph {
                                     group: loop_group,
                                     ind,
                                     bound_addr: BoundAddr::Factor(*factor),
-                                    index_reconstruction: Some(split_factors.clone()),
+                                    index_reconstruction: if split_factors.is_empty() {
+                                        None
+                                    } else {
+                                        Some(split_factors.clone())
+                                    },
                                 });
 
                             let remaining_factor_loop_specs =
@@ -423,11 +427,13 @@ impl Graph {
                                 (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
                             };
 
-                            let index_reconstruction =
-                                match index_reconstructed_groups.insert(loop_group) {
-                                    true => Some(split_factors.clone()),
-                                    false => None,
-                                };
+                            let index_reconstruction = if !split_factors.is_empty()
+                                && index_reconstructed_groups.insert(loop_group)
+                            {
+                                Some(split_factors.clone())
+                            } else {
+                                None
+                            };
 
                             LoopSpec {
                                 group: loop_group,
