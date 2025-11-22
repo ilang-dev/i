@@ -293,3 +293,46 @@ fn create_split_bound_expr(buffer_ident: Expr, split_factors: &Vec<usize>) -> Ex
         inputs: vec![numerator, tile_width_expr],
     }
 }
+
+fn create_index_reconstruction_statements(
+    base_iterator_ident: &String,
+    base_bound_ident: &String,
+    split_factors: &Vec<usize>,
+    _root: bool,
+) -> Vec<Statement> {
+    let iterators: Vec<Expr> = (0..=split_factors.len())
+        .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident, ind)))
+        .collect();
+
+    let mut weights: Vec<Expr> = Vec::with_capacity(split_factors.len() + 1);
+    let mut acc: usize = split_factors.iter().product();
+    weights.push(Expr::Int(acc));
+    for f in split_factors.iter().take(split_factors.len()) {
+        acc /= *f;
+        weights.push(Expr::Int(acc));
+    }
+
+    let reconstructed_index = Expr::Op {
+        op: '+',
+        inputs: iterators
+            .into_iter()
+            .zip(weights.into_iter())
+            .map(|(it, w)| Expr::Op {
+                op: '*',
+                inputs: vec![w, it],
+            })
+            .collect(),
+    };
+
+    vec![
+        Statement::Declaration {
+            ident: Expr::Ident(base_iterator_ident.clone()),
+            value: reconstructed_index,
+            type_: Type::Int(false),
+        },
+        Statement::Skip {
+            index: base_iterator_ident.clone(),
+            bound: base_bound_ident.clone(),
+        },
+    ]
+}
