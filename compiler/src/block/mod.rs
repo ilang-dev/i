@@ -56,9 +56,8 @@ pub enum Statement {
         type_: Type,
     },
     Skip {
-        // TODO: These should both probably be Expr (Ident)
-        index: String,
-        bound: String,
+        index: Expr,
+        bound: Expr,
     },
     Loop {
         index: String,

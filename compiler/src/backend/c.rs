@@ -280,9 +280,11 @@ impl CBackend {
                     Self::render_expr(value)
                 )
             }
-            Statement::Skip { index, bound } => {
-                format!("if (({}) >= ({})) {{ continue; }}", index, bound)
-            }
+            Statement::Skip { index, bound } => format!(
+                "if (({}) >= ({})) {{ continue; }}",
+                Self::render_expr(index),
+                Self::render_expr(bound),
+            ),
             Statement::Loop {
                 index, bound, body, ..
             } => {

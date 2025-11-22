@@ -295,13 +295,16 @@ fn create_split_bound_expr(buffer_ident: Expr, split_factors: &Vec<usize>) -> Ex
 }
 
 fn create_index_reconstruction_statements(
-    base_iterator_ident: &String,
-    base_bound_ident: &String,
+    base_iterator_ident: &Expr,
+    base_bound_ident: &Expr,
     split_factors: &Vec<usize>,
     _root: bool,
 ) -> Vec<Statement> {
+    let Expr::Ident(base_iterator_string) = base_iterator_ident else {
+        panic!("Got non-Ident base ident.")
+    };
     let iterators: Vec<Expr> = (0..=split_factors.len())
-        .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident, ind)))
+        .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_string, ind)))
         .collect();
 
     let mut weights: Vec<Expr> = Vec::with_capacity(split_factors.len() + 1);
@@ -326,7 +329,7 @@ fn create_index_reconstruction_statements(
 
     vec![
         Statement::Declaration {
-            ident: Expr::Ident(base_iterator_ident.clone()),
+            ident: base_iterator_ident.clone(),
             value: reconstructed_index,
             type_: Type::Int(false),
         },
