@@ -18,6 +18,7 @@ pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
     pub bound_addr: BoundAddr,
+    pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
 }
 
 #[derive(Clone, Debug)]
@@ -368,7 +369,7 @@ impl Graph {
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
                             let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
-                            let base_loop = LoopSpec {
+                            let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
                                 bound_addr: BoundAddr::Base {
@@ -376,20 +377,26 @@ impl Graph {
                                     dim_ind: *dim_ind,
                                     split_factors: split_factors.clone(),
                                 },
+                                index_reconstruction: None, // TODO
                             };
-                            std::iter::once(base_loop).chain(split_factors.iter().enumerate().map(
-                                move |(ind, factor)| LoopSpec {
-                                    group: loop_group,
-                                    ind,
-                                    bound_addr: BoundAddr::Factor(*factor),
-                                },
-                            ))
+                            std::iter::once(base_loop_spec).chain(
+                                split_factors.iter().enumerate().map(move |(ind, factor)| {
+                                    LoopSpec {
+                                        group: loop_group,
+                                        ind,
+                                        bound_addr: BoundAddr::Factor(*factor),
+                                        index_reconstruction: None, // TODO
+                                    }
+                                }),
+                            )
                         })
                         .collect()
                 } else {
-                    schedule
+                    let mut index_reconstructed_groups = HashSet::<usize>::new();
+                    let mut loop_specs: Vec<LoopSpec> = schedule
                         .loop_order
                         .iter()
+                        .rev()
                         .map(|(c, split_factor_ind)| {
                             let loop_group = loop_groups[&c];
                             let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
@@ -403,13 +410,22 @@ impl Graph {
                                 (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
                             };
 
+                            let index_reconstruction =
+                                match index_reconstructed_groups.insert(loop_group) {
+                                    true => Some(split_factors.clone()),
+                                    false => None,
+                                };
+
                             LoopSpec {
                                 group: loop_group,
                                 ind: *split_factor_ind,
                                 bound_addr,
+                                index_reconstruction,
                             }
                         })
-                        .collect()
+                        .collect();
+                    loop_specs.reverse();
+                    loop_specs
                 };
 
                 //// TODO validate number of loop_specs: one per unique char index plus one per split
