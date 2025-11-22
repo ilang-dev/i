@@ -379,16 +379,29 @@ impl Graph {
                                 },
                                 index_reconstruction: None, // TODO
                             };
-                            std::iter::once(base_loop_spec).chain(
-                                split_factors.iter().enumerate().map(move |(ind, factor)| {
-                                    LoopSpec {
-                                        group: loop_group,
-                                        ind,
-                                        bound_addr: BoundAddr::Factor(*factor),
-                                        index_reconstruction: None, // TODO
-                                    }
-                                }),
-                            )
+
+                            let mut enumerated_split_factors = split_factors.iter().enumerate();
+
+                            let index_reconstructed_loop_spec = enumerated_split_factors
+                                .next()
+                                .map(move |(ind, factor)| LoopSpec {
+                                    group: loop_group,
+                                    ind,
+                                    bound_addr: BoundAddr::Factor(*factor),
+                                    index_reconstruction: Some(split_factors.clone()),
+                                });
+
+                            let remaining_factor_loop_specs =
+                                enumerated_split_factors.map(move |(ind, factor)| LoopSpec {
+                                    group: loop_group,
+                                    ind,
+                                    bound_addr: BoundAddr::Factor(*factor),
+                                    index_reconstruction: None,
+                                });
+
+                            std::iter::once(base_loop_spec)
+                                .chain(index_reconstructed_loop_spec.into_iter())
+                                .chain(remaining_factor_loop_specs)
                         })
                         .collect()
                 } else {
