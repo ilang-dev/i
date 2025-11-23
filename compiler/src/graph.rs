@@ -39,6 +39,7 @@ pub enum NodeBody {
         shape_addrs: Vec<(usize, usize)>,
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
+        compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
     },
 }
 
@@ -447,6 +448,8 @@ impl Graph {
                     loop_specs
                 };
 
+                let compute_levels = schedule.compute_levels.clone();
+
                 //// TODO validate number of loop_specs: one per unique char index plus one per split
 
                 let body = NodeBody::Interior {
@@ -454,6 +457,7 @@ impl Graph {
                     shape_addrs,
                     split_factor_lists,
                     loop_specs,
+                    compute_levels,
                 };
                 self.add_node(out.0.clone(), body, parents, children)
             }
