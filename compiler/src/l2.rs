@@ -125,67 +125,64 @@ fn lower_node(
         .max()
         .unwrap_or(0)
         + 1;
+
     let mut running_loop_counts_by_group: Vec<usize> = vec![0; n_loop_groups];
     let mut total_loop_counts_by_group = running_loop_counts_by_group.clone();
+
     for i in loop_specs.iter().map(|LoopSpec { group, .. }| *group) {
         total_loop_counts_by_group[i] += 1;
     }
 
-    let empty_loops: Vec<Statement> = loop_specs
-        .iter()
-        .map(
-            |LoopSpec {
-                 group,
-                 bound_addr,
-                 index_reconstruction,
-                 ..
-             }| {
-                let (bound, index): (Expr, Expr) = match bound_addr {
-                    BoundAddr::Base {
-                        input_ind,
-                        dim_ind,
-                        split_factors,
-                    } => match split_factors.len() {
-                        0 => (
-                            Expr::Ident(format!("b{group}")),
-                            Expr::Ident(format!("i{group}")),
-                        ),
-                        i => (
-                            create_split_bound_expr(
-                                child_shapes[*input_ind][*dim_ind].clone(),
-                                split_factors,
-                            ),
-                            Expr::Ident(format!("i{group}_0")),
-                        ),
-                    },
-                    BoundAddr::Factor(factor) => {
-                        running_loop_counts_by_group[*group] += 1;
-                        let factor_ind = running_loop_counts_by_group[*group];
-                        (
-                            Expr::Int(*factor),
-                            Expr::Ident(format!("i{group}_{factor_ind}")),
-                        )
-                    }
-                };
+    let make_empty_loop = |spec: &LoopSpec| {
+        let group = spec.group;
 
-                let body = Block {
-                    statements: match index_reconstruction {
-                        Some(split_factors) => {
-                            create_index_reconstruction_statements(&index, &bound, &split_factors)
-                        }
-                        None => vec![],
-                    },
-                };
-
-                Statement::Loop {
-                    index,
-                    bound,
-                    body,
-                    parallel: true,
+        let (bound, index) = match &spec.bound_addr {
+            BoundAddr::Base {
+                input_ind,
+                dim_ind,
+                split_factors,
+            } => {
+                if split_factors.is_empty() {
+                    (
+                        Expr::Ident(format!("b{group}")),
+                        Expr::Ident(format!("i{group}")),
+                    )
+                } else {
+                    (
+                        create_split_bound_expr(
+                            child_shapes[*input_ind][*dim_ind].clone(),
+                            split_factors,
+                        ),
+                        Expr::Ident(format!("i{group}_0")),
+                    )
                 }
-            },
-        )
-        .collect();
+            }
+            BoundAddr::Factor(factor) => {
+                running_loop_counts_by_group[group] += 1;
+                let factor_ind = running_loop_counts_by_group[group];
+                (
+                    Expr::Int(*factor),
+                    Expr::Ident(format!("i{group}_{factor_ind}")),
+                )
+            }
+        };
+
+        let statements = match &spec.index_reconstruction {
+            Some(split_factors) => {
+                create_index_reconstruction_statements(&index, &bound, split_factors)
+            }
+            None => Vec::new(),
+        };
+
+        Statement::Loop {
+            index,
+            bound,
+            body: Block { statements },
+            parallel: true,
+        }
+    };
+
+    let empty_loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
 
     let op_statement = Statement::Return {
         value: Expr::Int(0),
