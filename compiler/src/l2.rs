@@ -118,6 +118,9 @@ fn lower_node(
         },
     };
 
+    // TODO prune loops and fold storage based on compute level
+    //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
+
     // TODO the library function needs shape in terms of children
 
     let n_loop_groups = loop_specs
@@ -185,6 +188,7 @@ fn lower_node(
 
     let empty_loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
 
+    // TODO write a real scalar op here
     let op_statement = Statement::Return {
         value: Expr::Int(0),
     };
