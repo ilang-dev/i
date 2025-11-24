@@ -448,7 +448,8 @@ impl Graph {
                     loop_specs
                 };
 
-                let compute_levels = schedule.compute_levels.clone();
+                let mut compute_levels = schedule.compute_levels.clone();
+                compute_levels.resize(children.len(), 0);
 
                 //// TODO validate number of loop_specs: one per unique char index plus one per split
 
