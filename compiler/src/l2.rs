@@ -140,90 +140,7 @@ fn lower_node(
 
     // TODO the library function needs shape in terms of children
 
-    let n_loop_groups = loop_specs
-        .iter()
-        .map(|LoopSpec { group, .. }| *group)
-        .max()
-        .unwrap_or(0)
-        + 1;
-
-    let mut running_loop_counts_by_group: Vec<usize> = vec![0; n_loop_groups];
-    let mut total_loop_counts_by_group = running_loop_counts_by_group.clone();
-
-    for i in loop_specs.iter().map(|LoopSpec { group, .. }| *group) {
-        total_loop_counts_by_group[i] += 1;
-    }
-
-    let make_empty_loop = |spec: &LoopSpec| {
-        let group = spec.group;
-
-        let (bound, index) = match &spec.bound_addr {
-            BoundAddr::Base {
-                input_ind,
-                dim_ind,
-                split_factors,
-            } => {
-                if split_factors.is_empty() {
-                    (
-                        Expr::Ident(format!("b{group}")),
-                        Expr::Ident(format!("i{group}")),
-                    )
-                } else {
-                    (
-                        create_split_bound_expr(
-                            child_shapes[*input_ind][*dim_ind].clone(),
-                            split_factors,
-                        ),
-                        Expr::Ident(format!("i{group}_0")),
-                    )
-                }
-            }
-            BoundAddr::Factor(factor) => {
-                running_loop_counts_by_group[group] += 1;
-                let factor_ind = running_loop_counts_by_group[group];
-                (
-                    Expr::Int(*factor),
-                    Expr::Ident(format!("i{group}_{factor_ind}")),
-                )
-            }
-        };
-
-        let statements = match &spec.index_reconstruction {
-            Some(split_factors) => {
-                create_index_reconstruction_statements(&index, &bound, split_factors)
-            }
-            None => Vec::new(),
-        };
-
-        Statement::Loop {
-            index,
-            bound,
-            body: Block { statements },
-            parallel: true,
-        }
-    };
-
-    let empty_loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
-
-    // TODO write a real scalar op here
-    let op_statement = Statement::Return {
-        value: Expr::Int(0),
-    };
-
-    let loop_stack: Statement =
-        empty_loops
-            .into_iter()
-            .rev()
-            .fold(op_statement, |loop_stack, mut loop_| {
-                if let Statement::Loop { ref mut body, .. } = loop_ {
-                    body.statements.push(loop_stack);
-                }
-                loop_
-            });
-
-    let library_function = Block {
-        statements: vec![loop_stack],
-    };
+    let library_function = build_library_function(&loop_specs, &child_shapes);
 
     // create library function
     library.statements.push(Statement::Function {
@@ -288,6 +205,75 @@ fn lower_node(
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
     (buffer_ident, node.index.len(), semantic_shape_exprs)
+}
+
+fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Expr>>) -> Block {
+    // TODO write a real scalar op here
+    let op_statement = Statement::Return {
+        value: Expr::Int(0),
+    };
+
+    // TODO either define loop bound idents or inline shape exprs
+    let make_empty_loop = |spec: &LoopSpec| {
+        let group = spec.group;
+        let ind = spec.ind;
+
+        let (bound, index) = match &spec.bound_addr {
+            BoundAddr::Base {
+                input_ind,
+                dim_ind,
+                split_factors,
+            } => {
+                if split_factors.is_empty() {
+                    (
+                        Expr::Ident(format!("b{group}")),
+                        Expr::Ident(format!("i{group}")),
+                    )
+                } else {
+                    (
+                        create_split_bound_expr(
+                            child_shapes[*input_ind][*dim_ind].clone(),
+                            split_factors,
+                        ),
+                        Expr::Ident(format!("i{group}_0")),
+                    )
+                }
+            }
+            BoundAddr::Factor(factor) => {
+                (Expr::Int(*factor), Expr::Ident(format!("i{group}_{ind}")))
+            }
+        };
+
+        let statements = match &spec.index_reconstruction {
+            Some(split_factors) => {
+                create_index_reconstruction_statements(&index, &bound, split_factors)
+            }
+            None => Vec::new(),
+        };
+
+        Statement::Loop {
+            index,
+            bound,
+            body: Block { statements },
+            parallel: true,
+        }
+    };
+
+    let loop_stack: Statement =
+        loop_specs
+            .iter()
+            .map(make_empty_loop)
+            .rev()
+            .fold(op_statement, |loop_stack, mut loop_| {
+                if let Statement::Loop { ref mut body, .. } = loop_ {
+                    body.statements.push(loop_stack);
+                }
+                loop_
+            });
+
+    Block {
+        statements: vec![loop_stack],
+    }
 }
 
 // NOTES ON LIBRARY FUNCTION LOWERING
