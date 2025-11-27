@@ -331,18 +331,19 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
-                let mut shape_table: HashMap<char, ((usize, usize), Vec<usize>)> = HashMap::new();
+                let mut shape_table: HashMap<char, Vec<((usize, usize), Vec<usize>)>> =
+                    HashMap::new();
                 for (child_ind, (_, child_index)) in children.iter().enumerate() {
                     for (dim_ind, c) in child_index.chars().enumerate() {
-                        shape_table.entry(c).or_insert((
+                        shape_table.entry(c).or_insert_with(Vec::new).push((
                             (child_ind, dim_ind),
-                            schedule.splits.get(&c).cloned().unwrap_or(vec![]),
+                            schedule.splits.get(&c).cloned().unwrap_or_else(|| vec![]),
                         ));
                     }
                 }
 
                 let (shape_addrs, split_factor_lists): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
-                    out.0.chars().map(|c| shape_table[&c].clone()).unzip();
+                    out.0.chars().map(|c| shape_table[&c][0].clone()).unzip();
 
                 let mut unique_char_indices = HashSet::<char>::new();
                 let char_indexes: Vec<char> = out
@@ -369,7 +370,7 @@ impl Graph {
                         .iter()
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
-                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
+                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c][0]; // TODO handle all entries
                             let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
@@ -417,7 +418,7 @@ impl Graph {
                         .rev()
                         .map(|(c, split_factor_ind)| {
                             let loop_group = loop_groups[&c];
-                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c];
+                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c][0]; // TODO handle other entries (if necessary)
 
                             let bound_addr = match (split_factors.is_empty(), split_factor_ind) {
                                 (false, 0) | (true, _) => BoundAddr::Base {
