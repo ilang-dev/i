@@ -36,7 +36,7 @@ pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
-        shape_addrs: Vec<(usize, usize)>,
+        shape_addr_lists: Vec<Vec<(usize, usize)>>, // outer vec over output dims, inner vec over inputs
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
         compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
@@ -331,19 +331,25 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
-                let mut shape_table: HashMap<char, Vec<((usize, usize), Vec<usize>)>> =
+                let mut shape_table: HashMap<char, (Vec<(usize, usize)>, Vec<usize>)> =
                     HashMap::new();
                 for (child_ind, (_, child_index)) in children.iter().enumerate() {
                     for (dim_ind, c) in child_index.chars().enumerate() {
-                        shape_table.entry(c).or_insert_with(Vec::new).push((
-                            (child_ind, dim_ind),
-                            schedule.splits.get(&c).cloned().unwrap_or_else(|| vec![]),
-                        ));
+                        let entry = shape_table.entry(c).or_insert_with(|| {
+                            (
+                                Vec::new(),
+                                schedule.splits.get(&c).cloned().unwrap_or_else(|| vec![]),
+                            )
+                        });
+
+                        entry.0.push((child_ind, dim_ind));
                     }
                 }
 
-                let (shape_addrs, split_factor_lists): (Vec<(usize, usize)>, Vec<Vec<usize>>) =
-                    out.0.chars().map(|c| shape_table[&c][0].clone()).unzip();
+                let (shape_addr_lists, split_factor_lists): (
+                    Vec<Vec<(usize, usize)>>,
+                    Vec<Vec<usize>>,
+                ) = out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
                 let mut unique_char_indices = HashSet::<char>::new();
                 let char_indexes: Vec<char> = out
@@ -370,13 +376,14 @@ impl Graph {
                         .iter()
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
-                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c][0]; // TODO handle all entries
+                            let (shape_addrs, split_factors) = &shape_table[&c];
+                            let (input_ind, dim_ind) = shape_addrs[0]; // TODO handle all entries
                             let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
                                 bound_addr: BoundAddr::Base {
-                                    input_ind: *input_ind,
-                                    dim_ind: *dim_ind,
+                                    input_ind,
+                                    dim_ind,
                                     split_factors: split_factors.clone(),
                                 },
                                 index_reconstruction: None, // TODO
@@ -418,12 +425,13 @@ impl Graph {
                         .rev()
                         .map(|(c, split_factor_ind)| {
                             let loop_group = loop_groups[&c];
-                            let ((input_ind, dim_ind), split_factors) = &shape_table[&c][0]; // TODO handle other entries (if necessary)
+                            let (shape_addrs, split_factors) = &shape_table[&c];
+                            let (input_ind, dim_ind) = shape_addrs[0]; // TODO handle all entries
 
                             let bound_addr = match (split_factors.is_empty(), split_factor_ind) {
                                 (false, 0) | (true, _) => BoundAddr::Base {
-                                    input_ind: *input_ind,
-                                    dim_ind: *dim_ind,
+                                    input_ind,
+                                    dim_ind,
                                     split_factors: split_factors.clone(),
                                 },
                                 (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
@@ -456,7 +464,7 @@ impl Graph {
 
                 let body = NodeBody::Interior {
                     op,
-                    shape_addrs,
+                    shape_addr_lists,
                     split_factor_lists,
                     loop_specs,
                     compute_levels,

@@ -80,7 +80,7 @@ fn lower_node(
 ) -> (Expr, usize, Vec<Expr>) {
     let NodeBody::Interior {
         op,
-        shape_addrs,
+        shape_addr_lists,
         split_factor_lists,
         loop_specs,
         compute_levels,
@@ -150,15 +150,16 @@ fn lower_node(
 
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
-    let buffer_shape_exprs: Vec<Expr> = shape_addrs
+    let buffer_shape_exprs: Vec<Expr> = shape_addr_lists
         .iter()
+        .map(|list| list[0]) // any shape addr works, default to 0-th
         .zip(split_factor_lists.iter())
         .flat_map(|((input_ind, dim_ind), factors)| {
-            let base_shape_expr = child_shapes[*input_ind][*dim_ind].clone();
+            let base_shape_expr = child_shapes[input_ind][dim_ind].clone();
             match factors.is_empty() {
                 true => vec![base_shape_expr],
                 false => std::iter::once(create_split_bound_expr(
-                    child_shapes[*input_ind][*dim_ind].clone(),
+                    child_shapes[input_ind][dim_ind].clone(),
                     factors,
                 ))
                 .chain(factors.iter().map(|factor| Expr::Int(*factor)))
@@ -194,9 +195,10 @@ fn lower_node(
     // TODO create drop
 
     // `Expr`s for the dims of the node without regard to splitting or fusion
-    let semantic_shape_exprs = shape_addrs
+    let semantic_shape_exprs = shape_addr_lists
         .iter()
-        .map(|(input_ind, dim_ind)| child_shapes[*input_ind][*dim_ind].clone())
+        .map(|list| list[0]) // any shape addr works, default to 0-th
+        .map(|(input_ind, dim_ind)| child_shapes[input_ind][dim_ind].clone())
         .collect();
 
     // TODO I think the shape output here can be seen as tracking the semantic
