@@ -52,7 +52,6 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut library,
                 &mut exec_block,
                 &mut node_to_leaf_ind,
-                0,
             )
         })
         .collect();
@@ -76,7 +75,6 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
-    compute_level: usize,
 ) -> (Expr, usize, Vec<Expr>) {
     let NodeBody::Interior {
         op,
@@ -112,14 +110,7 @@ fn lower_node(
         .iter()
         .zip(compute_levels.iter())
         .map(|((node, _), &compute_level)| {
-            lower_node(
-                &node,
-                None,
-                library,
-                exec_block,
-                node_to_leaf_ind,
-                compute_level,
-            )
+            lower_node(&node, None, library, exec_block, node_to_leaf_ind)
         })
         .collect();
     let child_store_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.0.clone()).collect();
