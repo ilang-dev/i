@@ -219,8 +219,7 @@ fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Exp
     let make_empty_loop = |spec: &LoopSpec| {
         let group = spec.group;
         let ind = spec.ind;
-        let input_ind = spec.input_ind;
-        let dim_ind = spec.dim_ind;
+        let (input_ind, dim_ind) = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
 
         let (bound, index) = match &spec.bound {

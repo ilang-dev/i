@@ -17,8 +17,7 @@ type NodeRef = Arc<Mutex<Node>>;
 pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
-    pub input_ind: usize,
-    pub dim_ind: usize,
+    pub addrs: Vec<(usize, usize)>, // (input index, dimension index)
     pub split_factors: Vec<usize>,
     pub bound: Bound,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
@@ -376,12 +375,10 @@ impl Graph {
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
                             let (shape_addrs, split_factors) = &shape_table[&c];
-                            let (input_ind, dim_ind) = shape_addrs[0]; // TODO handle all entries
                             let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
-                                input_ind,
-                                dim_ind,
+                                addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
                                 bound: Bound::Base,
                                 index_reconstruction: None, // TODO
@@ -394,8 +391,7 @@ impl Graph {
                                 .map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
-                                    input_ind,
-                                    dim_ind,
+                                    addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
                                     bound: Bound::Factor(*factor),
                                     index_reconstruction: if split_factors.is_empty() {
@@ -409,8 +405,7 @@ impl Graph {
                                 enumerated_split_factors.map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
-                                    input_ind,
-                                    dim_ind,
+                                    addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
                                     bound: Bound::Factor(*factor),
                                     index_reconstruction: None,
@@ -430,7 +425,6 @@ impl Graph {
                         .map(|(c, split_factor_ind)| {
                             let loop_group = loop_groups[&c];
                             let (shape_addrs, split_factors) = &shape_table[&c];
-                            let (input_ind, dim_ind) = shape_addrs[0]; // TODO handle all entries
 
                             let bound = match (split_factors.is_empty(), split_factor_ind) {
                                 (false, 0) | (true, _) => Bound::Base,
@@ -448,8 +442,7 @@ impl Graph {
                             LoopSpec {
                                 group: loop_group,
                                 ind: *split_factor_ind,
-                                input_ind,
-                                dim_ind,
+                                addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
                                 bound,
                                 index_reconstruction,
