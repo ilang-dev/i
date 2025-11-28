@@ -11,7 +11,11 @@ use crate::ast::{
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-type NodeRef = Arc<Mutex<Node>>;
+#[derive(Clone, Debug)]
+pub enum Bound {
+    Base,
+    Factor(usize),
+}
 
 #[derive(Clone, Debug)]
 pub struct LoopSpec {
@@ -21,12 +25,6 @@ pub struct LoopSpec {
     pub split_factors: Vec<usize>,
     pub bound: Bound,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
-}
-
-#[derive(Clone, Debug)]
-pub enum Bound {
-    Base,
-    Factor(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +47,8 @@ pub struct Node {
     parents: Vec<NodeRef>,
     children: Vec<(NodeRef, String)>,
 }
+
+type NodeRef = Arc<Mutex<Node>>;
 
 impl Node {
     pub fn children(&self) -> Vec<(Node, String)> {
