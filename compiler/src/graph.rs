@@ -17,17 +17,16 @@ type NodeRef = Arc<Mutex<Node>>;
 pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
-    pub bound_addr: BoundAddr,
+    pub input_ind: usize,
+    pub dim_ind: usize,
+    pub split_factors: Vec<usize>,
+    pub bound: Bound,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
 }
 
 #[derive(Clone, Debug)]
-pub enum BoundAddr {
-    Base {
-        input_ind: usize,
-        dim_ind: usize,
-        split_factors: Vec<usize>,
-    },
+pub enum Bound {
+    Base,
     Factor(usize),
 }
 
@@ -381,11 +380,10 @@ impl Graph {
                             let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
-                                bound_addr: BoundAddr::Base {
-                                    input_ind,
-                                    dim_ind,
-                                    split_factors: split_factors.clone(),
-                                },
+                                input_ind,
+                                dim_ind,
+                                split_factors: split_factors.clone(),
+                                bound: Bound::Base,
                                 index_reconstruction: None, // TODO
                             };
 
@@ -396,7 +394,10 @@ impl Graph {
                                 .map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
-                                    bound_addr: BoundAddr::Factor(*factor),
+                                    input_ind,
+                                    dim_ind,
+                                    split_factors: split_factors.clone(),
+                                    bound: Bound::Factor(*factor),
                                     index_reconstruction: if split_factors.is_empty() {
                                         None
                                     } else {
@@ -408,7 +409,10 @@ impl Graph {
                                 enumerated_split_factors.map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
-                                    bound_addr: BoundAddr::Factor(*factor),
+                                    input_ind,
+                                    dim_ind,
+                                    split_factors: split_factors.clone(),
+                                    bound: Bound::Factor(*factor),
                                     index_reconstruction: None,
                                 });
 
@@ -428,13 +432,9 @@ impl Graph {
                             let (shape_addrs, split_factors) = &shape_table[&c];
                             let (input_ind, dim_ind) = shape_addrs[0]; // TODO handle all entries
 
-                            let bound_addr = match (split_factors.is_empty(), split_factor_ind) {
-                                (false, 0) | (true, _) => BoundAddr::Base {
-                                    input_ind,
-                                    dim_ind,
-                                    split_factors: split_factors.clone(),
-                                },
-                                (false, ind) => BoundAddr::Factor(split_factors[*ind - 1]),
+                            let bound = match (split_factors.is_empty(), split_factor_ind) {
+                                (false, 0) | (true, _) => Bound::Base,
+                                (false, ind) => Bound::Factor(split_factors[*ind - 1]),
                             };
 
                             let index_reconstruction = if !split_factors.is_empty()
@@ -448,7 +448,10 @@ impl Graph {
                             LoopSpec {
                                 group: loop_group,
                                 ind: *split_factor_ind,
-                                bound_addr,
+                                input_ind,
+                                dim_ind,
+                                split_factors: split_factors.clone(),
+                                bound,
                                 index_reconstruction,
                             }
                         })

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{BoundAddr, Graph, LoopSpec, Node, NodeBody};
+use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody};
 
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -219,13 +219,12 @@ fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Exp
     let make_empty_loop = |spec: &LoopSpec| {
         let group = spec.group;
         let ind = spec.ind;
+        let input_ind = spec.input_ind;
+        let dim_ind = spec.dim_ind;
+        let split_factors = &spec.split_factors;
 
-        let (bound, index) = match &spec.bound_addr {
-            BoundAddr::Base {
-                input_ind,
-                dim_ind,
-                split_factors,
-            } => {
+        let (bound, index) = match &spec.bound {
+            Bound::Base => {
                 if split_factors.is_empty() {
                     (
                         Expr::Ident(format!("b{group}")),
@@ -234,16 +233,14 @@ fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Exp
                 } else {
                     (
                         create_split_bound_expr(
-                            child_shapes[*input_ind][*dim_ind].clone(),
+                            child_shapes[input_ind][dim_ind].clone(),
                             split_factors,
                         ),
                         Expr::Ident(format!("i{group}_0")),
                     )
                 }
             }
-            BoundAddr::Factor(factor) => {
-                (Expr::Int(*factor), Expr::Ident(format!("i{group}_{ind}")))
-            }
+            Bound::Factor(factor) => (Expr::Int(*factor), Expr::Ident(format!("i{group}_{ind}"))),
         };
 
         let statements = match &spec.index_reconstruction {
