@@ -21,6 +21,7 @@ pub enum Bound {
 pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
+    pub output_dim: Option<usize>, // None only for reduction dimensions
     pub addrs: Vec<(usize, usize)>, // (input index, dimension index)
     pub split_factors: Vec<usize>,
     pub bound: Bound,
@@ -349,6 +350,9 @@ impl Graph {
                     Vec<Vec<usize>>,
                 ) = out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
+                let char_index_to_output_dim: HashMap<char, usize> =
+                    out.0.chars().enumerate().map(|(i, c)| (c, i)).collect();
+
                 let mut unique_char_indices = HashSet::<char>::new();
                 let char_indexes: Vec<char> = out
                     .0
@@ -374,10 +378,12 @@ impl Graph {
                         .iter()
                         .flat_map(|c| {
                             let loop_group = loop_groups[&c];
+                            let output_dim = char_index_to_output_dim.get(&c).copied();
                             let (shape_addrs, split_factors) = &shape_table[&c];
                             let base_loop_spec = LoopSpec {
                                 group: loop_group,
                                 ind: 0,
+                                output_dim,
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
                                 bound: Bound::Base,
@@ -391,6 +397,7 @@ impl Graph {
                                 .map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
+                                    output_dim,
                                     addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
                                     bound: Bound::Factor(*factor),
@@ -405,6 +412,7 @@ impl Graph {
                                 enumerated_split_factors.map(move |(ind, factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
+                                    output_dim,
                                     addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
                                     bound: Bound::Factor(*factor),
@@ -424,6 +432,7 @@ impl Graph {
                         .rev()
                         .map(|(c, split_factor_ind)| {
                             let loop_group = loop_groups[&c];
+                            let output_dim = char_index_to_output_dim.get(&c).copied();
                             let (shape_addrs, split_factors) = &shape_table[&c];
 
                             let bound = match (split_factors.is_empty(), split_factor_ind) {
@@ -442,6 +451,7 @@ impl Graph {
                             LoopSpec {
                                 group: loop_group,
                                 ind: *split_factor_ind,
+                                output_dim,
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
                                 bound,
