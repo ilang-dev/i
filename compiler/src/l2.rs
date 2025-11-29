@@ -41,6 +41,8 @@ pub fn lower(graph: &Graph) -> Program {
     // "shapes" are encoded as (usize, usize) "addresses" pointing to
     // (input index, dimension index)
 
+    let mut topo_ind = 0;
+
     let lowereds: Vec<(Expr, usize, Vec<Expr>, Block)> = graph
         .roots()
         .iter()
@@ -49,6 +51,7 @@ pub fn lower(graph: &Graph) -> Program {
             lower_node(
                 &node.lock().unwrap(),
                 Some(root_ind),
+                &mut topo_ind,
                 &mut library,
                 &mut exec_block,
                 &mut node_to_leaf_ind,
@@ -73,6 +76,7 @@ pub fn lower(graph: &Graph) -> Program {
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
+    topo_ind: &mut usize,
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
@@ -126,6 +130,7 @@ fn lower_node(
             lower_node(
                 &node,
                 None,
+                topo_ind,
                 library,
                 exec_block,
                 node_to_leaf_ind,
@@ -136,8 +141,8 @@ fn lower_node(
 
     let child_store_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.0.clone()).collect();
     let child_shapes: Vec<Vec<Expr>> = children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
 
-    let topo_ind = library.statements.len();
     let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
     let buffer_ident = match root_ind {
         None => Expr::Ident(format!("s{topo_ind}")),
@@ -152,6 +157,7 @@ fn lower_node(
 
     // TODO the library function needs shape in terms of children
 
+    // remove any pruned loops
     let loop_specs: Vec<LoopSpec> = loop_specs
         .iter()
         .filter(|loop_spec| {
@@ -162,13 +168,26 @@ fn lower_node(
         })
         .map(|loop_spec| loop_spec.clone())
         .collect();
-    let library_function = build_library_function(&loop_specs, &child_shapes);
+
+    let function_fragment = build_library_function(
+        &loop_specs,
+        &child_shapes,
+        &child_fragments,
+        &compute_levels,
+    );
 
     // create library function
-    library.statements.push(Statement::Function {
-        signature: FunctionSignature::Kernel(library_function_ident.clone()),
-        body: library_function,
-    });
+    let mut fused_fragment = Block::default();
+    if pruned_loop_specs.is_empty() {
+        library.statements.push(Statement::Function {
+            signature: FunctionSignature::Kernel(library_function_ident.clone()),
+            body: function_fragment,
+        });
+    } else {
+        fused_fragment
+            .statements
+            .extend(function_fragment.statements);
+    }
 
     // `Expr`s for the dims of the buffer accounting for splitting
     // TODO account for fusion as well
@@ -193,7 +212,7 @@ fn lower_node(
     // create allocation
     if root_ind.is_none() {
         exec_block.statements.push(Statement::Alloc {
-            index: topo_ind,
+            index: *topo_ind,
             initial_value: Box::new(Expr::Scalar(match op {
                 '>' => f32::NEG_INFINITY,
                 '<' => f32::INFINITY,
@@ -208,11 +227,13 @@ fn lower_node(
     // TODO this is also messed up in general beacuse we need to pass arrays of tensors, not
     //      dynamic args lists
     // create call site
-    exec_block.statements.push(Statement::Call {
-        ident: library_function_ident,
-        in_args: child_store_idents,
-        out_args: vec![buffer_ident.clone()],
-    });
+    if pruned_loop_specs.is_empty() {
+        exec_block.statements.push(Statement::Call {
+            ident: library_function_ident,
+            in_args: child_store_idents,
+            out_args: vec![buffer_ident.clone()],
+        });
+    }
 
     // TODO create drop
 
@@ -223,6 +244,8 @@ fn lower_node(
         .map(|(input_ind, dim_ind)| child_shapes[input_ind][dim_ind].clone())
         .collect();
 
+    *topo_ind += 1;
+
     // TODO I think the shape output here can be seen as tracking the semantic
     //      shape rather than the shape of the physical buffers. All this is used
     //      for is determining the output shape from the input shape which does
@@ -232,11 +255,16 @@ fn lower_node(
         buffer_ident,
         node.index.len(),
         semantic_shape_exprs,
-        Block::default(),
+        fused_fragment,
     )
 }
 
-fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Expr>>) -> Block {
+fn build_library_function(
+    loop_specs: &Vec<LoopSpec>,
+    child_shapes: &Vec<Vec<Expr>>,
+    child_fragments: &Vec<Block>,
+    compute_levels: &Vec<usize>,
+) -> Block {
     // TODO write a real scalar op here
     let op_statement = Statement::Return {
         value: Expr::Int(0),
@@ -284,10 +312,23 @@ fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Exp
         }
     };
 
+    let mut loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
+    for (child_ind, compute_level) in compute_levels.iter().enumerate() {
+        if *compute_level > 0 {
+            //loops[*compute_level].body.statements.push(child_fragments[*child_ind]);
+
+            if let Statement::Loop { ref mut body, .. } = loops[*compute_level - 1] {
+                body.statements
+                    .extend(child_fragments[child_ind].statements.clone());
+            } else {
+                panic!("Loop `Statement` not of variant `Loop`.")
+            }
+        }
+    }
+
     let loop_stack: Statement =
-        loop_specs
-            .iter()
-            .map(make_empty_loop)
+        loops
+            .into_iter()
             .rev()
             .fold(op_statement, |loop_stack, mut loop_| {
                 if let Statement::Loop { ref mut body, .. } = loop_ {
