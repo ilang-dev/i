@@ -76,7 +76,7 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
-    pruned_loop_specs: Vec<&LoopSpec>,
+    pruned_loop_specs: Vec<(usize, &LoopSpec)>,
 ) -> (Expr, usize, Vec<Expr>, Block) {
     let NodeBody::Interior {
         op,
@@ -111,10 +111,29 @@ fn lower_node(
         .children()
         .iter()
         .zip(compute_levels.iter())
-        .map(|((node, _), &compute_level)| {
-            lower_node(&node, None, library, exec_block, node_to_leaf_ind, vec![])
+        .enumerate()
+        .map(|(child_ind, ((node, _), &compute_level))| {
+            let pruned_loop_specs: Vec<(usize, &LoopSpec)> = loop_specs
+                .iter()
+                .take(compute_level)
+                .filter_map(|spec| {
+                    spec.addrs
+                        .iter()
+                        .find(|(input_ind, _)| *input_ind == child_ind)
+                        .map(|(_, dim_ind)| (*dim_ind, spec))
+                })
+                .collect();
+            lower_node(
+                &node,
+                None,
+                library,
+                exec_block,
+                node_to_leaf_ind,
+                pruned_loop_specs,
+            )
         })
         .collect();
+
     let child_store_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.0.clone()).collect();
     let child_shapes: Vec<Vec<Expr>> = children_lowereds.iter().map(|l| l.2.clone()).collect();
 
@@ -133,6 +152,16 @@ fn lower_node(
 
     // TODO the library function needs shape in terms of children
 
+    let loop_specs: Vec<LoopSpec> = loop_specs
+        .iter()
+        .filter(|loop_spec| {
+            !pruned_loop_specs.iter().any(|(dim_ind, pruned_spec)| {
+                Some(dim_ind) == loop_spec.output_dim.as_ref()
+                    && loop_spec.bound == pruned_spec.bound
+            })
+        })
+        .map(|loop_spec| loop_spec.clone())
+        .collect();
     let library_function = build_library_function(&loop_specs, &child_shapes);
 
     // create library function

@@ -11,7 +11,7 @@ use crate::ast::{
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Bound {
     Base,
     Factor(usize),
