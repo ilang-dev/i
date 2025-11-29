@@ -41,7 +41,7 @@ pub fn lower(graph: &Graph) -> Program {
     // "shapes" are encoded as (usize, usize) "addresses" pointing to
     // (input index, dimension index)
 
-    let lowereds: Vec<(Expr, usize, Vec<Expr>)> = graph
+    let lowereds: Vec<(Expr, usize, Vec<Expr>, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -69,7 +69,7 @@ pub fn lower(graph: &Graph) -> Program {
     }
 }
 
-/// Lower node. Update library, return (buffer ident, rank, shape address)
+/// Lower node. Update library, return (buffer ident, rank, shape addr expr, fused fragment)
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
@@ -77,7 +77,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     pruned_loop_specs: Vec<&LoopSpec>,
-) -> (Expr, usize, Vec<Expr>) {
+) -> (Expr, usize, Vec<Expr>, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -99,7 +99,7 @@ fn lower_node(
                 index: Box::new(Expr::Int(dim_ind)),
             })
             .collect();
-        return (store_ident, rank, shape_addr);
+        return (store_ident, rank, shape_addr, Block::default());
     };
 
     assert!(
@@ -107,7 +107,7 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let children_lowereds: Vec<(Expr, usize, Vec<Expr>)> = node
+    let children_lowereds: Vec<(Expr, usize, Vec<Expr>, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -199,7 +199,12 @@ fn lower_node(
     //      for is determining the output shape from the input shape which does
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
-    (buffer_ident, node.index.len(), semantic_shape_exprs)
+    (
+        buffer_ident,
+        node.index.len(),
+        semantic_shape_exprs,
+        Block::default(),
+    )
 }
 
 fn build_library_function(loop_specs: &Vec<LoopSpec>, child_shapes: &Vec<Vec<Expr>>) -> Block {
