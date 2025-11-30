@@ -312,11 +312,10 @@ fn build_library_function(
         }
     };
 
+    // perform loop fusions
     let mut loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
     for (child_ind, compute_level) in compute_levels.iter().enumerate() {
         if *compute_level > 0 {
-            //loops[*compute_level].body.statements.push(child_fragments[*child_ind]);
-
             if let Statement::Loop { ref mut body, .. } = loops[*compute_level - 1] {
                 body.statements
                     .extend(child_fragments[child_ind].statements.clone());
