@@ -294,7 +294,10 @@ fn build_library_function(
                     )
                 }
             }
-            Bound::Factor(factor) => (Expr::Int(*factor), Expr::Ident(format!("i{group}_{ind}"))),
+            Bound::Factor(ind) => (
+                Expr::Int(split_factors[*ind - 1]),
+                Expr::Ident(format!("i{group}_{ind}")),
+            ),
         };
 
         let statements = match &spec.index_reconstruction {

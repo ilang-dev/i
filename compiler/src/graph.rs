@@ -400,7 +400,7 @@ impl Graph {
                                     output_dim,
                                     addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
-                                    bound: Bound::Factor(*factor),
+                                    bound: Bound::Factor(ind),
                                     index_reconstruction: if split_factors.is_empty() {
                                         None
                                     } else {
@@ -415,7 +415,7 @@ impl Graph {
                                     output_dim,
                                     addrs: shape_addrs.clone(),
                                     split_factors: split_factors.clone(),
-                                    bound: Bound::Factor(*factor),
+                                    bound: Bound::Factor(ind),
                                     index_reconstruction: None,
                                 });
 
@@ -437,7 +437,7 @@ impl Graph {
 
                             let bound = match (split_factors.is_empty(), split_factor_ind) {
                                 (false, 0) | (true, _) => Bound::Base,
-                                (false, ind) => Bound::Factor(split_factors[*ind - 1]),
+                                (false, ind) => Bound::Factor(*ind),
                             };
 
                             let index_reconstruction = if !split_factors.is_empty()
