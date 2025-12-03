@@ -270,6 +270,10 @@ fn build_library_function(
         value: Expr::Int(0),
     };
 
+    // TODO need offsets for indexing iterators and bounds to avoid collisions during fusions
+    // EDIT maybe not actually, because we're deleting loops, not adding them. what about indexing
+    //      though? the iterators idents need to line up at least. how do we do that?
+
     // TODO either define loop bound idents or inline shape exprs
     let make_empty_loop = |spec: &LoopSpec| {
         let group = spec.group;
