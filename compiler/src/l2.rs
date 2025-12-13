@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::Schedule;
 use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody};
+use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -123,8 +123,8 @@ fn lower_node(
                 .filter_map(|spec| {
                     spec.addrs
                         .iter()
-                        .find(|(input_ind, _)| *input_ind == child_ind)
-                        .map(|(_, dim_ind)| (*dim_ind, spec))
+                        .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
+                        .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec))
                 })
                 .collect();
             lower_node(
@@ -195,7 +195,7 @@ fn lower_node(
         .iter()
         .map(|list| list[0]) // any shape addr works, default to 0-th
         .zip(split_factor_lists.iter())
-        .flat_map(|((input_ind, dim_ind), factors)| {
+        .flat_map(|(ShapeAddr { input_ind, dim_ind }, factors)| {
             let base_shape_expr = child_shapes[input_ind][dim_ind].clone();
             match factors.is_empty() {
                 true => vec![base_shape_expr],
@@ -241,7 +241,7 @@ fn lower_node(
     let semantic_shape_exprs = shape_addr_lists
         .iter()
         .map(|list| list[0]) // any shape addr works, default to 0-th
-        .map(|(input_ind, dim_ind)| child_shapes[input_ind][dim_ind].clone())
+        .map(|ShapeAddr { input_ind, dim_ind }| child_shapes[input_ind][dim_ind].clone())
         .collect();
 
     *topo_ind += 1;
@@ -278,7 +278,7 @@ fn build_library_function(
     let make_empty_loop = |spec: &LoopSpec| {
         let group = spec.group;
         let ind = spec.ind;
-        let (input_ind, dim_ind) = spec.addrs[0]; // any addr works, default to 0-th
+        let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
 
         // TODO for pruned loops, we should use the group according to the

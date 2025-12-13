@@ -17,12 +17,22 @@ pub enum Bound {
     Factor(usize),
 }
 
+/// Used to associate objects to a particular domain `(input_ind, dim_ind)`.
+/// Depending on context, can be used as a local address (where `input_ind`
+/// refers to the input index of a Node's child list or in as a global address
+/// where `input_ind` refers to the index of a Graph's leaves list.
+#[derive(Clone, Copy, Debug)]
+pub struct ShapeAddr {
+    pub input_ind: usize,
+    pub dim_ind: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct LoopSpec {
     pub group: usize, // base loops and their corresponding split loops share a group
     pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
     pub output_dim: Option<usize>, // None only for reduction dimensions
-    pub addrs: Vec<(usize, usize)>, // (input index, dimension index)
+    pub addrs: Vec<ShapeAddr>, // (input index, dimension index)
     pub split_factors: Vec<usize>,
     pub bound: Bound,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
@@ -33,7 +43,7 @@ pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
-        shape_addr_lists: Vec<Vec<(usize, usize)>>, // outer vec over output dims, inner vec over inputs
+        shape_addr_lists: Vec<Vec<ShapeAddr>>, // outer vec over output dims, inner vec over inputs
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
         compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
@@ -330,9 +340,8 @@ impl Graph {
                     ScalarOp::NoOp(_) => ' ',
                 };
 
-                let mut shape_table: HashMap<char, (Vec<(usize, usize)>, Vec<usize>)> =
-                    HashMap::new();
-                for (child_ind, (_, child_index)) in children.iter().enumerate() {
+                let mut shape_table: HashMap<char, (Vec<ShapeAddr>, Vec<usize>)> = HashMap::new();
+                for (input_ind, (_, child_index)) in children.iter().enumerate() {
                     for (dim_ind, c) in child_index.chars().enumerate() {
                         let entry = shape_table.entry(c).or_insert_with(|| {
                             (
@@ -341,14 +350,12 @@ impl Graph {
                             )
                         });
 
-                        entry.0.push((child_ind, dim_ind));
+                        entry.0.push(ShapeAddr { input_ind, dim_ind });
                     }
                 }
 
-                let (shape_addr_lists, split_factor_lists): (
-                    Vec<Vec<(usize, usize)>>,
-                    Vec<Vec<usize>>,
-                ) = out.0.chars().map(|c| shape_table[&c].clone()).unzip();
+                let (shape_addr_lists, split_factor_lists): (Vec<Vec<ShapeAddr>>, Vec<Vec<usize>>) =
+                    out.0.chars().map(|c| shape_table[&c].clone()).unzip();
 
                 let char_index_to_output_dim: HashMap<char, usize> =
                     out.0.chars().enumerate().map(|(i, c)| (c, i)).collect();
