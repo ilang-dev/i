@@ -169,6 +169,7 @@ fn lower_node(
         .map(|loop_spec| loop_spec.clone())
         .collect();
 
+    // create library function
     let function_fragment = build_library_function(
         &loop_specs,
         &child_shapes,
@@ -176,7 +177,6 @@ fn lower_node(
         &compute_levels,
     );
 
-    // create library function
     let mut fused_fragment = Block::default();
     if pruned_loop_specs.is_empty() {
         library.statements.push(Statement::Function {
@@ -280,6 +280,12 @@ fn build_library_function(
         let ind = spec.ind;
         let (input_ind, dim_ind) = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
+
+        // TODO for pruned loops, we should use the group according to the
+        // fusing (parent) node. then how do we avoid collisions
+
+        // TODO Can we make the idents be `b_{global_input_ind}_{dim_ind}`?
+        // Then mismatched loop groups would not cause ident mismatches
 
         let (bound, index) = match &spec.bound {
             Bound::Base => {
