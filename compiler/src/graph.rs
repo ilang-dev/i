@@ -43,7 +43,12 @@ pub enum NodeBody {
     Leaf,
     Interior {
         op: char,
-        shape_addr_lists: Vec<Vec<ShapeAddr>>, // outer vec over output dims, inner vec over inputs
+        // outer vec runs over output dims, inner vec runs over possible origin
+        // domains in order of appearance in the input list, e.g., in
+        // `ik*kj~ijk`, the output index `k` has two possible origin domains:
+        // `ShapeAddr{input_ind: 0, dim_ind: 1}` or
+        // `ShapeAddr{input_ind: 1, dim_ind: 0}`
+        shape_addr_lists: Vec<Vec<ShapeAddr>>,
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
         compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
