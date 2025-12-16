@@ -330,8 +330,8 @@ fn build_library_function(
             Bound::Base => {
                 if split_factors.is_empty() {
                     (
-                        Expr::Ident(format!("b{group}")),
-                        Expr::Ident(format!("i{group}")),
+                        Expr::Ident(format!("b_{input_ind}_{dim_ind}")),
+                        Expr::Ident(format!("i_{input_ind}_{dim_ind}")),
                     )
                 } else {
                     (
@@ -339,13 +339,13 @@ fn build_library_function(
                             child_shapes[input_ind][dim_ind].clone(),
                             split_factors,
                         ),
-                        Expr::Ident(format!("i{group}_0")),
+                        Expr::Ident(format!("i_{input_ind}_{dim_ind}_0")),
                     )
                 }
             }
             Bound::Factor(ind) => (
                 Expr::Int(split_factors[*ind - 1]),
-                Expr::Ident(format!("i{group}_{ind}")),
+                Expr::Ident(format!("i_{input_ind}_{dim_ind}_{ind}")),
             ),
         };
 
