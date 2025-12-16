@@ -190,15 +190,21 @@ fn lower_node(
     // TODO the library function needs shape in terms of children
 
     // remove any pruned loops
-    let loop_specs: Vec<LoopSpec> = loop_specs
-        .iter()
-        .filter(|loop_spec| {
-            !pruned_loop_specs.iter().any(|(dim_ind, pruned_spec)| {
-                Some(dim_ind) == loop_spec.output_dim.as_ref()
-                    && loop_spec.bound == pruned_spec.bound
-            })
+    let globalize_shape_addr =
+        |&ShapeAddr { input_ind, dim_ind }: &ShapeAddr| child_shape_addrs[input_ind][dim_ind];
+    let globalize_shape_addrs = |loop_spec: &LoopSpec| LoopSpec {
+        addrs: loop_spec.addrs.iter().map(globalize_shape_addr).collect(),
+        ..loop_spec.clone()
+    };
+    let filter_pruned_loop_specs = |loop_spec: &&LoopSpec| {
+        !pruned_loop_specs.iter().any(|(dim_ind, pruned_spec)| {
+            Some(dim_ind) == loop_spec.output_dim.as_ref() && loop_spec.bound == pruned_spec.bound
         })
-        .map(|loop_spec| loop_spec.clone())
+    };
+    let loop_specs: Vec<LoopSpec> = loop_specs
+        .into_iter()
+        .filter(filter_pruned_loop_specs)
+        .map(globalize_shape_addrs)
         .collect();
 
     // create library function
