@@ -209,12 +209,7 @@ fn lower_node(
         .collect();
 
     // create library function
-    let function_fragment = build_library_function(
-        &loop_specs,
-        &child_shapes,
-        &child_fragments,
-        &compute_levels,
-    );
+    let function_fragment = build_library_function(&loop_specs, &child_fragments, &compute_levels);
 
     let mut fused_fragment = Block::default();
     if pruned_loop_specs.is_empty() {
@@ -300,7 +295,6 @@ fn lower_node(
 
 fn build_library_function(
     loop_specs: &Vec<LoopSpec>,
-    child_shapes: &Vec<Vec<Expr>>,
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
 ) -> Block {
@@ -336,7 +330,7 @@ fn build_library_function(
                 } else {
                     (
                         create_split_bound_expr(
-                            child_shapes[input_ind][dim_ind].clone(),
+                            Expr::Ident(format!("b_{input_ind}_{dim_ind}_0")),
                             split_factors,
                         ),
                         Expr::Ident(format!("i_{input_ind}_{dim_ind}_0")),
