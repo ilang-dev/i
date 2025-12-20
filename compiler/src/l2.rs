@@ -287,12 +287,6 @@ fn build_library_function(
         let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
 
-        // TODO for pruned loops, we should use the group according to the
-        // fusing (parent) node. then how do we avoid collisions
-
-        // TODO Can we make the idents be `b_{global_input_ind}_{dim_ind}`?
-        // Then mismatched loop groups would not cause ident mismatches
-
         let (bound, index) = match &spec.bound {
             Bound::Base => {
                 if split_factors.is_empty() {
