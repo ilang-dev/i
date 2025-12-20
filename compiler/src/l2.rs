@@ -512,3 +512,46 @@ fn create_index_reconstruction_statements(
         },
     ]
 }
+
+fn create_affine_index(indices: Vec<String>, bounds: &Vec<Expr>) -> Expr {
+    if bounds.len() == 1 && bounds[0] == Expr::Int(1) {
+        return Expr::Int(0);
+    }
+
+    let indices = bounds
+        .iter()
+        .rev()
+        .zip(indices.iter().rev())
+        .map(|(bound, index)| index)
+        .rev()
+        .collect::<Vec<_>>();
+    let d = indices.len();
+    let mut sum_expr = None;
+    for k in 0..d {
+        let mut product_expr = None;
+        for m in (k + 1)..d {
+            product_expr = Some(match product_expr {
+                Some(expr) => Expr::Op {
+                    op: '*',
+                    inputs: vec![expr, bounds[m].clone()],
+                },
+                None => bounds[m].clone(),
+            });
+        }
+        let partial_expr = match product_expr {
+            Some(expr) => Expr::Op {
+                op: '*',
+                inputs: vec![Expr::Ident(indices[k].clone()), expr],
+            },
+            None => Expr::Ident(indices[k].clone()),
+        };
+        sum_expr = Some(match sum_expr {
+            Some(expr) => Expr::Op {
+                op: '+',
+                inputs: vec![expr, partial_expr],
+            },
+            None => partial_expr,
+        });
+    }
+    sum_expr.unwrap_or(Expr::Int(0)) // Return 0 if no indices are provided
+}
