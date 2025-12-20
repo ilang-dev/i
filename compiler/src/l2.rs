@@ -513,7 +513,7 @@ fn create_index_reconstruction_statements(
     ]
 }
 
-fn create_affine_index(indices: Vec<String>, bounds: &Vec<Expr>) -> Expr {
+fn create_affine_index(indices: &Vec<Expr>, bounds: &Vec<Expr>) -> Expr {
     if bounds.len() == 1 && bounds[0] == Expr::Int(1) {
         return Expr::Int(0);
     }
@@ -541,9 +541,9 @@ fn create_affine_index(indices: Vec<String>, bounds: &Vec<Expr>) -> Expr {
         let partial_expr = match product_expr {
             Some(expr) => Expr::Op {
                 op: '*',
-                inputs: vec![Expr::Ident(indices[k].clone()), expr],
+                inputs: vec![indices[k].clone(), expr],
             },
-            None => Expr::Ident(indices[k].clone()),
+            None => indices[k].clone(),
         };
         sum_expr = Some(match sum_expr {
             Some(expr) => Expr::Op {
