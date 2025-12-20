@@ -287,34 +287,40 @@ fn build_library_function(
         let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
 
+        let base_bound_string = format!("b_{input_ind}_{dim_ind}");
+        let base_index_string = format!("i_{input_ind}_{dim_ind}");
+
+        let statements = if let Some(split_factors) = &spec.index_reconstruction {
+            create_index_reconstruction_statements(
+                &Expr::Ident(base_index_string.clone()),
+                &Expr::Ident(base_bound_string.clone()),
+                split_factors,
+            )
+        } else {
+            Vec::new()
+        };
+
         let (bound, index) = match &spec.bound {
             Bound::Base => {
                 if split_factors.is_empty() {
                     (
-                        Expr::Ident(format!("b_{input_ind}_{dim_ind}")),
-                        Expr::Ident(format!("i_{input_ind}_{dim_ind}")),
+                        Expr::Ident(base_bound_string),
+                        Expr::Ident(base_index_string),
                     )
                 } else {
                     (
                         create_split_bound_expr(
-                            Expr::Ident(format!("b_{input_ind}_{dim_ind}_0")),
+                            Expr::Ident(format!("{base_bound_string}_0")),
                             split_factors,
                         ),
-                        Expr::Ident(format!("i_{input_ind}_{dim_ind}_0")),
+                        Expr::Ident(format!("{base_index_string}_0")),
                     )
                 }
             }
             Bound::Factor(ind) => (
                 Expr::Int(split_factors[*ind - 1]),
-                Expr::Ident(format!("i_{input_ind}_{dim_ind}_{ind}")),
+                Expr::Ident(format!("{base_index_string}_{ind}")),
             ),
-        };
-
-        let statements = match &spec.index_reconstruction {
-            Some(split_factors) => {
-                create_index_reconstruction_statements(&index, &bound, split_factors)
-            }
-            None => Vec::new(),
         };
 
         Statement::Loop {
