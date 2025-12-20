@@ -43,7 +43,7 @@ pub fn lower(graph: &Graph) -> Program {
 
     let mut topo_ind = 0;
 
-    let lowereds: Vec<(Expr, usize, Vec<ShapeAddr>, Block)> = graph
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -61,25 +61,15 @@ pub fn lower(graph: &Graph) -> Program {
         .collect();
 
     // TODO this is duplicated from below and it would be nice if that weren't true
-    let store_idents: Vec<Expr> = lowereds.iter().map(|l| l.0.clone()).collect();
-    let shape_addrs: Vec<Vec<ShapeAddr>> = lowereds.iter().map(|l| l.2.clone()).collect();
+    let shape_addrs: Vec<Vec<ShapeAddr>> = lowereds.iter().map(|l| l.1.clone()).collect();
     let shape_exprs: Vec<Vec<Expr>> = shape_addrs
         .iter()
-        .zip(store_idents.iter())
-        .map(|(shape_addr_list, store_ident)| {
-            shape_addr_list
-                .iter()
-                .map(|shape_addr| Expr::Indexed {
-                    expr: Box::new(Expr::ShapeOf(Box::new(store_ident.clone()))),
-                    index: Box::new(Expr::Int(shape_addr.dim_ind)),
-                })
-                .collect()
-        })
+        .map(|shape_addr_list| shape_addr_list.iter().map(input_shape_expr).collect())
         .collect();
 
     Program {
         count: count(graph.roots().len()),
-        ranks: ranks(lowereds.iter().map(|l| l.1).collect()),
+        ranks: ranks(lowereds.iter().map(|l| l.0).collect()),
         shapes: shapes(shape_exprs),
         library: library,
         exec: Statement::Function {
@@ -89,7 +79,7 @@ pub fn lower(graph: &Graph) -> Program {
     }
 }
 
-/// Lower node. Update library, return (buffer ident, rank, shape addr expr, fused fragment)
+/// Lower node. Update library, return (rank, shape addr expr, fused fragment)
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
@@ -98,7 +88,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     pruned_loop_specs: Vec<(usize, &LoopSpec)>,
-) -> (Expr, usize, Vec<ShapeAddr>, Block) {
+) -> (usize, Vec<ShapeAddr>, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -108,11 +98,6 @@ fn lower_node(
     } = &node.body
     else {
         // handle leaf nodes
-        let input_ind = node_to_leaf_ind[&node.id];
-        let store_ident = Expr::Indexed {
-            expr: Box::new(Expr::Ident("inputs".into())),
-            index: Box::new(Expr::Int(input_ind)),
-        };
         let rank = node.index.len();
         let shape_addr = (0..node.index.len())
             .map(|dim_ind| ShapeAddr {
@@ -120,7 +105,7 @@ fn lower_node(
                 dim_ind: dim_ind,
             })
             .collect();
-        return (store_ident, rank, shape_addr, Block::default());
+        return (rank, shape_addr, Block::default());
     };
 
     assert!(
@@ -128,7 +113,7 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let children_lowereds: Vec<(Expr, usize, Vec<ShapeAddr>, Block)> = node
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -156,24 +141,9 @@ fn lower_node(
         })
         .collect();
 
-    let child_store_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.0.clone()).collect();
     let child_shape_addrs: Vec<Vec<ShapeAddr>> =
-        children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
-
-    let child_shapes: Vec<Vec<Expr>> = child_shape_addrs
-        .iter()
-        .zip(child_store_idents.iter())
-        .map(|(child_shape_addr_list, child_store_ident)| {
-            child_shape_addr_list
-                .iter()
-                .map(|child_shape_addr| Expr::Indexed {
-                    expr: Box::new(Expr::ShapeOf(Box::new(child_store_ident.clone()))),
-                    index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
-                })
-                .collect()
-        })
-        .collect();
+        children_lowereds.iter().map(|l| l.1.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.2.clone()).collect();
 
     let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
     let buffer_ident = match root_ind {
@@ -229,16 +199,14 @@ fn lower_node(
         .iter()
         .map(|list| list[0]) // any shape addr works, default to 0-th
         .zip(split_factor_lists.iter())
-        .flat_map(|(ShapeAddr { input_ind, dim_ind }, factors)| {
-            let base_shape_expr = child_shapes[input_ind][dim_ind].clone();
+        .flat_map(|(addr, factors)| {
+            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
+            let base_shape_expr = input_shape_expr(&global_addr);
             match factors.is_empty() {
                 true => vec![base_shape_expr],
-                false => std::iter::once(create_split_bound_expr(
-                    child_shapes[input_ind][dim_ind].clone(),
-                    factors,
-                ))
-                .chain(factors.iter().map(|factor| Expr::Int(*factor)))
-                .collect(),
+                false => std::iter::once(create_split_bound_expr(base_shape_expr, factors))
+                    .chain(factors.iter().map(|factor| Expr::Int(*factor)))
+                    .collect(),
             }
         })
         .collect();
@@ -264,8 +232,8 @@ fn lower_node(
     if pruned_loop_specs.is_empty() {
         exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
-            in_args: child_store_idents,
-            out_args: vec![buffer_ident.clone()],
+            in_args: vec![],  // TODO
+            out_args: vec![], // TODO
         });
     }
 
@@ -285,12 +253,17 @@ fn lower_node(
     //      for is determining the output shape from the input shape which does
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
-    (
-        buffer_ident,
-        node.index.len(),
-        semantic_shape_exprs,
-        fused_fragment,
-    )
+    (node.index.len(), semantic_shape_exprs, fused_fragment)
+}
+
+fn input_shape_expr(addr: &ShapeAddr) -> Expr {
+    Expr::Indexed {
+        expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::Ident("inputs".into())),
+            index: Box::new(Expr::Int(addr.input_ind)),
+        }))),
+        index: Box::new(Expr::Int(addr.dim_ind)),
+    }
 }
 
 fn build_library_function(
