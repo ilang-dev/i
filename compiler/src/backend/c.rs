@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::backend::{Backend, Build, Render};
-use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
+use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

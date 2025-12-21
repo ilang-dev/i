@@ -15,13 +15,6 @@ pub enum Expr {
     ShapeOf(Box<Expr>),
 }
 
-// Should this be an Expr variant?
-#[derive(Clone, Debug)]
-pub struct Arg {
-    pub type_: Type,
-    pub ident: Expr, // Should be Ident(_) or a Ref(_)
-}
-
 #[derive(Clone, Debug)]
 pub enum Type {
     Int(bool),

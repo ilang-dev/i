@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::Schedule;
-use crate::block::{Arg, Block, Expr, FunctionSignature, Program, Statement, Type};
+use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 // This function is responsible for the rank, shape, and exec functions.
