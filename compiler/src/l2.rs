@@ -309,6 +309,7 @@ fn build_library_function(
     compute_levels: &Vec<usize>,
 ) -> Block {
     // TODO write a real scalar op here
+    // We need to know how to identify and index the buffers
     let op_statement = Statement::Return {
         value: Expr::Int(0),
     };
