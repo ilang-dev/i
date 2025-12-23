@@ -209,6 +209,7 @@ impl CBackend {
                 format!("{}[{}]", Self::render_expr(expr), Self::render_expr(index))
             }
             Expr::ShapeOf(expr) => format!("{}.shape", Self::render_expr(expr)),
+            Expr::DataOf(expr) => format!("{}.data", Self::render_expr(expr)),
         }
     }
 

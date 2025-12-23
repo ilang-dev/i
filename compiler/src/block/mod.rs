@@ -13,6 +13,7 @@ pub enum Expr {
         index: Box<Expr>,
     },
     ShapeOf(Box<Expr>),
+    DataOf(Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
