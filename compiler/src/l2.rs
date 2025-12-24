@@ -87,7 +87,7 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
-    pruned_loop_specs: Vec<(usize, &LoopSpec)>,
+    prunable_loops: Vec<(usize, Bound)>,
 ) -> (usize, Vec<ShapeAddr>, Expr, Block) {
     let NodeBody::Interior {
         op,
@@ -131,16 +131,6 @@ fn lower_node(
         .zip(compute_levels.iter())
         .enumerate()
         .map(|(child_ind, ((node, _), &compute_level))| {
-            let pruned_loop_specs: Vec<(usize, &LoopSpec)> = loop_specs
-                .iter()
-                .take(compute_level)
-                .filter_map(|spec| {
-                    spec.addrs
-                        .iter()
-                        .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
-                        .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec))
-                })
-                .collect();
             lower_node(
                 &node,
                 None,
@@ -148,7 +138,7 @@ fn lower_node(
                 library,
                 exec_block,
                 node_to_leaf_ind,
-                pruned_loop_specs,
+                get_prunable_loops(&loop_specs, compute_level, child_ind),
             )
         })
         .collect();
@@ -172,23 +162,26 @@ fn lower_node(
 
     // TODO the library function needs shape in terms of children
 
-    // remove any pruned loops
+    // for filtering prunable loops
+    let prunable = |loop_spec: &&LoopSpec| {
+        !prunable_loops.iter().any(|(dim_ind, pruned_bound)| {
+            Some(dim_ind) == loop_spec.output_dim.as_ref() && loop_spec.bound == *pruned_bound
+        })
+    };
+
+    // for globalizing the shape addrs of remaining loop specs
+    let globalize_loop_specs = |loop_spec: &LoopSpec| {
+        let globalize = |&ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind];
+        LoopSpec {
+            addrs: loop_spec.addrs.iter().map(globalize).collect(),
+            ..loop_spec.clone()
+        }
+    };
+
     let loop_specs: Vec<LoopSpec> = loop_specs
         .into_iter()
-        .filter(|loop_spec| {
-            !pruned_loop_specs.iter().any(|(dim_ind, pruned_spec)| {
-                Some(dim_ind) == loop_spec.output_dim.as_ref()
-                    && loop_spec.bound == pruned_spec.bound
-            })
-        })
-        .map(|loop_spec| LoopSpec {
-            addrs: loop_spec
-                .addrs
-                .iter()
-                .map(|&ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind])
-                .collect(),
-            ..loop_spec.clone()
-        }) // globalize shape addrs
+        .filter(prunable)
+        .map(globalize_loop_specs)
         .collect();
 
     // create indexing expr
@@ -209,7 +202,7 @@ fn lower_node(
     let function_fragment = build_library_function(&loop_specs, &child_fragments, &compute_levels);
 
     let mut fused_fragment = Block::default();
-    if pruned_loop_specs.is_empty() {
+    if prunable_loops.is_empty() {
         library.statements.push(Statement::Function {
             signature: FunctionSignature::Kernel(library_function_ident.clone()),
             body: function_fragment,
@@ -256,7 +249,7 @@ fn lower_node(
     // TODO this is also messed up in general beacuse we need to pass arrays of tensors, not
     //      dynamic args lists
     // create call site
-    if pruned_loop_specs.is_empty() {
+    if prunable_loops.is_empty() {
         exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
             in_args: vec![],  // TODO
@@ -286,6 +279,25 @@ fn lower_node(
         indexing_expr,
         fused_fragment,
     )
+}
+
+/// Determines which loops should be pruned in the recursive call, specified by (dimension
+/// index, Bound)
+fn get_prunable_loops(
+    loop_specs: &Vec<LoopSpec>,
+    compute_level: usize,
+    child_ind: usize,
+) -> Vec<(usize, Bound)> {
+    loop_specs
+        .iter()
+        .take(compute_level)
+        .filter_map(|spec| {
+            spec.addrs
+                .iter()
+                .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
+                .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec.bound))
+        })
+        .collect()
 }
 
 fn input_shape_expr(addr: &ShapeAddr) -> Expr {
