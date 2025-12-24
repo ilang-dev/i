@@ -157,10 +157,40 @@ fn lower_node(
         },
     };
 
+    // create indexing expr
+    let (index_exprs, bound_exprs): (Vec<Expr>, Vec<Expr>) = shape_addr_lists
+        .iter()
+        .map(|list| list[0]) // any shape addr works, default to 0-th
+        .map(|addr| {
+            let ShapeAddr { input_ind, dim_ind } = child_shape_addrs[addr.input_ind][addr.dim_ind];
+            (
+                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
+                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
+            )
+        })
+        .unzip();
+    let indexing_expr = create_affine_index(&index_exprs, &bound_exprs);
+
+    // create allocation
+    if root_ind.is_none() {
+        exec_block.statements.push(Statement::Alloc {
+            index: *topo_ind,
+            initial_value: Box::new(Expr::Scalar(match op {
+                '>' => f32::NEG_INFINITY,
+                '<' => f32::INFINITY,
+                '*' => 1.,
+                _ => 0.,
+            })),
+            shape: build_buffer_shape_exprs(
+                &shape_addr_lists,
+                &split_factor_lists,
+                &child_shape_addrs,
+            ),
+        });
+    }
+
     // TODO prune loops and fold storage based on compute level
     //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
-
-    // TODO the library function needs shape in terms of children
 
     // for filtering prunable loops
     let prunable = |loop_spec: &&LoopSpec| {
@@ -184,63 +214,29 @@ fn lower_node(
         .map(globalize_loop_specs)
         .collect();
 
-    // create indexing expr
-    let (index_exprs, bound_exprs): (Vec<Expr>, Vec<Expr>) = shape_addr_lists
-        .iter()
-        .map(|list| list[0]) // any shape addr works, default to 0-th
-        .map(|addr| {
-            let ShapeAddr { input_ind, dim_ind } = child_shape_addrs[addr.input_ind][addr.dim_ind];
-            (
-                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
-                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
-            )
-        })
-        .unzip();
-    let indexing_expr = create_affine_index(&index_exprs, &bound_exprs);
+    // TODO the library function needs shape in terms of children
 
     // create library function
     let function_fragment = build_library_function(&loop_specs, &child_fragments, &compute_levels);
 
     let mut fused_fragment = Block::default();
     if prunable_loops.is_empty() {
+        // create library "kernel" function
         library.statements.push(Statement::Function {
             signature: FunctionSignature::Kernel(library_function_ident.clone()),
             body: function_fragment,
+        });
+
+        // create call site
+        exec_block.statements.push(Statement::Call {
+            ident: library_function_ident,
+            in_args: vec![], // NOTE we need to pass arrays of tensors, not dynamic args lists TODO
+            out_args: vec![], // NOTE we need to pass arrays of tensors, not dynamic args lists TODO
         });
     } else {
         fused_fragment
             .statements
             .extend(function_fragment.statements);
-    }
-
-    // create allocation
-    if root_ind.is_none() {
-        exec_block.statements.push(Statement::Alloc {
-            index: *topo_ind,
-            initial_value: Box::new(Expr::Scalar(match op {
-                '>' => f32::NEG_INFINITY,
-                '<' => f32::INFINITY,
-                '*' => 1.,
-                _ => 0.,
-            })),
-            shape: build_buffer_shape_exprs(
-                &shape_addr_lists,
-                &split_factor_lists,
-                &child_shape_addrs,
-            ),
-        });
-    }
-
-    // TODO this is messed up in the case of fusing nodes (they must adopt their fusings children)
-    // TODO this is also messed up in general beacuse we need to pass arrays of tensors, not
-    //      dynamic args lists
-    // create call site
-    if prunable_loops.is_empty() {
-        exec_block.statements.push(Statement::Call {
-            ident: library_function_ident,
-            in_args: vec![],  // TODO
-            out_args: vec![], // TODO
-        });
     }
 
     // TODO create drop
