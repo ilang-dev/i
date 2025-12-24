@@ -213,24 +213,6 @@ fn lower_node(
             .extend(function_fragment.statements);
     }
 
-    // `Expr`s for the dims of the buffer accounting for splitting
-    // TODO account for fusion as well
-    let buffer_shape_exprs: Vec<Expr> = shape_addr_lists
-        .iter()
-        .map(|list| list[0]) // any shape addr works, default to 0-th
-        .zip(split_factor_lists.iter())
-        .flat_map(|(addr, factors)| {
-            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
-            let base_shape_expr = input_shape_expr(&global_addr);
-            match factors.is_empty() {
-                true => vec![base_shape_expr],
-                false => std::iter::once(create_split_bound_expr(base_shape_expr, factors))
-                    .chain(factors.iter().map(|factor| Expr::Int(*factor)))
-                    .collect(),
-            }
-        })
-        .collect();
-
     // create allocation
     if root_ind.is_none() {
         exec_block.statements.push(Statement::Alloc {
@@ -241,7 +223,11 @@ fn lower_node(
                 '*' => 1.,
                 _ => 0.,
             })),
-            shape: buffer_shape_exprs,
+            shape: build_buffer_shape_exprs(
+                &shape_addr_lists,
+                &split_factor_lists,
+                &child_shape_addrs,
+            ),
         });
     }
 
@@ -296,6 +282,29 @@ fn get_prunable_loops(
                 .iter()
                 .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
                 .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec.bound))
+        })
+        .collect()
+}
+
+/// `Expr`s for the dims of the buffer accounting for splitting
+fn build_buffer_shape_exprs(
+    shape_addr_lists: &Vec<Vec<ShapeAddr>>,
+    split_factor_lists: &Vec<Vec<usize>>,
+    child_shape_addrs: &Vec<Vec<ShapeAddr>>,
+) -> Vec<Expr> {
+    shape_addr_lists
+        .iter()
+        .map(|list| list[0]) // any shape addr works, default to 0-th
+        .zip(split_factor_lists.iter())
+        .flat_map(|(addr, factors)| {
+            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
+            let base_shape_expr = input_shape_expr(&global_addr);
+            match factors.is_empty() {
+                true => vec![base_shape_expr],
+                false => std::iter::once(create_split_bound_expr(base_shape_expr, factors))
+                    .chain(factors.iter().map(|factor| Expr::Int(*factor)))
+                    .collect(),
+            }
         })
         .collect()
 }
