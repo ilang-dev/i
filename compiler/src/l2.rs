@@ -191,20 +191,15 @@ fn lower_node(
         }) // globalize shape addrs
         .collect();
 
+    // create indexing expr
     let (index_exprs, bound_exprs): (Vec<Expr>, Vec<Expr>) = shape_addr_lists
         .iter()
         .map(|list| list[0]) // any shape addr works, default to 0-th
         .map(|addr| {
-            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
+            let ShapeAddr { input_ind, dim_ind } = child_shape_addrs[addr.input_ind][addr.dim_ind];
             (
-                Expr::Ident(format!(
-                    "i_{}_{}",
-                    global_addr.input_ind, global_addr.dim_ind
-                )),
-                Expr::Ident(format!(
-                    "b_{}_{}",
-                    global_addr.input_ind, global_addr.dim_ind
-                )),
+                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
+                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
             )
         })
         .unzip();
