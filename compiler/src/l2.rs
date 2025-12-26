@@ -55,7 +55,7 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut library,
                 &mut exec_block,
                 &mut node_to_leaf_ind,
-                vec![],
+                &vec![],
             )
         })
         .collect();
@@ -87,7 +87,7 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
-    prunable_loops: Vec<(usize, Bound)>,
+    prunable_loops: &Vec<(usize, Bound)>,
 ) -> (usize, Vec<ShapeAddr>, Expr, Expr, Block) {
     let NodeBody::Interior {
         op,
@@ -149,7 +149,7 @@ fn lower_node(
                 library,
                 exec_block,
                 node_to_leaf_ind,
-                get_prunable_loops(&loop_specs, compute_level, child_ind),
+                &get_prunable_loops(&loop_specs, compute_level, child_ind),
             )
         })
         .collect();
