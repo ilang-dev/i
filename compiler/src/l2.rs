@@ -43,7 +43,7 @@ pub fn lower(graph: &Graph) -> Program {
 
     let mut topo_ind = 0;
 
-    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Expr, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -88,7 +88,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     prunable_loops: Vec<(usize, Bound)>,
-) -> (usize, Vec<ShapeAddr>, Expr, Block) {
+) -> (usize, Vec<ShapeAddr>, Expr, Expr, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -117,7 +117,18 @@ fn lower_node(
             .unzip();
         let indexing_expr = create_affine_index(&index_exprs, &bound_exprs);
 
-        return (rank, shape_addr, indexing_expr, Block::default());
+        let buffer_ident = Expr::Indexed {
+            expr: Box::new(Expr::Ident("inputs".into())),
+            index: Box::new(Expr::Int(leaf_ind)),
+        };
+
+        return (
+            rank,
+            shape_addr,
+            indexing_expr,
+            buffer_ident,
+            Block::default(),
+        );
     };
 
     assert!(
@@ -125,7 +136,7 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Expr, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -146,7 +157,8 @@ fn lower_node(
     let child_shape_addrs: Vec<Vec<ShapeAddr>> =
         children_lowereds.iter().map(|l| l.1.clone()).collect();
     let child_indexing_exprs: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.4.clone()).collect();
 
     let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
     let buffer_ident = match root_ind {
@@ -259,6 +271,7 @@ fn lower_node(
         node.index.len(),
         semantic_shape_exprs,
         indexing_expr,
+        buffer_ident,
         fused_fragment,
     )
 }
