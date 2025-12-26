@@ -101,6 +101,7 @@ fn lower_node(
         compute_levels,
     } = &node.body
     else {
+        assert!(prunable_loops.is_empty(), "Cannot fuse leaf nodes.");
         // handle leaf nodes
         let leaf_ind = node_to_leaf_ind[&node.id];
         let rank = node.index.len();
