@@ -239,7 +239,8 @@ fn lower_node(
         .map(globalize_loop_specs)
         .collect();
 
-    let readonly_buffer_offset = readonly_buffer_idents.len();
+    // where the library function must start accessing
+    let mut readonly_args_offset = readonly_buffer_idents.len();
 
     readonly_buffer_idents.extend(child_buffer_idents.iter().zip(compute_levels).filter_map(
         |(child_buffer_ident, compute_level)| match compute_level {
@@ -248,6 +249,39 @@ fn lower_node(
         },
     ));
     writeable_buffer_idents.push(buffer_ident.clone());
+
+    let n_fused_nodes = child_buffer_idents
+        .iter()
+        .zip(compute_levels.iter())
+        .filter(|(_, &compute_level)| compute_level > 0)
+        .count();
+
+    // where the library function must start accessing
+    let mut writeable_args_offset = writeable_buffer_idents.len() - 1 - n_fused_nodes;
+
+    let mut child_access_exprs: Vec<Expr> = child_indexing_exprs
+        .iter()
+        .zip(compute_levels.iter())
+        .map(|(indexing_expr, compute_level)| {
+            let (arglist_str, offset) = match *compute_level {
+                // non-fusing
+                0 => {
+                    let offset = readonly_args_offset;
+                    readonly_args_offset += 1;
+                    ("inputs", offset)
+                }
+                // fusing
+                _ => {
+                    let offset = writeable_args_offset;
+                    writeable_args_offset += 1;
+                    ("inputs", offset)
+                }
+            };
+            make_access_expr(arglist_str, offset, indexing_expr)
+        })
+        .collect();
+
+    let access_expr: Expr = make_access_expr("outputs", writeable_args_offset, &indexing_expr);
 
     // TODO the library function needs shape in terms of children
 
@@ -297,6 +331,17 @@ fn lower_node(
         buffer_ident,
         fused_fragment,
     )
+}
+
+/// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
+fn make_access_expr(arglist_str: &str, offset: usize, indexing_expr: &Expr) -> Expr {
+    Expr::Indexed {
+        expr: Box::new(Expr::DataOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::Ident(arglist_str.into())),
+            index: Box::new(Expr::Int(offset)),
+        }))),
+        index: Box::new(indexing_expr.clone()),
+    }
 }
 
 /// Determines which loops should be pruned in the recursive call, specified by (dimension
