@@ -264,8 +264,8 @@ fn lower_node(
         // create call site
         exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
-            in_args: vec![], // NOTE we need to pass arrays of tensors, not dynamic args lists TODO
-            out_args: vec![], // NOTE we need to pass arrays of tensors, not dynamic args lists TODO
+            in_args: readonly_buffer_idents.clone(),
+            out_args: writeable_buffer_idents.clone(),
         });
     } else {
         fused_fragment
