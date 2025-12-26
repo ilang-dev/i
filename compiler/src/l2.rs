@@ -283,10 +283,32 @@ fn lower_node(
 
     let access_expr: Expr = make_access_expr("outputs", writeable_args_offset, &indexing_expr);
 
+    if child_access_exprs.len() == 1 && matches!(op, '+' | '*' | '>' | '<') {
+        child_access_exprs.insert(0, access_expr.clone());
+        assert_eq!(
+            child_access_exprs.len(),
+            2,
+            "Expected exactly two operands for op [{op}]."
+        );
+    }
+
+    let op_statement = Statement::Assignment {
+        left: access_expr,
+        right: Expr::Op {
+            op: *op,
+            inputs: child_access_exprs,
+        },
+    };
+
     // TODO the library function needs shape in terms of children
 
     // create library function
-    let function_fragment = build_library_function(&loop_specs, &child_fragments, &compute_levels);
+    let function_fragment = build_library_function(
+        &loop_specs,
+        &child_fragments,
+        &compute_levels,
+        &op_statement,
+    );
 
     let mut fused_fragment = Block::default();
     if prunable_loops.is_empty() {
@@ -400,17 +422,8 @@ fn build_library_function(
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
+    op_statement: &Statement,
 ) -> Block {
-    // TODO write a real scalar op here
-    // We need to know how to identify and index the buffers
-    let op_statement = Statement::Return {
-        value: Expr::Int(0),
-    };
-
-    // TODO need offsets for indexing iterators and bounds to avoid collisions during fusions
-    // EDIT maybe not actually, because we're deleting loops, not adding them. what about indexing
-    //      though? the iterators idents need to line up at least. how do we do that?
-
     // TODO either define loop bound idents or inline shape exprs
     let make_empty_loop = |spec: &LoopSpec| {
         let group = spec.group;
@@ -479,7 +492,7 @@ fn build_library_function(
         loops
             .into_iter()
             .rev()
-            .fold(op_statement, |loop_stack, mut loop_| {
+            .fold(op_statement.clone(), |loop_stack, mut loop_| {
                 if let Statement::Loop { ref mut body, .. } = loop_ {
                     body.statements.push(loop_stack);
                 }
