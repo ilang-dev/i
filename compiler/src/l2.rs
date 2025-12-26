@@ -56,6 +56,8 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut exec_block,
                 &mut node_to_leaf_ind,
                 &vec![],
+                &mut vec![],
+                &mut vec![],
             )
         })
         .collect();
@@ -88,6 +90,8 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     prunable_loops: &Vec<(usize, Bound)>,
+    readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
+    writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
 ) -> (usize, Vec<ShapeAddr>, Expr, Expr, Block) {
     let NodeBody::Interior {
         op,
@@ -136,6 +140,12 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
+    let (readonly_buffer_idents, writeable_buffer_idents) = if prunable_loops.is_empty() {
+        (&mut vec![], &mut vec![]) // non-fused nodes start new arg lists
+    } else {
+        (readonly_buffer_idents, writeable_buffer_idents) // fused nodes add to existing arg lists
+    };
+
     let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Expr, Block)> = node
         .children()
         .iter()
@@ -150,6 +160,8 @@ fn lower_node(
                 exec_block,
                 node_to_leaf_ind,
                 &get_prunable_loops(&loop_specs, compute_level, child_ind),
+                readonly_buffer_idents,
+                writeable_buffer_idents,
             )
         })
         .collect();
@@ -225,6 +237,16 @@ fn lower_node(
         .filter(prunable)
         .map(globalize_loop_specs)
         .collect();
+
+    let readonly_buffer_offset = readonly_buffer_idents.len();
+
+    readonly_buffer_idents.extend(child_buffer_idents.iter().zip(compute_levels).filter_map(
+        |(child_buffer_ident, compute_level)| match compute_level {
+            0 => Some(child_buffer_ident.clone()), // add only non-fused children
+            _ => None,
+        },
+    ));
+    writeable_buffer_idents.push(buffer_ident.clone());
 
     // TODO the library function needs shape in terms of children
 
