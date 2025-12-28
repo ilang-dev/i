@@ -426,8 +426,6 @@ fn build_library_function(
 ) -> Block {
     // TODO either define loop bound idents or inline shape exprs
     let make_empty_loop = |spec: &LoopSpec| {
-        let group = spec.group;
-        let ind = spec.ind;
         let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
 
