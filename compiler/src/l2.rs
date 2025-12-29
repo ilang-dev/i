@@ -4,6 +4,12 @@ use crate::ast::Schedule;
 use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
+#[derive(Clone, Debug)]
+enum Arg {
+    ReadOnly(usize),
+    Writeable(usize),
+}
+
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
 // be `void exec(const Tensor* inputs, size_t n_inputs, TensorMut* output)`. It
