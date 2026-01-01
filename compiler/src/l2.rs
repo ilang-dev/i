@@ -265,29 +265,32 @@ fn lower_node(
     // where the library function must start accessing
     let mut writeable_args_offset = writeable_buffer_idents.len() - 1 - n_fused_nodes;
 
-    let mut child_access_exprs: Vec<Expr> = child_indexing_exprs
+    let child_args: Vec<Arg> = child_indexing_exprs
         .iter()
         .zip(compute_levels.iter())
-        .map(|(indexing_expr, compute_level)| {
-            let (arglist_str, offset) = match *compute_level {
-                // non-fusing
-                0 => {
-                    let offset = readonly_args_offset;
-                    readonly_args_offset += 1;
-                    ("inputs", offset)
-                }
-                // fusing
-                _ => {
-                    let offset = writeable_args_offset;
-                    writeable_args_offset += 1;
-                    ("inputs", offset)
-                }
-            };
-            make_access_expr(arglist_str, offset, indexing_expr)
+        .map(|(indexing_expr, compute_level)| match *compute_level {
+            // non-fusing
+            0 => {
+                let offset = readonly_args_offset;
+                readonly_args_offset += 1;
+                Arg::ReadOnly(offset)
+            }
+            // fusing
+            _ => {
+                let offset = writeable_args_offset;
+                writeable_args_offset += 1;
+                Arg::Writeable(offset)
+            }
         })
         .collect();
 
-    let access_expr: Expr = make_access_expr("outputs", writeable_args_offset, &indexing_expr);
+    let mut child_access_exprs: Vec<Expr> = child_args
+        .iter()
+        .map(|arg| make_access_expr(&arg, &indexing_expr))
+        .collect();
+
+    let access_expr: Expr =
+        make_access_expr(&Arg::Writeable(writeable_args_offset), &indexing_expr);
 
     if child_access_exprs.len() == 1 && matches!(op, '+' | '*' | '>' | '<') {
         child_access_exprs.insert(0, access_expr.clone());
@@ -362,11 +365,15 @@ fn lower_node(
 }
 
 /// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
-fn make_access_expr(arglist_str: &str, offset: usize, indexing_expr: &Expr) -> Expr {
+fn make_access_expr(arg: &Arg, indexing_expr: &Expr) -> Expr {
+    let (arglist_str, offset) = match arg {
+        Arg::ReadOnly(offset) => ("inputs", offset),
+        Arg::Writeable(offset) => ("outputs", offset),
+    };
     Expr::Indexed {
         expr: Box::new(Expr::DataOf(Box::new(Expr::Indexed {
             expr: Box::new(Expr::Ident(arglist_str.into())),
-            index: Box::new(Expr::Int(offset)),
+            index: Box::new(Expr::Int(*offset)),
         }))),
         index: Box::new(indexing_expr.clone()),
     }
