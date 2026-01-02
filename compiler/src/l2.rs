@@ -171,19 +171,12 @@ fn lower_node(
         },
     };
 
-    // create indexing expr
-    let (index_exprs, bound_exprs): (Vec<Expr>, Vec<Expr>) = shape_addr_lists
+    // semantic shape addrs of current node without regard to splitting or fusion
+    let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
         .iter()
-        .map(|list| list[0]) // any shape addr works, default to 0-th
-        .map(|addr| {
-            let ShapeAddr { input_ind, dim_ind } = child_shape_addrs[addr.input_ind][addr.dim_ind];
-            (
-                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
-                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
-            )
-        })
-        .unzip();
-    let indexing_expr = create_affine_index(&index_exprs, &bound_exprs);
+        .map(|shape_addr_list| shape_addr_list[0]) // any shape addr works, default to 0-th
+        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind])
+        .collect();
 
     // create allocation
     if root_ind.is_none() {
@@ -262,10 +255,13 @@ fn lower_node(
 
         create_affine_index(&iter_ident, &bound_ident)
     };
+
     let child_indexing_exprs: Vec<Expr> = child_shape_addrs
         .iter()
         .map(shape_addrs_to_indexing_expr)
         .collect();
+
+    let indexing_expr: Expr = shape_addrs_to_indexing_expr(&shape_addrs);
 
     let child_args: Vec<Arg> = child_indexing_exprs
         .iter()
@@ -344,13 +340,6 @@ fn lower_node(
 
     // TODO create drop
 
-    // `Expr`s for the dims of the node without regard to splitting or fusion
-    let semantic_shape_exprs: Vec<ShapeAddr> = shape_addr_lists
-        .iter()
-        .map(|shape_addr_list| shape_addr_list[0]) // any shape addr works, default to 0-th
-        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind])
-        .collect();
-
     *topo_ind += 1;
 
     // TODO I think the shape output here can be seen as tracking the semantic
@@ -358,12 +347,7 @@ fn lower_node(
     //      for is determining the output shape from the input shape which does
     //      depend on the intermediate buffer layout, but only the semantics of
     //      the expression. (probably write this down somewhere)
-    (
-        node.index.len(),
-        semantic_shape_exprs,
-        buffer_ident,
-        fused_fragment,
-    )
+    (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
 }
 
 /// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
