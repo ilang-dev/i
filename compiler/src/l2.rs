@@ -157,7 +157,7 @@ fn lower_node(
         })
         .collect();
 
-    let child_shape_addrs: Vec<Vec<ShapeAddr>> =
+    let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
         children_lowereds.iter().map(|l| l.1.clone()).collect();
     let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
     let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
@@ -175,7 +175,7 @@ fn lower_node(
     let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
         .iter()
         .map(|shape_addr_list| shape_addr_list[0]) // any shape addr works, default to 0-th
-        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind])
+        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[input_ind][dim_ind])
         .collect();
 
     // create allocation
@@ -191,7 +191,7 @@ fn lower_node(
             shape: build_buffer_shape_exprs(
                 &shape_addr_lists,
                 &split_factor_lists,
-                &child_shape_addrs,
+                &child_shape_addr_lists,
             ),
         });
     }
@@ -208,7 +208,8 @@ fn lower_node(
 
     // for globalizing the shape addrs of remaining loop specs
     let globalize_loop_specs = |loop_spec: &LoopSpec| {
-        let globalize = |&ShapeAddr { input_ind, dim_ind }| child_shape_addrs[input_ind][dim_ind];
+        let globalize =
+            |&ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[input_ind][dim_ind];
         LoopSpec {
             addrs: loop_spec.addrs.iter().map(globalize).collect(),
             ..loop_spec.clone()
@@ -274,7 +275,7 @@ fn lower_node(
         create_affine_index(&iter_ident, &bound_ident)
     };
 
-    let child_indexing_exprs: Vec<Expr> = child_shape_addrs
+    let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
         .iter()
         .map(shape_addrs_to_indexing_expr)
         .collect();
