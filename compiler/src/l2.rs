@@ -241,6 +241,24 @@ fn lower_node(
     // where the library function must start accessing
     let mut writeable_args_offset = writeable_buffer_idents.len() - 1 - n_fused_nodes;
 
+    let child_args: Vec<Arg> = compute_levels
+        .iter()
+        .map(|compute_level| match *compute_level {
+            // non-fusing
+            0 => {
+                let offset = readonly_args_offset;
+                readonly_args_offset += 1;
+                Arg::ReadOnly(offset)
+            }
+            // fusing
+            _ => {
+                let offset = writeable_args_offset;
+                writeable_args_offset += 1;
+                Arg::Writeable(offset)
+            }
+        })
+        .collect();
+
     // TODO move this outside this function
     fn shape_addrs_to_indexing_expr(shape_addrs: &Vec<ShapeAddr>) -> Expr {
         let (iter_ident, bound_ident): (Vec<Expr>, Vec<Expr>) = shape_addrs
@@ -262,25 +280,6 @@ fn lower_node(
         .collect();
 
     let indexing_expr: Expr = shape_addrs_to_indexing_expr(&shape_addrs);
-
-    let child_args: Vec<Arg> = child_indexing_exprs
-        .iter()
-        .zip(compute_levels.iter())
-        .map(|(indexing_expr, compute_level)| match *compute_level {
-            // non-fusing
-            0 => {
-                let offset = readonly_args_offset;
-                readonly_args_offset += 1;
-                Arg::ReadOnly(offset)
-            }
-            // fusing
-            _ => {
-                let offset = writeable_args_offset;
-                writeable_args_offset += 1;
-                Arg::Writeable(offset)
-            }
-        })
-        .collect();
 
     let mut child_access_exprs: Vec<Expr> = child_args
         .iter()
