@@ -275,6 +275,37 @@ fn lower_node(
         create_affine_index(&iter_ident, &bound_ident)
     };
 
+    let bound_decl_statements: Vec<Statement> = child_shape_addr_lists
+        .iter()
+        .enumerate()
+        .flat_map(|(child_ind, child_shape_addr_list)| {
+            let (arg_str, offset) = match child_args[child_ind] {
+                Arg::ReadOnly(offset) => ("inputs", offset),
+                Arg::Writeable(offset) => ("outputs", offset),
+            };
+            child_shape_addr_list
+                .iter()
+                .map(move |child_shape_addr| Statement::Declaration {
+                    ident: Expr::Ident(format!(
+                        "b_{}_{}",
+                        child_shape_addr.input_ind, child_shape_addr.dim_ind
+                    )),
+                    value: Expr::Indexed {
+                        expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                            expr: Box::new(Expr::Ident(arg_str.into())),
+                            index: Box::new(Expr::Int(offset)),
+                        }))),
+                        index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
+                    },
+                    type_: Type::Int(false),
+                })
+        })
+        .collect();
+
+    let bound_decl_block = Block {
+        statements: bound_decl_statements,
+    };
+
     let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
         .iter()
         .map(shape_addrs_to_indexing_expr)
@@ -316,6 +347,7 @@ fn lower_node(
         &child_fragments,
         &compute_levels,
         &op_statement,
+        bound_decl_block,
     );
 
     let mut fused_fragment = Block::default();
@@ -422,6 +454,7 @@ fn build_library_function(
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
     op_statement: &Statement,
+    preamble: Block,
 ) -> Block {
     // TODO either define loop bound idents or inline shape exprs
     let make_empty_loop = |spec: &LoopSpec| {
@@ -497,7 +530,7 @@ fn build_library_function(
             });
 
     Block {
-        statements: vec![loop_stack],
+        statements: [preamble.statements, vec![loop_stack]].concat(),
     }
 }
 
