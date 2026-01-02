@@ -131,10 +131,9 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let (readonly_buffer_idents, writeable_buffer_idents) = if prunable_loops.is_empty() {
-        (&mut vec![], &mut vec![]) // non-fused nodes start new arg lists
-    } else {
-        (readonly_buffer_idents, writeable_buffer_idents) // fused nodes add to existing arg lists
+    let (readonly_buffer_idents, writeable_buffer_idents) = match prunable_loops.is_empty() {
+        true => (&mut vec![], &mut vec![]), // non-fused -> new arg lists
+        false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
     };
 
     let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
