@@ -260,21 +260,6 @@ fn lower_node(
         })
         .collect();
 
-    // TODO move this outside this function
-    fn shape_addrs_to_indexing_expr(shape_addrs: &Vec<ShapeAddr>) -> Expr {
-        let (iter_ident, bound_ident): (Vec<Expr>, Vec<Expr>) = shape_addrs
-            .iter()
-            .map(|ShapeAddr { input_ind, dim_ind }| {
-                (
-                    Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
-                    Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
-                )
-            })
-            .unzip();
-
-        create_affine_index(&iter_ident, &bound_ident)
-    };
-
     let bound_decl_statements: Vec<Statement> = child_shape_addr_lists
         .iter()
         .enumerate()
@@ -685,6 +670,20 @@ fn create_index_reconstruction_statements(
             bound: base_bound_ident.clone(),
         },
     ]
+}
+
+fn shape_addrs_to_indexing_expr(shape_addrs: &Vec<ShapeAddr>) -> Expr {
+    let (iter_ident, bound_ident): (Vec<Expr>, Vec<Expr>) = shape_addrs
+        .iter()
+        .map(|ShapeAddr { input_ind, dim_ind }| {
+            (
+                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
+                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
+            )
+        })
+        .unzip();
+
+    create_affine_index(&iter_ident, &bound_ident)
 }
 
 fn create_affine_index(indices: &Vec<Expr>, bounds: &Vec<Expr>) -> Expr {
