@@ -286,7 +286,8 @@ fn lower_node(
 
     let mut child_access_exprs: Vec<Expr> = child_args
         .iter()
-        .map(|arg| make_access_expr(&arg, &indexing_expr))
+        .zip(child_indexing_exprs)
+        .map(|(arg, indexing_expr)| make_access_expr(&arg, &indexing_expr))
         .collect();
 
     let access_expr: Expr =
