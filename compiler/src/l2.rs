@@ -87,7 +87,7 @@ pub fn lower(graph: &Graph) -> Program {
     }
 }
 
-/// Lower node. Update library, return (rank, shape addr expr, indexing expr, fused fragment)
+/// Lower node. Update library and exec block, return (rank, shape addrs, indexing expr, buffer ident, fused fragment)
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
