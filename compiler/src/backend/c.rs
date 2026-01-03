@@ -232,12 +232,12 @@ impl CBackend {
 
     fn render_ref_list(exprs: &Vec<Expr>, mutable: bool) -> String {
         format!(
-            "({}Tensor{} *[]){{{}}}",
+            "({}Tensor{} []){{{}}}",
             if mutable { "" } else { "const " },
             if mutable { "Mut" } else { "" },
             exprs
                 .iter()
-                .map(|expr| format!("&{}", Self::render_expr(expr)))
+                .map(|expr| format!("{}", Self::render_expr(expr)))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -259,7 +259,7 @@ impl CBackend {
             } => format!(
                 "
                     size_t shape{index}[] = {{ {} }};
-                    TensorMut* s{index} = alloc_tensor({}, shape{index}, {});
+                    TensorMut s{index} = alloc_tensor({}, shape{index}, {});
                 ",
                 shape
                     .iter()
