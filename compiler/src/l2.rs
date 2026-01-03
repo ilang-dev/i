@@ -170,6 +170,32 @@ fn lower_node(
         },
     };
 
+    let mut shape_addr_preference: HashMap<ShapeAddr, ShapeAddr> = HashMap::new();
+    for shape_addr_list in shape_addr_lists {
+        for i in 0..shape_addr_list.len() {
+            if shape_addr_preference
+                .insert(shape_addr_list[i], shape_addr_list[0])
+                .is_some()
+            {
+                panic!("Found multiple ShapeAddr preferences.");
+            }
+        }
+    }
+
+    let child_shape_addr_lists: Vec<Vec<ShapeAddr>> = child_shape_addr_lists
+        .into_iter()
+        .map(|v| {
+            v.into_iter()
+                .map(|a| {
+                    shape_addr_preference
+                        .get(&a)
+                        .map(|p| (*p).clone())
+                        .unwrap_or(a)
+                })
+                .collect()
+        })
+        .collect();
+
     // semantic shape addrs of current node without regard to splitting or fusion
     let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
         .iter()
@@ -286,8 +312,11 @@ fn lower_node(
         })
         .collect();
 
-    let bound_decl_block = Block {
-        statements: bound_decl_statements,
+    let bound_decl_block = match prunable_loops.is_empty() {
+        true => Block {
+            statements: bound_decl_statements,
+        },
+        false => Block::default(),
     };
 
     let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
@@ -467,10 +496,7 @@ fn build_library_function(
                     )
                 } else {
                     (
-                        create_split_bound_expr(
-                            Expr::Ident(format!("{base_bound_string}_0")),
-                            split_factors,
-                        ),
+                        create_split_bound_expr(Expr::Ident(base_bound_string), split_factors),
                         Expr::Ident(format!("{base_index_string}_0")),
                     )
                 }

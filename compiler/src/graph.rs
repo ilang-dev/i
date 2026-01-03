@@ -21,7 +21,7 @@ pub enum Bound {
 /// Depending on context, can be used as a local address (where `input_ind`
 /// refers to the input index of a Node's child list or in as a global address
 /// where `input_ind` refers to the index of a Graph's leaves list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ShapeAddr {
     pub input_ind: usize,
     pub dim_ind: usize,
