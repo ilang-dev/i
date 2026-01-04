@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
@@ -261,6 +261,7 @@ fn lower_node(
         })
         .collect();
 
+    let mut seen = HashSet::new();
     let bound_decl_statements: Vec<Statement> = child_shape_addr_lists
         .iter()
         .enumerate()
@@ -271,20 +272,28 @@ fn lower_node(
             };
             child_shape_addr_list
                 .iter()
-                .map(move |child_shape_addr| Statement::Declaration {
-                    ident: Expr::Ident(format!(
-                        "b_{}_{}",
-                        child_shape_addr.input_ind, child_shape_addr.dim_ind
-                    )),
-                    value: Expr::Indexed {
-                        expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
-                            expr: Box::new(Expr::Ident(arg_str.into())),
-                            index: Box::new(Expr::Int(offset)),
-                        }))),
-                        index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
-                    },
-                    type_: Type::Int(false),
-                })
+                .map(move |child_shape_addr| (arg_str, offset, child_shape_addr))
+        })
+        .filter_map(|(arg_str, offset, child_shape_addr)| {
+            let key = (child_shape_addr.input_ind, child_shape_addr.dim_ind);
+            if !seen.insert(key) {
+                return None;
+            }
+
+            Some(Statement::Declaration {
+                ident: Expr::Ident(format!(
+                    "b_{}_{}",
+                    child_shape_addr.input_ind, child_shape_addr.dim_ind
+                )),
+                value: Expr::Indexed {
+                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                        expr: Box::new(Expr::Ident(arg_str.into())),
+                        index: Box::new(Expr::Int(offset)),
+                    }))),
+                    index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
+                },
+                type_: Type::Int(false),
+            })
         })
         .collect();
 
