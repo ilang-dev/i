@@ -45,9 +45,9 @@ pub fn lower(graph: &Graph) -> Program {
         })
         .collect();
 
-    let shape_addrs: Vec<Vec<ShapeAddr>> = lowereds.iter().map(|l| l.1.clone()).collect();
-    let shape_exprs: Vec<Vec<Expr>> = shape_addrs
+    let shape_exprs: Vec<Vec<Expr>> = lowereds
         .iter()
+        .map(|lowered| lowered.1.clone())
         .map(|shape_addr_list| shape_addr_list.iter().map(input_shape_expr).collect())
         .collect();
 
