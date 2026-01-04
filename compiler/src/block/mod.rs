@@ -13,6 +13,7 @@ pub enum Expr {
     },
     ShapeOf(Box<Expr>),
     DataOf(Box<Expr>),
+    ReadOnly(Box<Expr>), // for casting `TensorMut` to `Tensor`
 }
 
 #[derive(Clone, Debug)]

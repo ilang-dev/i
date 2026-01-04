@@ -228,7 +228,13 @@ fn lower_node(
 
     readonly_buffer_idents.extend(child_buffer_idents.iter().zip(compute_levels).filter_map(
         |(child_buffer_ident, compute_level)| match compute_level {
-            0 => Some(child_buffer_ident.clone()), // add only non-fused children
+            // add only non-fused children
+            0 => Some(match child_buffer_ident {
+                Expr::Ident(s) if s.starts_with('s') => {
+                    Expr::ReadOnly(Box::new(child_buffer_ident.clone()))
+                }
+                _ => child_buffer_ident.clone(),
+            }),
             _ => None,
         },
     ));

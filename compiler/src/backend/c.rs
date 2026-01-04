@@ -79,6 +79,10 @@ static inline TensorMut alloc_tensor(size_t rank, const size_t* shape, float v) 
     return (TensorMut){{ .data = data, .shape = shape, .rank = rank }};
 }}
 
+static inline const Tensor as_tensor(const TensorMut* t) {{
+  return (const Tensor){{ .data=t->data, .shape=t->shape, .rank=t->rank }};
+}}
+
 {count}
 {ranks}
 {shapes}
@@ -201,6 +205,7 @@ impl CBackend {
             }
             Expr::ShapeOf(expr) => format!("{}.shape", Self::render_expr(expr)),
             Expr::DataOf(expr) => format!("{}.data", Self::render_expr(expr)),
+            Expr::ReadOnly(expr) => format!("as_tensor(&{})", Self::render_expr(expr)),
         }
     }
 
