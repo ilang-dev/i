@@ -16,18 +16,15 @@ enum Arg {
 // must map any relevant input values to idents (tensors and dims), perform any
 // allocations (and eventually frees), and launch kernels
 pub fn lower(graph: &Graph) -> Program {
+    let mut topo_ind = 0;
     let mut library = Block::default();
     let mut exec_block = Block::default();
-    let mut node_to_leaf_ind: HashMap<usize, usize> = HashMap::new();
-
-    node_to_leaf_ind = graph
+    let mut node_to_leaf_ind: HashMap<usize, usize> = graph
         .leaves()
         .iter()
         .enumerate()
         .map(|(ind, node)| (node.lock().unwrap().id, ind))
         .collect();
-
-    let mut topo_ind = 0;
 
     let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
         .roots()
