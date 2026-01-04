@@ -3,7 +3,6 @@ pub enum Expr {
     Int(usize),
     Scalar(f32),
     Ident(String),
-    Ref(String, bool), // like Ident(_), but a ref (and tracks mutability)
     Op {
         op: char,
         inputs: Vec<Expr>,
@@ -20,8 +19,6 @@ pub enum Expr {
 pub enum Type {
     Int(bool),
     Scalar(bool),
-    Array(bool),
-    ArrayRef(bool),
 }
 
 #[derive(Clone, Debug)]

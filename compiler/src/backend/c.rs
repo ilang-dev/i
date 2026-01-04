@@ -108,13 +108,6 @@ impl CBackend {
         match t {
             Type::Int(_) => "size_t".to_string(),
             Type::Scalar(_) => "float".to_string(),
-            Type::Array(m) | Type::ArrayRef(m) => {
-                if *m {
-                    "float*".to_string()
-                } else {
-                    "const float*".to_string()
-                }
-            }
         }
     }
 
@@ -200,7 +193,6 @@ impl CBackend {
     fn render_expr(expr: &Expr) -> String {
         match expr {
             Expr::Ident(s) => s.to_string(),
-            Expr::Ref(s, _mutable) => s.to_string(),
             Expr::Int(x) => format!("{}", x),
             Expr::Scalar(x) => Self::render_float_literal(*x),
             Expr::Op { .. } => Self::render_op(expr),
@@ -286,7 +278,10 @@ impl CBackend {
                 Self::render_expr(bound),
             ),
             Statement::Loop {
-                index, bound, body, ..
+                index,
+                bound,
+                body,
+                parallel: _,
             } => {
                 let index: String = Self::render_expr(index);
                 format!(
