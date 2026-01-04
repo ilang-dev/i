@@ -68,7 +68,6 @@ pub fn lower(graph: &Graph) -> Program {
         })
         .collect();
 
-    // TODO this is duplicated from below and it would be nice if that weren't true
     let shape_addrs: Vec<Vec<ShapeAddr>> = lowereds.iter().map(|l| l.1.clone()).collect();
     let shape_exprs: Vec<Vec<Expr>> = shape_addrs
         .iter()
@@ -352,8 +351,6 @@ fn lower_node(
         },
     };
 
-    // TODO the library function needs shape in terms of children
-
     // create library function
     let function_fragment = build_library_function(
         &loop_specs,
@@ -387,11 +384,6 @@ fn lower_node(
 
     *topo_ind += 1;
 
-    // TODO I think the shape output here can be seen as tracking the semantic
-    //      shape rather than the shape of the physical buffers. All this is used
-    //      for is determining the output shape from the input shape which does
-    //      depend on the intermediate buffer layout, but only the semantics of
-    //      the expression. (probably write this down somewhere)
     (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
 }
 
@@ -469,7 +461,6 @@ fn build_library_function(
     op_statement: &Statement,
     preamble: Block,
 ) -> Block {
-    // TODO either define loop bound idents or inline shape exprs
     let make_empty_loop = |spec: &LoopSpec| {
         let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
         let split_factors = &spec.split_factors;
@@ -543,28 +534,6 @@ fn build_library_function(
         statements: [preamble.statements, vec![loop_stack]].concat(),
     }
 }
-
-// NOTES ON LIBRARY FUNCTION LOWERING
-// TODO maybe can map node ids to input/output indices
-// TODO input/ouptut arg indices must be prepared for call site according to function body
-
-// we could be lowering:
-// - non-fused node which does not fuse
-//   - build loops
-//   - take children as inputs
-//   -
-// - non-fused node which does fuse
-// - fused node which does not fuse
-// - fused node which does fuse
-
-// if node is fused:
-// - adjust buffer allocation
-// - don't write library function
-// - somehow return fragment
-
-// if node fuses:
-// - get fused's fragment, write into function body
-// - adjust call site according to fused's childrne
 
 /// Get IR for `count` function
 fn count(count: usize) -> Statement {
