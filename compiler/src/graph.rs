@@ -92,20 +92,6 @@ fn get_parent_of_leftmost_leaf(node: &NodeRef) -> Option<NodeRef> {
     }
 }
 
-fn get_leftmost_leaf(node_ref: &NodeRef) -> NodeRef {
-    let mut current = Arc::clone(node_ref);
-    loop {
-        let next = {
-            let node = current.lock().unwrap();
-            if node.children.is_empty() {
-                return Arc::clone(&current);
-            }
-            Arc::clone(&node.children[0].0)
-        };
-        current = next;
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Graph {
     roots: Vec<NodeRef>,

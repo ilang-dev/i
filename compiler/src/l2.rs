@@ -10,27 +10,13 @@ enum Arg {
     Writeable(usize),
 }
 
+// TODO write a real docstring here
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
 // be `void exec(const Tensor* inputs, size_t n_inputs, TensorMut* output)`. It
 // must map any relevant input values to idents (tensors and dims), perform any
 // allocations (and eventually frees), and launch kernels
 pub fn lower(graph: &Graph) -> Program {
-    // TODO what needs to be passed up from the recursion?
-    //      - rank value
-    //      - whatever necessary to populate `shapes`
-    //      - whatever necessary to populate `exec`
-
-    // every interior node has these things:
-    // - allocation
-    // - kernel/kernel fragment
-    // - call site (except when fused)
-
-    // freeing can be done only after all instances of the intermediate data are used
-
-    // things that need to be reused between uses of nodes:
-    // - buffer name
-    // - [actually not this] kernel call site
 
     let mut library = Block::default();
     let mut exec_block = Block::default();
@@ -42,10 +28,6 @@ pub fn lower(graph: &Graph) -> Program {
         .enumerate()
         .map(|(ind, node)| (node.lock().unwrap().id, ind))
         .collect();
-
-    // TODO put this note in the appropriate place, or otherwise document
-    // "shapes" are encoded as (usize, usize) "addresses" pointing to
-    // (input index, dimension index)
 
     let mut topo_ind = 0;
 
