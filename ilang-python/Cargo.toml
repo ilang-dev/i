@@ -8,5 +8,5 @@ compiler = { path = "../compiler" }
 libloading = "0.8.6"
 
 [dependencies.pyo3]
-version = "0.23.4"
+version = "0.27.2"
 features = ["extension-module"]

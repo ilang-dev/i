@@ -1,7 +1,7 @@
 use libloading::{Library, Symbol};
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyAny, PyList, PyTuple};
 
 use compiler::{
     backend::{c::CBackend, Build, Render},
@@ -113,7 +113,6 @@ impl Component {
     }
 
     fn __str__(&self) -> PyResult<String> {
-        //Ok(format!("{:#?}", &self.graph))
         Ok(format!("{:#?}", lower(&self.graph)))
     }
 
@@ -170,17 +169,17 @@ impl Component {
     }
 
     #[pyo3(signature = (*args))]
-    fn exec<'py>(&self, py: Python<'py>, args: &Bound<'py, PyTuple>) -> PyResult<PyObject> {
+    fn exec<'py>(&self, py: Python<'py>, args: &Bound<'py, PyTuple>) -> PyResult<Py<PyAny>> {
         let inputs: Vec<PyTensor> = args.extract()?;
         let outs = self.evaluate(&inputs)?;
 
         if outs.len() == 1 {
             let t = outs.into_iter().next().unwrap();
-            let py_t = Py::new(py, t)?; // Py<PyTensor>
-            let obj = py_t.into_py_any(py)?; // PyResult<Py<PyAny>>
+            let py_t = Py::new(py, t)?;
+            let obj = py_t.into_py_any(py)?;
             Ok(obj)
         } else {
-            let objs: Vec<PyObject> = outs
+            let objs: Vec<Py<PyAny>> = outs
                 .into_iter()
                 .map(|t| {
                     let py_t = Py::new(py, t).unwrap();
@@ -188,8 +187,8 @@ impl Component {
                 })
                 .collect();
 
-            let tuple = PyTuple::new(py, &objs)?; // Bound<'py, PyTuple>
-            let obj = tuple.into_py_any(py)?; // PyResult<Py<PyAny>>
+            let tuple = PyTuple::new(py, &objs)?;
+            let obj = tuple.into_py_any(py)?;
             Ok(obj)
         }
     }
@@ -216,7 +215,7 @@ fn infer_shape(list: &Bound<'_, PyList>) -> PyResult<Vec<usize>> {
         }
 
         let first_item = current.get_item(0)?;
-        match first_item.downcast::<PyList>() {
+        match first_item.cast::<PyList>() {
             Ok(sublist) => current = sublist.clone(),
             Err(_) => break,
         }
@@ -253,7 +252,7 @@ fn validate_and_flatten(
         }
     } else {
         for element in list.iter() {
-            let sublist = element.downcast::<PyList>()?;
+            let sublist = element.cast::<PyList>()?;
             validate_and_flatten(&sublist, shape, dim + 1, data)?;
         }
     }

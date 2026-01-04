@@ -1,2 +1,3 @@
 [workspace]
 members = ["compiler", "ilang-python"]
+resolver = "2"
