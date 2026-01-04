@@ -1,4 +1,5 @@
 use libloading::{Library, Symbol};
+use pyo3::conversion::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 
@@ -31,6 +32,75 @@ pub struct TensorMut<'a> {
 #[derive(Debug)]
 struct Component {
     graph: Graph,
+}
+
+impl Component {
+    fn evaluate(&self, inputs: &[PyTensor]) -> PyResult<Vec<PyTensor>> {
+        let tensors = inputs
+            .iter()
+            .map(|tensor| Tensor {
+                data: tensor.data.as_ptr(),
+                shape: tensor.shape.as_ptr(),
+                rank: tensor.shape.len(),
+                _marker: std::marker::PhantomData,
+            })
+            .collect::<Vec<_>>();
+
+        let block = lower(&self.graph);
+        let dylib_path = CBackend::build(&CBackend::render(&block)).unwrap();
+
+        let outputs: Vec<PyTensor> = unsafe {
+            let dylib = Library::new(&dylib_path).unwrap();
+
+            let count: Symbol<extern "C" fn() -> usize> = dylib.get(b"count").unwrap();
+            let ranks_fn: Symbol<extern "C" fn(*mut usize)> = dylib.get(b"ranks").unwrap();
+            let shapes_fn: Symbol<extern "C" fn(*const Tensor, *mut *mut usize)> =
+                dylib.get(b"shapes").unwrap();
+            let exec_fn: Symbol<extern "C" fn(*const Tensor, *mut TensorMut)> =
+                dylib.get(b"exec").unwrap();
+
+            let n_out = count();
+
+            let mut ranks = vec![0usize; n_out];
+            ranks_fn(ranks.as_mut_ptr());
+
+            let mut out_shapes: Vec<Vec<usize>> = ranks.iter().map(|&r| vec![0usize; r]).collect();
+            let mut shape_ptrs: Vec<*mut usize> =
+                out_shapes.iter_mut().map(|v| v.as_mut_ptr()).collect();
+
+            shapes_fn(tensors.as_ptr(), shape_ptrs.as_mut_ptr());
+
+            let mut out_data: Vec<Vec<f32>> = out_shapes
+                .iter()
+                .map(|shape| {
+                    let n_elem: usize = shape.iter().product();
+                    vec![0f32; n_elem]
+                })
+                .collect();
+
+            let mut outs: Vec<TensorMut> = (0..n_out)
+                .map(|i| TensorMut {
+                    data: out_data[i].as_mut_ptr(),
+                    shape: out_shapes[i].as_ptr(),
+                    rank: out_shapes[i].len(),
+                    _marker: std::marker::PhantomData,
+                })
+                .collect();
+
+            exec_fn(tensors.as_ptr(), outs.as_mut_ptr());
+
+            std::fs::remove_file(&dylib_path).unwrap();
+
+            (0..n_out)
+                .map(|i| PyTensor {
+                    data: std::mem::take(&mut out_data[i]),
+                    shape: out_shapes[i].clone(),
+                })
+                .collect()
+        };
+
+        Ok(outputs)
+    }
 }
 
 #[pymethods]
@@ -100,72 +170,27 @@ impl Component {
     }
 
     #[pyo3(signature = (*args))]
-    fn exec(&self, args: &Bound<'_, PyTuple>) -> PyResult<Vec<PyTensor>> {
-        let mut tensors: Vec<PyTensor> = args.extract()?;
+    fn exec<'py>(&self, py: Python<'py>, args: &Bound<'py, PyTuple>) -> PyResult<PyObject> {
+        let inputs: Vec<PyTensor> = args.extract()?;
+        let outs = self.evaluate(&inputs)?;
 
-        let tensors = tensors
-            .iter()
-            .map(|tensor| Tensor {
-                data: tensor.data.as_ptr(),
-                shape: tensor.shape.as_ptr(),
-                rank: tensor.shape.len(),
-                _marker: std::marker::PhantomData,
-            })
-            .collect::<Vec<_>>();
-
-        let block = lower(&self.graph);
-        let dylib_path = CBackend::build(&CBackend::render(&block)).unwrap();
-
-        unsafe {
-            let dylib = Library::new(&dylib_path).unwrap();
-
-            let count: Symbol<extern "C" fn() -> usize> = dylib.get(b"count").unwrap();
-            let ranks_fn: Symbol<extern "C" fn(*mut usize)> = dylib.get(b"ranks").unwrap();
-            let shapes_fn: Symbol<extern "C" fn(*const Tensor, *mut *mut usize)> =
-                dylib.get(b"shapes").unwrap();
-            let exec_fn: Symbol<extern "C" fn(*const Tensor, *mut TensorMut)> =
-                dylib.get(b"exec").unwrap();
-
-            let n_out = count();
-
-            let mut ranks = vec![0usize; n_out];
-            ranks_fn(ranks.as_mut_ptr());
-
-            let mut out_shapes: Vec<Vec<usize>> = ranks.iter().map(|&r| vec![0usize; r]).collect();
-            let mut shape_ptrs: Vec<*mut usize> =
-                out_shapes.iter_mut().map(|v| v.as_mut_ptr()).collect();
-
-            shapes_fn(tensors.as_ptr(), shape_ptrs.as_mut_ptr());
-
-            let mut out_data: Vec<Vec<f32>> = out_shapes
-                .iter()
-                .map(|shape| {
-                    let n_elem: usize = shape.iter().product();
-                    vec![0f32; n_elem]
+        if outs.len() == 1 {
+            let t = outs.into_iter().next().unwrap();
+            let py_t = Py::new(py, t)?; // Py<PyTensor>
+            let obj = py_t.into_py_any(py)?; // PyResult<Py<PyAny>>
+            Ok(obj)
+        } else {
+            let objs: Vec<PyObject> = outs
+                .into_iter()
+                .map(|t| {
+                    let py_t = Py::new(py, t).unwrap();
+                    py_t.into_py_any(py).unwrap()
                 })
                 .collect();
 
-            let mut outs: Vec<TensorMut> = (0..n_out)
-                .map(|i| TensorMut {
-                    data: out_data[i].as_mut_ptr(),
-                    shape: out_shapes[i].as_ptr(),
-                    rank: out_shapes[i].len(),
-                    _marker: std::marker::PhantomData,
-                })
-                .collect();
-
-            exec_fn(tensors.as_ptr(), outs.as_mut_ptr());
-
-            std::fs::remove_file(&dylib_path).unwrap();
-
-            let py_out = (0..n_out)
-                .map(|i| PyTensor {
-                    data: std::mem::take(&mut out_data[i]),
-                    shape: out_shapes[i].clone(),
-                })
-                .collect();
-
-            Ok(py_out)
+            let tuple = PyTuple::new(py, &objs)?; // Bound<'py, PyTuple>
+            let obj = tuple.into_py_any(py)?; // PyResult<Py<PyAny>>
+            Ok(obj)
         }
     }
 }
