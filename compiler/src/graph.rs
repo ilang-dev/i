@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use crate::ast::{
-    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, Schedule, UnaryOp,
+    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, UnaryOp,
 };
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -171,7 +171,7 @@ impl Graph {
 
     pub fn compose(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
-        let mut right = other.deepcopy();
+        let right = other.deepcopy();
 
         let mut r_iter = right.roots.into_iter();
         let map: HashMap<usize, NodeRef> = left
@@ -205,7 +205,7 @@ impl Graph {
 
     pub fn fanout(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
-        let mut right = other.deepcopy();
+        let right = other.deepcopy();
 
         let map: HashMap<usize, NodeRef> = right
             .leaves()
@@ -392,7 +392,7 @@ impl Graph {
 
                             let index_reconstructed_loop_spec = enumerated_split_factors
                                 .next()
-                                .map(move |(ind, factor)| LoopSpec {
+                                .map(move |(ind, _factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
                                     output_dim,
@@ -407,7 +407,7 @@ impl Graph {
                                 });
 
                             let remaining_factor_loop_specs =
-                                enumerated_split_factors.map(move |(ind, factor)| LoopSpec {
+                                enumerated_split_factors.map(move |(ind, _factor)| LoopSpec {
                                     group: loop_group,
                                     ind,
                                     output_dim,
@@ -548,21 +548,4 @@ impl Graph {
             Self::dot_node(&child_node, visited, out);
         }
     }
-}
-
-fn get_shape_table(
-    children_indices: Vec<&String>,
-    schedule: &Schedule,
-) -> HashMap<char, (usize, usize, Vec<usize>)> {
-    let mut table: HashMap<char, (usize, usize, Vec<usize>)> = HashMap::new();
-    for (child_ind, child_index) in children_indices.iter().enumerate() {
-        for (dim_ind, c) in child_index.chars().enumerate() {
-            table.entry(c).or_insert((
-                child_ind,
-                dim_ind,
-                schedule.splits.get(&c).cloned().unwrap_or(vec![]),
-            ));
-        }
-    }
-    table
 }

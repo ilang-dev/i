@@ -1,6 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use crate::ast::Schedule;
 use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
@@ -17,7 +16,6 @@ enum Arg {
 // must map any relevant input values to idents (tensors and dims), perform any
 // allocations (and eventually frees), and launch kernels
 pub fn lower(graph: &Graph) -> Program {
-
     let mut library = Block::default();
     let mut exec_block = Block::default();
     let mut node_to_leaf_ind: HashMap<usize, usize> = HashMap::new();
@@ -671,7 +669,7 @@ fn create_affine_index(indices: &Vec<Expr>, bounds: &Vec<Expr>) -> Expr {
         .iter()
         .rev()
         .zip(indices.iter().rev())
-        .map(|(bound, index)| index)
+        .map(|(_bound, index)| index)
         .rev()
         .collect::<Vec<_>>();
     let d = indices.len();
