@@ -25,6 +25,7 @@ pub fn lower(graph: &Graph) -> Program {
         .enumerate()
         .map(|(ind, node)| (node.lock().unwrap().id, ind))
         .collect();
+    let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
 
     let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
         .roots()
@@ -38,6 +39,7 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut library,
                 &mut exec_block,
                 &mut node_to_leaf_ind,
+                &mut shape_addr_preference,
                 &vec![],
                 &mut vec![],
                 &mut vec![],
@@ -71,6 +73,7 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
+    shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
     prunable_loops: &Vec<(usize, Bound)>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
@@ -125,6 +128,7 @@ fn lower_node(
                 library,
                 exec_block,
                 node_to_leaf_ind,
+                shape_addr_preference,
                 &get_prunable_loops(&loop_specs, compute_level, child_ind),
                 readonly_buffer_idents,
                 writeable_buffer_idents,
@@ -137,6 +141,15 @@ fn lower_node(
     let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
     let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
 
+    // update shape addr prefs
+    for list in shape_addr_lists {
+        let globalize = |addr: &ShapeAddr| globalize_shape_addr(*addr, &child_shape_addr_lists);
+        let list: Vec<ShapeAddr> = list.iter().map(globalize).collect();
+        for i in 0..list.len() {
+            shape_addr_preference.entry(list[i]).or_insert(list[0]);
+        }
+    }
+
     let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
     let buffer_ident = match root_ind {
         None => Expr::Ident(format!("s{topo_ind}")),
@@ -145,32 +158,6 @@ fn lower_node(
             index: Box::new(Expr::Int(root_ind)),
         },
     };
-
-    let mut shape_addr_preference: HashMap<ShapeAddr, ShapeAddr> = HashMap::new();
-    for shape_addr_list in shape_addr_lists {
-        for i in 0..shape_addr_list.len() {
-            if shape_addr_preference
-                .insert(shape_addr_list[i], shape_addr_list[0])
-                .is_some()
-            {
-                panic!("Found multiple ShapeAddr preferences.");
-            }
-        }
-    }
-
-    let child_shape_addr_lists: Vec<Vec<ShapeAddr>> = child_shape_addr_lists
-        .into_iter()
-        .map(|v| {
-            v.into_iter()
-                .map(|a| {
-                    shape_addr_preference
-                        .get(&a)
-                        .map(|p| (*p).clone())
-                        .unwrap_or(a)
-                })
-                .collect()
-        })
-        .collect();
 
     // semantic shape addrs of current node without regard to splitting or fusion
     let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
@@ -209,8 +196,7 @@ fn lower_node(
 
     // for globalizing the shape addrs of remaining loop specs
     let globalize_loop_specs = |loop_spec: &LoopSpec| {
-        let globalize =
-            |&ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[input_ind][dim_ind];
+        let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
         LoopSpec {
             addrs: loop_spec.addrs.iter().map(globalize).collect(),
             ..loop_spec.clone()
@@ -312,7 +298,12 @@ fn lower_node(
 
     let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
         .iter()
-        .map(shape_addrs_to_indexing_expr)
+        .map(|list| {
+            list.iter()
+                .map(|addr| shape_addr_preference.get(addr).copied().unwrap_or(*addr))
+                .collect::<Vec<_>>()
+        })
+        .map(|shape_addrs| shape_addrs_to_indexing_expr(&shape_addrs))
         .collect();
 
     let indexing_expr: Expr = shape_addrs_to_indexing_expr(&shape_addrs);
@@ -377,6 +368,14 @@ fn lower_node(
     *topo_ind += 1;
 
     (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
+}
+
+/// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
+fn globalize_shape_addr(
+    addr: ShapeAddr,
+    child_shape_addr_lists: &Vec<Vec<ShapeAddr>>,
+) -> ShapeAddr {
+    child_shape_addr_lists[addr.input_ind][addr.dim_ind]
 }
 
 /// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
