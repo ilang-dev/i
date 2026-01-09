@@ -107,8 +107,8 @@ impl Component {
 impl Component {
     #[new]
     fn new(src: String) -> PyResult<Self> {
-        let expr_bank = Parser::new(&src).unwrap().parse().unwrap();
-        let graph = Graph::from_expr_bank(&expr_bank);
+        let expr = Parser::new(&src).unwrap().parse().unwrap();
+        let graph = Graph::from_expr(&expr);
         Ok(Component { graph })
     }
 

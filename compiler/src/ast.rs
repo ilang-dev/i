@@ -1,13 +1,5 @@
 use std::collections::HashMap;
 
-/// Holds all Exprs
-#[derive(Debug)]
-pub struct ExprBank(pub Vec<Expr>);
-
-/// An index into the ExprBank
-#[derive(Clone, Copy, Debug)]
-pub struct ExprRef(pub usize);
-
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub op: ScalarOp,

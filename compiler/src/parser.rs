@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::ast::{BinaryOp, Expr, ExprBank, NoOp, ScalarOp, Schedule, Symbol, UnaryOp};
+use crate::ast::{BinaryOp, Expr, NoOp, ScalarOp, Schedule, Symbol, UnaryOp};
 use crate::tokenizer::{Token, Tokenizer};
 
 #[derive(Debug)]
@@ -36,13 +36,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse(&mut self) -> Result<ExprBank, ParseError> {
-        let mut expr_bank = ExprBank(Vec::new());
-        expr_bank.0.push(self.parse_expr()?);
-        Ok(expr_bank)
-    }
-
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+    pub fn parse(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_unscheduled_expr()?;
         if matches!(self.peek0(), Token::Bar) {
             let schedule = self.parse_schedule()?;

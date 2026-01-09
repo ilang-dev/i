@@ -5,7 +5,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use crate::ast::{BinaryOp, Expr, ExprBank, ExprRef, NoOp, ScalarOp, UnaryOp};
+use crate::ast::{BinaryOp, Expr, NoOp, ScalarOp, UnaryOp};
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -138,10 +138,9 @@ impl Graph {
         Arc::clone(self.roots.last().expect("Graph has no roots"))
     }
 
-    pub fn from_expr_bank(expr_bank: &ExprBank) -> Graph {
+    pub fn from_expr(expr: &Expr) -> Graph {
         let mut graph = Self::new();
-        let root =
-            graph.from_expr_ref_with_expr_bank(&ExprRef(expr_bank.0.len() - 1), expr_bank, vec![]);
+        let root = graph.from_expr_with_parents(&expr, vec![]);
         graph.roots.push(root);
         graph
     }
@@ -245,16 +244,7 @@ impl Graph {
         node
     }
 
-    fn from_expr_ref_with_expr_bank(
-        &mut self,
-        expr_ref: &ExprRef,
-        expr_bank: &ExprBank,
-        parents: Vec<NodeRef>,
-    ) -> NodeRef {
-        let Some(expr) = &expr_bank.0.get(expr_ref.0) else {
-            panic!("Expression Bank is empty.")
-        };
-
+    fn from_expr_with_parents(&mut self, expr: &Expr, parents: Vec<NodeRef>) -> NodeRef {
         let Expr { op, out, schedule } = expr;
         let children = match op {
             ScalarOp::BinaryOp(BinaryOp::Add(in0, in1))
