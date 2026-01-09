@@ -44,7 +44,7 @@ impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> Result<(AST, ExprBank), ParseError> {
         let mut named_exprs = vec![];
         let mut expr_bank = ExprBank(Vec::new());
-        while let Token::Colon = self.tokenizer.peek()[1] {
+        while let Token::Colon = self.tokenizer.peek[1] {
             let named_expr = self.parse_named_expr(&mut expr_bank)?;
             named_exprs.push(named_expr);
         }
@@ -71,7 +71,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        match self.tokenizer.peek() {
+        match self.tokenizer.peek {
             [_, Token::Dot] => Ok(Expr::Combinator(self.parse_combinator()?)),
             [Token::Operator(_), _] | [_, Token::Operator(_)] | [_, Token::Squiggle] => {
                 Ok(Expr::Index(self.parse_index_expr()?))
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
 
     fn parse_index_expr(&mut self) -> Result<IndexExpr, ParseError> {
         let index_expr = self.parse_unscheduled_index_expr()?;
-        match self.tokenizer.peek()[0] {
+        match self.tokenizer.peek[0] {
             Token::Bar => {
                 let splits = self.parse_splits()?;
                 let (loop_order, compute_levels) = self.parse_loop_order()?;
@@ -128,7 +128,7 @@ impl<'a> Parser<'a> {
 
         loop {
             // Parse the index identifier
-            match self.tokenizer.peek()[0] {
+            match self.tokenizer.peek[0] {
                 Token::Symbol(_) => {
                     // consume the Symbol
                     let Token::Symbol(s) = self.tokenizer.next() else {
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
 
                     // Keep parsing colon-separated integers
                     loop {
-                        match self.tokenizer.peek()[0] {
+                        match self.tokenizer.peek[0] {
                             Token::Colon => {
                                 self.tokenizer.next(); // consume the colon
                                 match self.tokenizer.next() {
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_scalarop(&mut self) -> Result<ScalarOp, ParseError> {
-        match self.tokenizer.peek() {
+        match self.tokenizer.peek {
             [Token::Operator(_), _] => Ok(ScalarOp::UnaryOp(self.parse_unaryop()?)),
             [Token::Symbol(_), Token::Operator(_)] => {
                 Ok(ScalarOp::BinaryOp(self.parse_binaryop()?))

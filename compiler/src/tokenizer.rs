@@ -29,141 +29,82 @@ impl fmt::Display for Token {
     }
 }
 
-/// Circular buffer used to hold the peek Tokens
-struct PeekBuffer {
-    tokens: [Token; 2],
-    pos: usize,
-}
-
-impl PeekBuffer {
-    fn popswap(&mut self, token: Token) -> Token {
-        let token = std::mem::replace(&mut self.tokens[self.pos], token);
-        self.pos = (self.pos + 1) % 2;
-        token
-    }
-
-    fn peek(&self) -> [&Token; 2] {
-        [&self.tokens[self.pos], &self.tokens[(self.pos + 1) % 2]]
-    }
-}
-
 pub struct Tokenizer<'a> {
     input: &'a str,
     pos: usize,
-    peek: PeekBuffer,
+    pub peek: [Token; 2],
 }
 
 impl<'a> Tokenizer<'a> {
     pub fn new(input: &'a str) -> Result<Self, String> {
-        let mut tokenizer = Tokenizer {
+        let mut t = Tokenizer {
             input,
             pos: 0,
-            peek: PeekBuffer {
-                tokens: [Token::EOF, Token::EOF],
-                pos: 0,
-            },
+            peek: [Token::EOF, Token::EOF],
         };
-
-        // buffer the first two Tokens
-        let token = tokenizer.tokenize()?;
-        tokenizer.peek.popswap(token);
-        let token = tokenizer.tokenize()?;
-        tokenizer.peek.popswap(token);
-
-        Ok(tokenizer)
+        t.peek[0] = t.tokenize()?;
+        t.peek[1] = t.tokenize()?;
+        Ok(t)
     }
 
-    /// An array of ref to the two upcoming Tokens in the stream
-    pub fn peek(&self) -> [&Token; 2] {
-        self.peek.peek()
-    }
-
-    /// Get the next Token in the stream
     pub fn next(&mut self) -> Token {
-        let token = self.tokenize().unwrap();
-        self.peek.popswap(token)
+        let out = std::mem::replace(&mut self.peek[0], Token::EOF);
+        self.peek[0] = std::mem::replace(&mut self.peek[1], Token::EOF);
+        self.peek[1] = self.tokenize().unwrap();
+        out
     }
 
     fn tokenize(&mut self) -> Result<Token, String> {
-        self.consume_whitespace();
+        self.consume_while(|c| c.is_whitespace());
 
-        if self.pos >= self.input.len() {
+        let Some(c) = self.peek_char() else {
             return Ok(Token::EOF);
+        };
+
+        if c.is_ascii_digit() {
+            return Ok(Token::Int(self.consume_while_str(|c| c.is_ascii_digit())));
         }
 
-        let c = self.peek_char();
-
-        if c.is_numeric() {
-            return Ok(Token::Int(self.consume_int()));
+        if c.is_ascii_alphabetic() || c == '_' || c == '(' || c == ')' {
+            return Ok(Token::Symbol(self.consume_while_str(|c| {
+                c.is_ascii_alphanumeric() || c == '_' || c == '\'' || c == '(' || c == ')'
+            })));
         }
 
-        if c.is_alphabetic() || c.is_numeric() || c == '_' || c == '(' || c == ')' {
-            return Ok(Token::Symbol(self.consume_str()));
-        }
-
-        match c {
-            ':' => {
-                self.consume_char();
-                Ok(Token::Colon)
-            }
-            ',' => {
-                self.consume_char();
-                Ok(Token::Comma)
-            }
-            '.' => {
-                self.consume_char();
-                Ok(Token::Dot)
-            }
-            '~' => {
-                self.consume_char();
-                Ok(Token::Squiggle)
-            }
-            '|' => {
-                self.consume_char();
-                Ok(Token::Bar)
-            }
-            '+' | '*' | '-' | '/' | '>' | '<' | '^' | '$' | '@' | '#' | '!' => {
-                self.consume_char();
-                Ok(Token::Operator(c))
-            }
-            _ => Err(format!("Unexpected character: {}", c)),
-        }
+        self.consume_char();
+        Ok(match c {
+            ':' => Token::Colon,
+            ',' => Token::Comma,
+            '.' => Token::Dot,
+            '~' => Token::Squiggle,
+            '|' => Token::Bar,
+            '+' | '*' | '-' | '/' | '>' | '<' | '^' | '$' | '@' | '#' | '!' => Token::Operator(c),
+            _ => return Err(format!("Unexpected character: {}", c)),
+        })
     }
 
-    fn peek_char(&self) -> char {
-        self.input[self.pos..].chars().next().unwrap()
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
     }
 
     fn consume_char(&mut self) {
-        self.pos += self.peek_char().len_utf8();
+        if let Some(c) = self.peek_char() {
+            self.pos += c.len_utf8();
+        }
     }
 
-    fn consume_whitespace(&mut self) {
-        while self.pos < self.input.len() && self.peek_char().is_whitespace() {
+    fn consume_while<F: FnMut(char) -> bool>(&mut self, mut pred: F) {
+        while let Some(c) = self.peek_char() {
+            if !pred(c) {
+                break;
+            }
             self.consume_char();
         }
     }
 
-    fn consume_int(&mut self) -> String {
+    fn consume_while_str<F: FnMut(char) -> bool>(&mut self, pred: F) -> String {
         let start = self.pos;
-        while self.pos < self.input.len() && (self.peek_char().is_numeric()) {
-            self.consume_char();
-        }
-        self.input[start..self.pos].to_string()
-    }
-
-    fn consume_str(&mut self) -> String {
-        let start = self.pos;
-        while self.pos < self.input.len()
-            && (self.peek_char().is_alphabetic()
-                || self.peek_char().is_numeric()
-                || self.peek_char() == '_'
-                || self.peek_char() == '\''
-                || self.peek_char() == '('
-                || self.peek_char() == ')')
-        {
-            self.consume_char();
-        }
+        self.consume_while(pred);
         self.input[start..self.pos].to_string()
     }
 }
