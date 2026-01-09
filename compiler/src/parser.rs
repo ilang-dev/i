@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::ast::{
-    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NamedExpr, NoOp, ScalarOp, Schedule,
-    Symbol, UnaryOp, AST,
+    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, Schedule, Symbol,
+    UnaryOp,
 };
 use crate::tokenizer::{Token, Tokenizer};
 
@@ -41,33 +41,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse(&mut self) -> Result<(AST, ExprBank), ParseError> {
-        let mut named_exprs = vec![];
+    pub fn parse(&mut self) -> Result<ExprBank, ParseError> {
         let mut expr_bank = ExprBank(Vec::new());
-        while let Token::Colon = self.tokenizer.peek[1] {
-            let named_expr = self.parse_named_expr(&mut expr_bank)?;
-            named_exprs.push(named_expr);
-        }
-        // parse final (non-named) expression
         let expr = self.parse_expr()?;
         expr_bank.0.push(expr);
-        Ok((AST(named_exprs, ExprRef(expr_bank.0.len() - 1)), expr_bank))
-    }
-
-    fn parse_named_expr(&mut self, expr_bank: &mut ExprBank) -> Result<NamedExpr, ParseError> {
-        let ident = self.parse_symbol()?;
-        match self.tokenizer.next() {
-            Token::Colon => {
-                let expr = self.parse_expr()?;
-                expr_bank.0.push(expr);
-                let expr_ref = ExprRef(expr_bank.0.len() - 1);
-                self.symbol_table.insert(ident.clone(), expr_ref);
-                Ok(NamedExpr { ident, expr_ref })
-            }
-            _ => Err(ParseError::InvalidToken {
-                expected: "Colon".to_string(),
-            }),
-        }
+        Ok(expr_bank)
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
