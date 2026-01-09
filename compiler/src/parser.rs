@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::ast::{
-    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, Schedule, Symbol,
-    UnaryOp,
-};
+use crate::ast::{BinaryOp, Expr, ExprBank, ExprRef, NoOp, ScalarOp, Schedule, Symbol, UnaryOp};
 use crate::tokenizer::{Token, Tokenizer};
 
 #[derive(Debug)]
@@ -49,26 +46,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        match self.tokenizer.peek {
-            [_, Token::Dot] => Ok(Expr::Combinator(self.parse_combinator()?)),
-            [Token::Operator(_), _] | [_, Token::Operator(_)] | [_, Token::Squiggle] => {
-                Ok(Expr::Index(self.parse_index_expr()?))
-            }
-            _ => Err(ParseError::InvalidToken {
-                expected: "Index or Dot".to_string(),
-            }),
-        }
-    }
-
-    fn parse_index_expr(&mut self) -> Result<IndexExpr, ParseError> {
-        let index_expr = self.parse_unscheduled_index_expr()?;
+        let expr = self.parse_unscheduled_expr()?;
         match self.tokenizer.peek[0] {
             Token::Bar => {
                 let splits = self.parse_splits()?;
                 let (loop_order, compute_levels) = self.parse_loop_order()?;
-                Ok(IndexExpr {
-                    op: index_expr.op,
-                    out: index_expr.out,
+                Ok(Expr {
+                    op: expr.op,
+                    out: expr.out,
                     schedule: Schedule {
                         splits: splits,
                         loop_order: loop_order,
@@ -76,14 +61,14 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
-            _ => Ok(index_expr),
+            _ => Ok(expr),
         }
     }
 
-    fn parse_unscheduled_index_expr(&mut self) -> Result<IndexExpr, ParseError> {
+    fn parse_unscheduled_expr(&mut self) -> Result<Expr, ParseError> {
         let scalarop = self.parse_scalarop()?;
         match self.tokenizer.next() {
-            Token::Squiggle => Ok(IndexExpr {
+            Token::Squiggle => Ok(Expr {
                 op: scalarop,
                 out: self.parse_symbol()?,
                 schedule: Schedule {
@@ -273,30 +258,6 @@ impl<'a> Parser<'a> {
 
     fn parse_noop(&mut self) -> Result<NoOp, ParseError> {
         Ok(NoOp(self.parse_symbol()?))
-    }
-
-    fn parse_combinator(&mut self) -> Result<Combinator, ParseError> {
-        let left = self.parse_symbol()?;
-        let left_expr_ref = self.symbol_table.get(&left).cloned().ok_or_else(|| {
-            ParseError::UnrecognizedSymbol {
-                symbol: left.clone(),
-            }
-        })?;
-
-        match self.tokenizer.next() {
-            Token::Dot => {
-                let right = self.parse_symbol()?;
-                let right_expr_ref = self.symbol_table.get(&right).cloned().ok_or_else(|| {
-                    ParseError::UnrecognizedSymbol {
-                        symbol: right.clone(),
-                    }
-                })?;
-                Ok(Combinator::Chain(left_expr_ref, right_expr_ref))
-            }
-            _ => Err(ParseError::InvalidToken {
-                expected: "Combinator".to_string(),
-            }),
-        }
     }
 
     fn parse_symbol(&mut self) -> Result<Symbol, ParseError> {

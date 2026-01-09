@@ -5,9 +5,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use crate::ast::{
-    BinaryOp, Combinator, Expr, ExprBank, ExprRef, IndexExpr, NoOp, ScalarOp, UnaryOp,
-};
+use crate::ast::{BinaryOp, Expr, ExprBank, ExprRef, NoOp, ScalarOp, UnaryOp};
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -72,23 +70,6 @@ impl Node {
             .iter()
             .map(|(child_ref, index)| (child_ref.lock().unwrap().clone(), index.clone()))
             .collect()
-    }
-}
-
-fn get_parent_of_leftmost_leaf(node: &NodeRef) -> Option<NodeRef> {
-    let mut current = Arc::clone(node);
-    let mut parent = None;
-
-    loop {
-        let next = {
-            let node = current.lock().unwrap();
-            if node.children.is_empty() {
-                return parent;
-            }
-            Arc::clone(&node.children[0].0)
-        };
-        parent = Some(current);
-        current = next;
     }
 }
 
@@ -274,223 +255,200 @@ impl Graph {
             panic!("Expression Bank is empty.")
         };
 
-        match expr {
-            Expr::Index(IndexExpr { op, out, schedule }) => {
-                let children = match op {
-                    ScalarOp::BinaryOp(BinaryOp::Add(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Sub(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Mul(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Div(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Max(in0, in1))
-                    | ScalarOp::BinaryOp(BinaryOp::Min(in0, in1)) => vec![
-                        (
-                            self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                            in0.0.clone(),
-                        ),
-                        (
-                            self.add_node(in1.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                            in1.0.clone(),
-                        ),
-                    ],
-                    ScalarOp::UnaryOp(UnaryOp::Accum(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Prod(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Relu(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Neg(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Max(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Min(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Recip(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Exp(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Log(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Sqrt(in0))
-                    | ScalarOp::UnaryOp(UnaryOp::Abs(in0))
-                    | ScalarOp::NoOp(NoOp(in0)) => {
-                        vec![(
-                            self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                            in0.0.clone(),
-                        )]
-                    }
-                };
-                let op = match op {
-                    ScalarOp::UnaryOp(UnaryOp::Accum(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Add(_, _)) => '+',
-                    ScalarOp::UnaryOp(UnaryOp::Prod(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Mul(_, _)) => '*',
-                    ScalarOp::UnaryOp(UnaryOp::Relu(_)) => '!',
-                    ScalarOp::UnaryOp(UnaryOp::Max(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Max(_, _)) => '>',
-                    ScalarOp::UnaryOp(UnaryOp::Min(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Min(_, _)) => '<',
-                    ScalarOp::UnaryOp(UnaryOp::Neg(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Sub(_, _)) => '-',
-                    ScalarOp::UnaryOp(UnaryOp::Recip(_))
-                    | ScalarOp::BinaryOp(BinaryOp::Div(_, _)) => '/',
-                    ScalarOp::UnaryOp(UnaryOp::Exp(_)) => '^',
-                    ScalarOp::UnaryOp(UnaryOp::Log(_)) => '$',
-                    ScalarOp::UnaryOp(UnaryOp::Sqrt(_)) => '@',
-                    ScalarOp::UnaryOp(UnaryOp::Abs(_)) => '#',
-                    ScalarOp::NoOp(_) => ' ',
-                };
-
-                let mut shape_table: HashMap<char, (Vec<ShapeAddr>, Vec<usize>)> = HashMap::new();
-                for (input_ind, (_, child_index)) in children.iter().enumerate() {
-                    for (dim_ind, c) in child_index.chars().enumerate() {
-                        let entry = shape_table.entry(c).or_insert_with(|| {
-                            (
-                                Vec::new(),
-                                schedule.splits.get(&c).cloned().unwrap_or_else(|| vec![]),
-                            )
-                        });
-
-                        entry.0.push(ShapeAddr { input_ind, dim_ind });
-                    }
-                }
-
-                let (shape_addr_lists, split_factor_lists): (Vec<Vec<ShapeAddr>>, Vec<Vec<usize>>) =
-                    out.0.chars().map(|c| shape_table[&c].clone()).unzip();
-
-                let char_index_to_output_dim: HashMap<char, usize> =
-                    out.0.chars().enumerate().map(|(i, c)| (c, i)).collect();
-
-                let mut unique_char_indices = HashSet::<char>::new();
-                let char_indexes: Vec<char> = out
-                    .0
-                    .chars()
-                    .chain(
-                        children
-                            .iter()
-                            .flat_map(|(_, child_index)| child_index.chars()),
-                    )
-                    .filter(move |c| unique_char_indices.insert(*c))
-                    .collect();
-
-                let loop_groups: HashMap<char, usize> = char_indexes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| (*c, i))
-                    .collect();
-
-                // TODO this could be cleaned up by computing a loop order first and then unifying
-                //      these branches
-                let loop_specs: Vec<LoopSpec> = if schedule.loop_order.is_empty() {
-                    char_indexes
-                        .iter()
-                        .flat_map(|c| {
-                            let loop_group = loop_groups[&c];
-                            let output_dim = char_index_to_output_dim.get(&c).copied();
-                            let (shape_addrs, split_factors) = &shape_table[&c];
-                            let base_loop_spec = LoopSpec {
-                                group: loop_group,
-                                ind: 0,
-                                output_dim,
-                                addrs: shape_addrs.clone(),
-                                split_factors: split_factors.clone(),
-                                bound: Bound::Base,
-                                index_reconstruction: None, // TODO
-                            };
-
-                            let mut enumerated_split_factors = split_factors.iter().enumerate();
-
-                            let index_reconstructed_loop_spec = enumerated_split_factors
-                                .next()
-                                .map(move |(ind, _factor)| LoopSpec {
-                                    group: loop_group,
-                                    ind,
-                                    output_dim,
-                                    addrs: shape_addrs.clone(),
-                                    split_factors: split_factors.clone(),
-                                    bound: Bound::Factor(ind),
-                                    index_reconstruction: if split_factors.is_empty() {
-                                        None
-                                    } else {
-                                        Some(split_factors.clone())
-                                    },
-                                });
-
-                            let remaining_factor_loop_specs =
-                                enumerated_split_factors.map(move |(ind, _factor)| LoopSpec {
-                                    group: loop_group,
-                                    ind,
-                                    output_dim,
-                                    addrs: shape_addrs.clone(),
-                                    split_factors: split_factors.clone(),
-                                    bound: Bound::Factor(ind),
-                                    index_reconstruction: None,
-                                });
-
-                            std::iter::once(base_loop_spec)
-                                .chain(index_reconstructed_loop_spec.into_iter())
-                                .chain(remaining_factor_loop_specs)
-                        })
-                        .collect()
-                } else {
-                    let mut index_reconstructed_groups = HashSet::<usize>::new();
-                    let mut loop_specs: Vec<LoopSpec> = schedule
-                        .loop_order
-                        .iter()
-                        .rev()
-                        .map(|(c, split_factor_ind)| {
-                            let loop_group = loop_groups[&c];
-                            let output_dim = char_index_to_output_dim.get(&c).copied();
-                            let (shape_addrs, split_factors) = &shape_table[&c];
-
-                            let bound = match (split_factors.is_empty(), split_factor_ind) {
-                                (false, 0) | (true, _) => Bound::Base,
-                                (false, ind) => Bound::Factor(*ind),
-                            };
-
-                            let index_reconstruction = if !split_factors.is_empty()
-                                && index_reconstructed_groups.insert(loop_group)
-                            {
-                                Some(split_factors.clone())
-                            } else {
-                                None
-                            };
-
-                            LoopSpec {
-                                group: loop_group,
-                                ind: *split_factor_ind,
-                                output_dim,
-                                addrs: shape_addrs.clone(),
-                                split_factors: split_factors.clone(),
-                                bound,
-                                index_reconstruction,
-                            }
-                        })
-                        .collect();
-                    loop_specs.reverse();
-                    loop_specs
-                };
-
-                let mut compute_levels = schedule.compute_levels.clone();
-                compute_levels.resize(children.len(), 0);
-
-                //// TODO validate number of loop_specs: one per unique char index plus one per split
-
-                let body = NodeBody::Interior {
-                    op,
-                    shape_addr_lists,
-                    split_factor_lists,
-                    loop_specs,
-                    compute_levels,
-                };
-                self.add_node(out.0.clone(), body, parents, children)
+        let Expr { op, out, schedule } = expr;
+        let children = match op {
+            ScalarOp::BinaryOp(BinaryOp::Add(in0, in1))
+            | ScalarOp::BinaryOp(BinaryOp::Sub(in0, in1))
+            | ScalarOp::BinaryOp(BinaryOp::Mul(in0, in1))
+            | ScalarOp::BinaryOp(BinaryOp::Div(in0, in1))
+            | ScalarOp::BinaryOp(BinaryOp::Max(in0, in1))
+            | ScalarOp::BinaryOp(BinaryOp::Min(in0, in1)) => vec![
+                (
+                    self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
+                    in0.0.clone(),
+                ),
+                (
+                    self.add_node(in1.0.clone(), NodeBody::Leaf, vec![], vec![]),
+                    in1.0.clone(),
+                ),
+            ],
+            ScalarOp::UnaryOp(UnaryOp::Accum(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Prod(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Relu(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Neg(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Max(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Min(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Recip(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Exp(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Log(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Sqrt(in0))
+            | ScalarOp::UnaryOp(UnaryOp::Abs(in0))
+            | ScalarOp::NoOp(NoOp(in0)) => {
+                vec![(
+                    self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
+                    in0.0.clone(),
+                )]
             }
-            Expr::Combinator(Combinator::Chain(left_ref, right_ref)) => {
-                let left = self.from_expr_ref_with_expr_bank(left_ref, expr_bank, parents.clone());
-                let right = self.from_expr_ref_with_expr_bank(right_ref, expr_bank, parents);
+        };
+        let op = match op {
+            ScalarOp::UnaryOp(UnaryOp::Accum(_)) | ScalarOp::BinaryOp(BinaryOp::Add(_, _)) => '+',
+            ScalarOp::UnaryOp(UnaryOp::Prod(_)) | ScalarOp::BinaryOp(BinaryOp::Mul(_, _)) => '*',
+            ScalarOp::UnaryOp(UnaryOp::Relu(_)) => '!',
+            ScalarOp::UnaryOp(UnaryOp::Max(_)) | ScalarOp::BinaryOp(BinaryOp::Max(_, _)) => '>',
+            ScalarOp::UnaryOp(UnaryOp::Min(_)) | ScalarOp::BinaryOp(BinaryOp::Min(_, _)) => '<',
+            ScalarOp::UnaryOp(UnaryOp::Neg(_)) | ScalarOp::BinaryOp(BinaryOp::Sub(_, _)) => '-',
+            ScalarOp::UnaryOp(UnaryOp::Recip(_)) | ScalarOp::BinaryOp(BinaryOp::Div(_, _)) => '/',
+            ScalarOp::UnaryOp(UnaryOp::Exp(_)) => '^',
+            ScalarOp::UnaryOp(UnaryOp::Log(_)) => '$',
+            ScalarOp::UnaryOp(UnaryOp::Sqrt(_)) => '@',
+            ScalarOp::UnaryOp(UnaryOp::Abs(_)) => '#',
+            ScalarOp::NoOp(_) => ' ',
+        };
 
-                if let Some(parent) = get_parent_of_leftmost_leaf(&right) {
-                    let mut pn = parent.lock().unwrap();
-                    let (orphan, tag) = pn.children[0].clone();
-                    pn.children[0] = (Arc::clone(&left), tag);
-                    drop(pn);
-                    left.lock().unwrap().parents.push(Arc::clone(&parent));
-                    drop(orphan);
-                }
+        let mut shape_table: HashMap<char, (Vec<ShapeAddr>, Vec<usize>)> = HashMap::new();
+        for (input_ind, (_, child_index)) in children.iter().enumerate() {
+            for (dim_ind, c) in child_index.chars().enumerate() {
+                let entry = shape_table.entry(c).or_insert_with(|| {
+                    (
+                        Vec::new(),
+                        schedule.splits.get(&c).cloned().unwrap_or_else(|| vec![]),
+                    )
+                });
 
-                right
+                entry.0.push(ShapeAddr { input_ind, dim_ind });
             }
         }
+
+        let (shape_addr_lists, split_factor_lists): (Vec<Vec<ShapeAddr>>, Vec<Vec<usize>>) =
+            out.0.chars().map(|c| shape_table[&c].clone()).unzip();
+
+        let char_index_to_output_dim: HashMap<char, usize> =
+            out.0.chars().enumerate().map(|(i, c)| (c, i)).collect();
+
+        let mut unique_char_indices = HashSet::<char>::new();
+        let char_indexes: Vec<char> = out
+            .0
+            .chars()
+            .chain(
+                children
+                    .iter()
+                    .flat_map(|(_, child_index)| child_index.chars()),
+            )
+            .filter(move |c| unique_char_indices.insert(*c))
+            .collect();
+
+        let loop_groups: HashMap<char, usize> = char_indexes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (*c, i))
+            .collect();
+
+        // TODO this could be cleaned up by computing a loop order first and then unifying
+        //      these branches
+        let loop_specs: Vec<LoopSpec> = if schedule.loop_order.is_empty() {
+            char_indexes
+                .iter()
+                .flat_map(|c| {
+                    let loop_group = loop_groups[&c];
+                    let output_dim = char_index_to_output_dim.get(&c).copied();
+                    let (shape_addrs, split_factors) = &shape_table[&c];
+                    let base_loop_spec = LoopSpec {
+                        group: loop_group,
+                        ind: 0,
+                        output_dim,
+                        addrs: shape_addrs.clone(),
+                        split_factors: split_factors.clone(),
+                        bound: Bound::Base,
+                        index_reconstruction: None, // TODO
+                    };
+
+                    let mut enumerated_split_factors = split_factors.iter().enumerate();
+
+                    let index_reconstructed_loop_spec =
+                        enumerated_split_factors
+                            .next()
+                            .map(move |(ind, _factor)| LoopSpec {
+                                group: loop_group,
+                                ind,
+                                output_dim,
+                                addrs: shape_addrs.clone(),
+                                split_factors: split_factors.clone(),
+                                bound: Bound::Factor(ind),
+                                index_reconstruction: if split_factors.is_empty() {
+                                    None
+                                } else {
+                                    Some(split_factors.clone())
+                                },
+                            });
+
+                    let remaining_factor_loop_specs =
+                        enumerated_split_factors.map(move |(ind, _factor)| LoopSpec {
+                            group: loop_group,
+                            ind,
+                            output_dim,
+                            addrs: shape_addrs.clone(),
+                            split_factors: split_factors.clone(),
+                            bound: Bound::Factor(ind),
+                            index_reconstruction: None,
+                        });
+
+                    std::iter::once(base_loop_spec)
+                        .chain(index_reconstructed_loop_spec.into_iter())
+                        .chain(remaining_factor_loop_specs)
+                })
+                .collect()
+        } else {
+            let mut index_reconstructed_groups = HashSet::<usize>::new();
+            let mut loop_specs: Vec<LoopSpec> = schedule
+                .loop_order
+                .iter()
+                .rev()
+                .map(|(c, split_factor_ind)| {
+                    let loop_group = loop_groups[&c];
+                    let output_dim = char_index_to_output_dim.get(&c).copied();
+                    let (shape_addrs, split_factors) = &shape_table[&c];
+
+                    let bound = match (split_factors.is_empty(), split_factor_ind) {
+                        (false, 0) | (true, _) => Bound::Base,
+                        (false, ind) => Bound::Factor(*ind),
+                    };
+
+                    let index_reconstruction = if !split_factors.is_empty()
+                        && index_reconstructed_groups.insert(loop_group)
+                    {
+                        Some(split_factors.clone())
+                    } else {
+                        None
+                    };
+
+                    LoopSpec {
+                        group: loop_group,
+                        ind: *split_factor_ind,
+                        output_dim,
+                        addrs: shape_addrs.clone(),
+                        split_factors: split_factors.clone(),
+                        bound,
+                        index_reconstruction,
+                    }
+                })
+                .collect();
+            loop_specs.reverse();
+            loop_specs
+        };
+
+        let mut compute_levels = schedule.compute_levels.clone();
+        compute_levels.resize(children.len(), 0);
+
+        //// TODO validate number of loop_specs: one per unique char index plus one per split
+
+        let body = NodeBody::Interior {
+            op,
+            shape_addr_lists,
+            split_factor_lists,
+            loop_specs,
+            compute_levels,
+        };
+        self.add_node(out.0.clone(), body, parents, children)
     }
 
     pub fn leaves(&self) -> Vec<NodeRef> {

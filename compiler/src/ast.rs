@@ -1,11 +1,5 @@
 use std::collections::HashMap;
 
-#[derive(Clone, Debug)]
-pub enum Expr {
-    Index(IndexExpr),
-    Combinator(Combinator),
-}
-
 /// Holds all Exprs
 #[derive(Debug)]
 pub struct ExprBank(pub Vec<Expr>);
@@ -15,7 +9,7 @@ pub struct ExprBank(pub Vec<Expr>);
 pub struct ExprRef(pub usize);
 
 #[derive(Clone, Debug)]
-pub struct IndexExpr {
+pub struct Expr {
     pub op: ScalarOp,
     pub out: Symbol,
     pub schedule: Schedule,
@@ -66,11 +60,6 @@ pub enum UnaryOp {
 
 #[derive(Clone, Debug)]
 pub struct NoOp(pub Symbol);
-
-#[derive(Clone, Debug)]
-pub enum Combinator {
-    Chain(ExprRef, ExprRef),
-}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Symbol(pub String);
