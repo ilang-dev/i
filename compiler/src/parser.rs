@@ -184,7 +184,7 @@ impl<'a> Parser<'a> {
             [Token::Symbol(_), Token::Squiggle] => {
                 let a = self.parse_symbol()?;
                 Ok(ScalarOp {
-                    op: Op::Id,
+                    op: Op::NoOp,
                     args: vec![a],
                 })
             }

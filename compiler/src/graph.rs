@@ -258,7 +258,7 @@ impl Graph {
             .collect();
 
         let op = match op.op {
-            Op::Id => ' ',
+            Op::NoOp => ' ',
             Op::Add => '+',
             Op::Sub => '-',
             Op::Mul => '*',

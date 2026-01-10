@@ -27,11 +27,11 @@ pub struct ScalarOp {
 #[rustfmt::skip]
 #[derive(Clone, Debug)]
 pub enum Op {
-    Id, // no-op
-    Neg, Recip, // defaultable binary
-    Exp, Log, Sqrt, Abs, Relu, // strictly unary
-    Mul, Add, Max, Min, // reducible binary
-    Div, Sub, // strictly binary
+    NoOp, // unary (reshape)
+    Exp, Log, Sqrt, Abs, Relu, // unary (elementwise)
+    Neg, Recip, // unary, defaultable binary
+    Mul, Add, Max, Min, // unary, reducing binary
+    Div, Sub, // binary
 }
 
 #[derive(Clone, Debug)]
