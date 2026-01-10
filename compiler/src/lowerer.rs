@@ -74,7 +74,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
-    prunable_loops: &Vec<(usize, Bound)>,
+    prunable_axes: &Vec<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
 ) -> (usize, Vec<ShapeAddr>, Expr, Block) {
@@ -88,7 +88,7 @@ fn lower_node(
         compute_levels,
     } = &node.body
     else {
-        assert!(prunable_loops.is_empty(), "Cannot fuse leaf nodes.");
+        assert!(prunable_axes.is_empty(), "Cannot fuse leaf nodes.");
         // handle leaf nodes
         let leaf_ind = node_to_leaf_ind[&node.id];
         let rank = node.index.len();
@@ -120,7 +120,7 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let (readonly_buffer_idents, writeable_buffer_idents) = match prunable_loops.is_empty() {
+    let (readonly_buffer_idents, writeable_buffer_idents) = match prunable_axes.is_empty() {
         true => (&mut vec![], &mut vec![]), // non-fused -> new arg lists
         false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
     };
@@ -139,7 +139,7 @@ fn lower_node(
                 exec_block,
                 node_to_leaf_ind,
                 shape_addr_preference,
-                &get_prunable_loops(&loop_specs, compute_level, child_ind),
+                &get_prunable_axes(&loop_specs, compute_level, child_ind),
                 readonly_buffer_idents,
                 writeable_buffer_idents,
             )
@@ -198,8 +198,8 @@ fn lower_node(
 
     // for filtering prunable loops
     let prunable = |loop_spec: &&LoopSpec| {
-        !prunable_loops.iter().any(|(dim_ind, pruned_bound)| {
-            Some(dim_ind) == loop_spec.output_dim.as_ref() && loop_spec.bound == *pruned_bound
+        !prunable_axes.iter().any(|axis| {
+            Some(axis.addr.dim_ind) == loop_spec.output_dim && loop_spec.bound == axis.kind
         })
     };
 
@@ -298,7 +298,7 @@ fn lower_node(
         })
         .collect();
 
-    let bound_decl_block = match prunable_loops.is_empty() {
+    let bound_decl_block = match prunable_axes.is_empty() {
         true => Block {
             statements: bound_decl_statements,
         },
@@ -356,7 +356,7 @@ fn lower_node(
     );
 
     let mut fused_fragment = Block::default();
-    if prunable_loops.is_empty() {
+    if prunable_axes.is_empty() {
         // create library "kernel" function
         library.statements.push(Statement::Function {
             signature: FunctionSignature::Kernel(library_function_ident.clone()),
@@ -407,11 +407,11 @@ fn make_access_expr(arg: &Arg, indexing_expr: &Expr) -> Expr {
 
 /// Determines which loops should be pruned in the recursive call, specified by (dimension
 /// index, Bound)
-fn get_prunable_loops(
+fn get_prunable_axes(
     loop_specs: &Vec<LoopSpec>,
     compute_level: usize,
     child_ind: usize,
-) -> Vec<(usize, Bound)> {
+) -> Vec<Axis> {
     loop_specs
         .iter()
         .take(compute_level)
@@ -419,7 +419,13 @@ fn get_prunable_loops(
             spec.addrs
                 .iter()
                 .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
-                .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec.bound))
+                .map(|ShapeAddr { dim_ind, .. }| Axis {
+                    addr: ShapeAddr {
+                        input_ind: child_ind,
+                        dim_ind: *dim_ind,
+                    },
+                    kind: spec.bound,
+                })
         })
         .collect()
 }
