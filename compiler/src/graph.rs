@@ -27,10 +27,8 @@ pub struct ShapeAddr {
 
 #[derive(Clone, Debug)]
 pub struct LoopSpec {
-    pub group: usize, // base loops and their corresponding split loops share a group
-    pub ind: usize,   // index within group, 0 reserved for base loop, splits ordered by declaration
     pub output_dim: Option<usize>, // None only for reduction dimensions
-    pub addrs: Vec<ShapeAddr>, // (input index, dimension index)
+    pub addrs: Vec<ShapeAddr>,     // (input index, dimension index)
     pub split_factors: Vec<usize>,
     pub bound: Bound,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
@@ -79,10 +77,6 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn new() -> Self {
-        Self { roots: Vec::new() }
-    }
-
     pub fn deepcopy(&self) -> Self {
         fn copy_recursive(
             node_ref: &NodeRef,
@@ -139,7 +133,7 @@ impl Graph {
     }
 
     pub fn from_expr(expr: &Expr) -> Graph {
-        let mut graph = Self::new();
+        let mut graph = Self { roots: Vec::new() };
         let root = graph.from_expr_with_parents(&expr, vec![]);
         graph.roots.push(root);
         graph
@@ -318,12 +312,9 @@ impl Graph {
             char_indexes
                 .iter()
                 .flat_map(|c| {
-                    let loop_group = loop_groups[&c];
                     let output_dim = char_index_to_output_dim.get(&c).copied();
                     let (shape_addrs, split_factors) = &shape_table[&c];
                     let base_loop_spec = LoopSpec {
-                        group: loop_group,
-                        ind: 0,
                         output_dim,
                         addrs: shape_addrs.clone(),
                         split_factors: split_factors.clone(),
@@ -337,8 +328,6 @@ impl Graph {
                         enumerated_split_factors
                             .next()
                             .map(move |(ind, _factor)| LoopSpec {
-                                group: loop_group,
-                                ind,
                                 output_dim,
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
@@ -352,8 +341,6 @@ impl Graph {
 
                     let remaining_factor_loop_specs =
                         enumerated_split_factors.map(move |(ind, _factor)| LoopSpec {
-                            group: loop_group,
-                            ind,
                             output_dim,
                             addrs: shape_addrs.clone(),
                             split_factors: split_factors.clone(),
@@ -391,8 +378,6 @@ impl Graph {
                     };
 
                     LoopSpec {
-                        group: loop_group,
-                        ind: *split_factor_ind,
                         output_dim,
                         addrs: shape_addrs.clone(),
                         split_factors: split_factors.clone(),
