@@ -1,897 +1,718 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::Schedule;
-use crate::block::{Arg, Block, Expr, Program, Statement, Type};
-use crate::graph::{Graph, Node, NodeBody};
-
-pub struct Lowerer {
-    input_args: Vec<Arg>,
-    input_array_counter: usize,
-    base_loop_counter: usize,
-    store_counter: usize,
-    split_factor_count: usize,
-}
+use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
+use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 #[derive(Clone, Debug)]
-struct Lowered {
-    def_block: Block,
-    alloc_statements: HashMap<String, Statement>, // (ident, Statement::Alloc)
-    exec_block: Block,
-    def_args: Vec<Arg>, // only populated for kernel fragments, empty for full kernels
-    loop_idents: HashMap<char, (String, String)>,
-    store_ident: String,
-    indexing_expr: Option<Expr>,
-    shape: Vec<(usize, usize)>,
+enum Arg {
+    ReadOnly(usize),
+    Writeable(usize),
 }
 
-impl Lowerer {
-    pub fn new() -> Self {
-        Lowerer {
-            input_args: Vec::new(),
-            input_array_counter: 0,
-            base_loop_counter: 0,
-            store_counter: 0,
-            split_factor_count: 0,
-        }
+// TODO write a real docstring here
+// This function is responsible for the rank, shape, and exec functions.
+// `rank` and `shape` are easy, but `exec` has some complexity. The API should
+// be `void exec(const Tensor* inputs, size_t n_inputs, TensorMut* output)`. It
+// must map any relevant input values to idents (tensors and dims), perform any
+// allocations (and eventually frees), and launch kernels
+pub fn lower(graph: &Graph) -> Program {
+    let mut topo_ind = 0;
+    let mut library = Block::default();
+    let mut exec_block = Block::default();
+    let mut node_to_leaf_ind: HashMap<usize, usize> = graph
+        .leaves()
+        .iter()
+        .enumerate()
+        .map(|(ind, node)| (node.lock().unwrap().id, ind))
+        .collect();
+    let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
+
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
+        .roots()
+        .iter()
+        .enumerate()
+        .map(|(root_ind, node)| {
+            lower_node(
+                &node.lock().unwrap(),
+                Some(root_ind),
+                &mut topo_ind,
+                &mut library,
+                &mut exec_block,
+                &mut node_to_leaf_ind,
+                &mut shape_addr_preference,
+                &vec![],
+                &mut vec![],
+                &mut vec![],
+            )
+        })
+        .collect();
+
+    let shape_exprs: Vec<Vec<Expr>> = lowereds
+        .iter()
+        .map(|lowered| lowered.1.clone())
+        .map(|shape_addr_list| shape_addr_list.iter().map(input_shape_expr).collect())
+        .collect();
+
+    Program {
+        count: count(graph.roots().len()),
+        ranks: ranks(lowereds.iter().map(|l| l.0).collect()),
+        shapes: shapes(shape_exprs),
+        library: library,
+        exec: Statement::Function {
+            signature: FunctionSignature::Exec,
+            body: exec_block,
+        },
     }
+}
 
-    fn get_char_indices(index: &String) -> Vec<char> {
-        let mut seen = HashSet::new();
-        index.chars().filter(|c| seen.insert(*c)).collect()
-    }
+/// Lower node. Update library and exec block, return (rank, shape addrs, buffer ident, fused fragment)
+fn lower_node(
+    node: &Node,
+    root_ind: Option<usize>,
+    topo_ind: &mut usize,
+    library: &mut Block,
+    exec_block: &mut Block,
+    node_to_leaf_ind: &mut HashMap<usize, usize>,
+    shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
+    prunable_loops: &Vec<(usize, Bound)>,
+    readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
+    writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
+) -> (usize, Vec<ShapeAddr>, Expr, Block) {
+    let NodeBody::Interior {
+        op,
+        shape_addr_lists,
+        split_factor_lists,
+        loop_specs,
+        compute_levels,
+    } = &node.body
+    else {
+        assert!(prunable_loops.is_empty(), "Cannot fuse leaf nodes.");
+        // handle leaf nodes
+        let leaf_ind = node_to_leaf_ind[&node.id];
+        let rank = node.index.len();
+        let shape_addr = (0..node.index.len())
+            .map(|dim_ind| ShapeAddr {
+                input_ind: leaf_ind,
+                dim_ind: dim_ind,
+            })
+            .collect();
 
-    pub fn lower(&mut self, graph: &Graph) -> Program {
-        assert_eq!(
-            graph.roots().len(),
-            1,
-            "Attempted to lower `Graph` of {} roots.",
-            graph.roots().len()
-        );
-
-        let mut memo = HashMap::<usize, Lowered>::new();
-        let lowered = self.lower_node(
-            &graph.root().lock().unwrap(),
-            HashSet::new(),
-            true,
-            &mut memo,
-        );
-
-        let mut alloc_statements: Vec<_> = lowered.alloc_statements.into_iter().collect();
-        alloc_statements.sort_by_key(|(k, _)| k.clone());
-        let alloc_statements: Vec<_> = alloc_statements.into_iter().map(|(_, v)| v).collect();
-
-        //let lowered = self.lower_node(&graph.root().lock().unwrap(), HashSet::new(), true);
-        Program {
-            rank: Statement::Function {
-                ident: "rank".to_string(),
-                args: vec![],
-                body: Block {
-                    statements: vec![Statement::Return {
-                        value: Expr::Int(lowered.shape.len()),
-                    }],
-                },
-            },
-            shape: Statement::Function {
-                ident: "shape".to_string(),
-                args: self.input_args.clone(),
-                body: Block {
-                    statements: lowered
-                        .shape
-                        .iter()
-                        .enumerate()
-                        .map(|(ind, (input_ind, dim))| Statement::Assignment {
-                            left: Expr::Indexed {
-                                ident: format!("shape"),
-                                index: Box::new(Expr::Int(ind)),
-                            },
-                            right: Expr::Indexed {
-                                ident: format!("d{input_ind}"),
-                                index: Box::new(Expr::Int(*dim)),
-                            },
-                        })
-                        .collect(),
-                },
-            },
-            library: lowered.def_block,
-            exec: Statement::Function {
-                ident: "f".to_string(),
-                args: self.input_args.clone(),
-                body: Block {
-                    statements: [alloc_statements, lowered.exec_block.statements].concat(),
-                },
-            },
-        }
-    }
-
-    fn lower_node(
-        &mut self,
-        node: &Node,
-        pruned_loops: HashSet<(char, usize)>,
-        root: bool,
-        memo: &mut HashMap<usize, Lowered>,
-    ) -> Lowered {
-        let lowered = match &node.body {
-            NodeBody::Leaf => self.lower_leaf_node(&node.index),
-            NodeBody::Interior {
-                op,
-                schedule,
-                shape,
-            } => match memo.get(&node.id) {
-                Some(cached) => Lowered {
-                    def_block: Block {
-                        statements: Vec::new(),
-                    },
-                    exec_block: Block {
-                        statements: Vec::new(),
-                    },
-                    ..cached.clone()
-                },
-                None => self.lower_interior_node(
-                    &node.index,
-                    &op,
-                    &node.children(),
-                    shape,
-                    &schedule,
-                    pruned_loops,
-                    root,
-                    memo,
-                ),
-            },
+        let buffer_ident = Expr::Indexed {
+            expr: Box::new(Expr::Ident("inputs".into())),
+            index: Box::new(Expr::Int(leaf_ind)),
         };
 
-        memo.insert(node.id, lowered.clone());
+        return (rank, shape_addr, buffer_ident, Block::default());
+    };
 
-        lowered
-    }
+    assert!(
+        node.children().len() == compute_levels.len(),
+        "Number of compute level specifications does not match number of children"
+    );
 
-    fn lower_leaf_node(&mut self, index: &String) -> Lowered {
-        let arg_ident = format!("in{}", self.input_array_counter);
-        self.input_array_counter += 1;
+    let (readonly_buffer_idents, writeable_buffer_idents) = match prunable_loops.is_empty() {
+        true => (&mut vec![], &mut vec![]), // non-fused -> new arg lists
+        false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
+    };
 
-        let char_indices = Self::get_char_indices(index);
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
+        .children()
+        .iter()
+        .zip(compute_levels.iter())
+        .enumerate()
+        .map(|(child_ind, ((node, _), &compute_level))| {
+            lower_node(
+                &node,
+                None,
+                topo_ind,
+                library,
+                exec_block,
+                node_to_leaf_ind,
+                shape_addr_preference,
+                &get_prunable_loops(&loop_specs, compute_level, child_ind),
+                readonly_buffer_idents,
+                writeable_buffer_idents,
+            )
+        })
+        .collect();
 
-        let loop_idents: HashMap<char, (String, String)> = char_indices
-            .iter()
-            .map(|char_index| {
-                let bound_ident = format!("b{}", self.base_loop_counter);
-                let iterator_ident = format!("i{}", self.base_loop_counter);
-                self.base_loop_counter += 1;
-                (*char_index, (bound_ident, iterator_ident))
-            })
-            .collect();
+    let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
+        children_lowereds.iter().map(|l| l.1.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
 
-        // push array arg
-        self.input_args.push(Arg {
-            type_: Type::ArrayRef(false),
-            ident: Expr::Ident(arg_ident.clone()),
-        });
-
-        // push dim args
-        let dim_args = char_indices.iter().map(|c| Arg {
-            type_: Type::Int(false),
-            ident: Expr::Ident(loop_idents[c].0.clone()),
-        });
-        self.input_args.extend(dim_args.clone());
-
-        Lowered {
-            def_block: Block::default(),
-            alloc_statements: HashMap::new(),
-            exec_block: Block::default(),
-            def_args: Vec::new(),
-            loop_idents: loop_idents,
-            store_ident: arg_ident,
-            indexing_expr: None,
-            shape: index
-                .chars()
-                .enumerate()
-                .map(|(ind, c)| (self.input_array_counter - 1, ind))
-                .collect(),
+    // update shape addr prefs
+    for list in shape_addr_lists {
+        let globalize = |addr: &ShapeAddr| globalize_shape_addr(*addr, &child_shape_addr_lists);
+        let list: Vec<ShapeAddr> = list.iter().map(globalize).collect();
+        for i in 0..list.len() {
+            shape_addr_preference.entry(list[i]).or_insert(list[0]);
         }
     }
 
-    fn lower_interior_node(
-        &mut self,
-        index: &String,
-        op: &char,
-        children: &Vec<(Node, String)>,
-        shape: &Vec<(usize, usize)>,
-        schedule: &Schedule,
-        pruned_loops: HashSet<(char, usize)>,
-        root: bool,
-        memo: &mut HashMap<usize, Lowered>,
-    ) -> Lowered {
-        let mut all_char_indices: Vec<char> = children
-            .iter()
-            .fold(HashSet::new(), |mut all_char_indices, (_child, index)| {
-                all_char_indices.extend(index.chars());
-                all_char_indices
-            })
-            .into_iter()
-            .collect();
-        all_char_indices.sort();
+    let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
+    let buffer_ident = match root_ind {
+        None => Expr::Ident(format!("s{topo_ind}")),
+        Some(root_ind) => Expr::Indexed {
+            expr: Box::new(Expr::Ident("outputs".into())),
+            index: Box::new(Expr::Int(root_ind)),
+        },
+    };
 
-        let mut schedule = schedule.clone(); // Can we avoid this?
-        if schedule.loop_order.is_empty() {
-            schedule.loop_order = all_char_indices
-                .iter()
-                .map(|index| (index.clone(), 0))
-                .collect();
-        }
-        schedule.compute_levels.resize(children.len(), 0);
+    // semantic shape addrs of current node without regard to splitting or fusion
+    let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
+        .iter()
+        .map(|shape_addr_list| shape_addr_list[0]) // any shape addr works, default to 0-th
+        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[input_ind][dim_ind])
+        .collect();
 
-        schedule.loop_order = schedule
-            .loop_order
-            .iter()
-            .filter(|l| !pruned_loops.contains(l))
-            .map(|l| *l)
-            .collect();
-
-        // recursively lower children
-        // note: the reason this is a fold instead of a map is because the loop_idents are
-        //       determined jointly with all siblings. those idents determined by the first child
-        //       are passed to the lower call of the subsequent siblings.
-        let (
-            child_def_blocks,
-            child_alloc_statements,
-            mut child_exec_blocks, // mut so fragments can be pulled out for fusion
-            mut child_def_args,
-            loop_idents,
-            child_store_idents,
-            child_indexing_exprs,
-            child_shapes,
-        ): (
-            Vec<Block>,
-            HashMap<String, Statement>,
-            Vec<Block>,
-            Vec<Arg>,
-            HashMap<char, (String, String)>,
-            Vec<String>,
-            Vec<Option<Expr>>,
-            Vec<Vec<(usize, usize)>>,
-        ) = children.iter().enumerate().fold(
-            (
-                vec![],
-                HashMap::new(),
-                vec![],
-                vec![],
-                HashMap::new(),
-                vec![],
-                vec![],
-                vec![],
+    // create allocation
+    if root_ind.is_none() {
+        exec_block.statements.push(Statement::Alloc {
+            index: *topo_ind,
+            initial_value: Box::new(Expr::Scalar(match op {
+                '>' => f32::NEG_INFINITY,
+                '<' => f32::INFINITY,
+                '*' => 1.,
+                _ => 0.,
+            })),
+            shape: build_buffer_shape_exprs(
+                &shape_addr_lists,
+                &split_factor_lists,
+                &child_shape_addr_lists,
             ),
-            |(
-                mut def_blocks,
-                mut alloc_statements,
-                mut exec_blocks,
-                mut def_args,
-                mut loop_idents,
-                mut child_store_idents,
-                mut child_indexing_exprs,
-                mut child_shapes,
-            ),
-             (ind, (child, child_index))| {
-                // for mapping between child indexing and current node indexing
-                let child_to_current_index: HashMap<char, char> =
-                    child.index.chars().zip(child_index.chars()).collect();
-                let current_to_child_index: HashMap<char, char> =
-                    child_index.chars().zip(child.index.chars()).collect();
-
-                let pruned_loops: HashSet<(char, usize)> = schedule.loop_order
-                    [..schedule.compute_levels[ind]]
-                    .iter()
-                    .map(|(c, rank)| (*current_to_child_index.get(&c).unwrap_or(&c), *rank))
-                    .collect();
-
-                let Lowered {
-                    def_block: child_def_block,
-                    alloc_statements: child_alloc_statements,
-                    exec_block: child_exec_block,
-                    def_args: child_def_args,
-                    loop_idents: child_loop_idents,
-                    store_ident: child_store_ident,
-                    indexing_expr: child_indexing_expr,
-                    shape: child_shape,
-                } = self.lower_node(&child, pruned_loops, false, memo);
-
-                let child_loop_idents: HashMap<char, (String, String)> = child_loop_idents
-                    .into_iter()
-                    .map(|(c, x)| (*child_to_current_index.get(&c).unwrap_or(&c), x))
-                    .filter(|(c, _)| !loop_idents.contains_key(c))
-                    .collect();
-
-                def_blocks.push(child_def_block);
-                alloc_statements.extend(child_alloc_statements);
-                exec_blocks.push(child_exec_block);
-                Self::merge_args(&mut def_args, child_def_args);
-                loop_idents.extend(child_loop_idents);
-
-                let iterator_idents = child_index
-                    .chars()
-                    .map(|c| loop_idents[&c].clone())
-                    .map(|(_, c)| c)
-                    .collect::<Vec<_>>();
-                let bound_exprs = child_index
-                    .chars()
-                    .map(|c| loop_idents[&c].clone())
-                    .map(|(c, _)| Expr::Ident(c))
-                    .collect::<Vec<_>>();
-                let child_indexing_expr = child_indexing_expr
-                    .unwrap_or(Self::create_affine_index(iterator_idents, &bound_exprs));
-
-                child_store_idents.push(child_store_ident);
-                child_indexing_exprs.push(Some(child_indexing_expr));
-                child_shapes.push(child_shape);
-
-                (
-                    def_blocks,
-                    alloc_statements,
-                    exec_blocks,
-                    def_args,
-                    loop_idents,
-                    child_store_idents,
-                    child_indexing_exprs,
-                    child_shapes,
-                )
-            },
-        );
-
-        let shape = shape
-            .iter()
-            .map(|(child_ind, dim)| child_shapes[*child_ind][*dim])
-            .collect::<Vec<_>>();
-
-        let store_ident = match root {
-            true => "out".to_string(),
-            false => {
-                let ident = format!("s{}", self.store_counter);
-                self.store_counter += 1;
-                ident
-            }
-        };
-
-        let bound_idents: HashMap<char, String> = loop_idents
-            .iter()
-            .map(|(c, (ident, _))| (*c, ident.clone()))
-            .collect();
-        let split_factors = &schedule.splits;
-        let mut bound_exprs = if root {
-            // index according to physical output size
-            index
-                .chars()
-                .map(|c| Expr::Ident(loop_idents[&c].0.clone()))
-                .collect::<Vec<Expr>>()
-        } else {
-            // index according to "logical" shape accounting for splits
-            schedule
-                .loop_order
-                .iter()
-                .map(|(char_index, rank)| {
-                    let splits = schedule.splits.get(char_index);
-                    match (splits, rank) {
-                        (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
-                        (Some(_splits), 0) => Self::create_split_bound_expr(
-                            &bound_idents[&char_index],
-                            &split_factors[&char_index],
-                        ),
-                        (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
-                    }
-                })
-                .collect::<Vec<Expr>>()
-        };
-        if bound_exprs.is_empty() {
-            bound_exprs.push(Expr::Int(1));
-        }
-
-        let mut alloc_statements = child_alloc_statements;
-        if !root {
-            alloc_statements.insert(
-                store_ident.clone(),
-                Statement::Declaration {
-                    ident: store_ident.clone(),
-                    value: Expr::Alloc {
-                        initial_value: Box::new(Expr::Scalar(match op {
-                            '>' => f32::NEG_INFINITY,
-                            '<' => f32::INFINITY,
-                            '*' => 1.,
-                            _ => 0.,
-                        })),
-                        shape: bound_exprs.clone(),
-                    },
-                    type_: Type::Array(true),
-                },
-            );
-        }
-
-        let iterator_idents: Vec<String> = if root {
-            index.chars().map(|c| loop_idents[&c].1.clone()).collect()
-        } else {
-            schedule
-                .loop_order
-                .iter()
-                .map(|(index, rank)| {
-                    if schedule.splits.contains_key(index) {
-                        format!("{}_{rank}", loop_idents[&index].1.clone())
-                    } else {
-                        loop_idents[&index].1.clone()
-                    }
-                })
-                .collect()
-        };
-
-        let base_iterator_idents: HashMap<char, String> = loop_idents
-            .iter()
-            .map(|(c, (_, ident))| (*c, ident.clone()))
-            .collect();
-
-        let indexing_expr = Self::create_affine_index(iterator_idents, &bound_exprs);
-
-        let resolved_child_indexing_exprs = child_indexing_exprs
-            .iter()
-            .map(|expr| expr.clone().unwrap_or(indexing_expr.clone()))
-            .collect::<Vec<_>>();
-
-        let op_statement = Self::create_op_statement(
-            &indexing_expr,
-            &resolved_child_indexing_exprs,
-            op,
-            &bound_exprs,
-            &child_store_idents,
-            &store_ident,
-            &index,
-        );
-
-        // TODO: stop splitting ident map
-        let mut loop_statements: Vec<Statement> = Self::create_empty_loop_statements(
-            &schedule,
-            &base_iterator_idents,
-            &loop_idents
-                .iter()
-                .map(|(c, (ident, _))| (*c, ident.clone()))
-                .collect(),
-            &schedule.splits,
-            &index,
-            root,
-        );
-
-        // partition fragments from blocks
-        let (child_exec_fragments, remaining_blocks): (Vec<(usize, Block)>, Vec<(usize, Block)>) =
-            child_exec_blocks
-                .into_iter()
-                .enumerate()
-                .partition(|(i, _)| {
-                    schedule
-                        .compute_levels
-                        .get(*i)
-                        .map_or(false, |&level| level > 0)
-                });
-
-        // transform filtered items into desired format (level, block)
-        let child_exec_fragments: Vec<(usize, Block)> = child_exec_fragments
-            .into_iter()
-            .map(|(i, block)| (schedule.compute_levels[i], block))
-            .collect();
-
-        // reassign remaining blocks back to child_exec_blocks
-        child_exec_blocks = remaining_blocks
-            .into_iter()
-            .map(|(_, block)| block)
-            .collect();
-
-        // fuse any child kernel fragments into the appropriate loop bodies
-        let n_loop_statements = loop_statements.len();
-        for (ind, child_exec_fragment) in child_exec_fragments {
-            let Statement::Loop { body, .. } = &mut loop_statements[n_loop_statements - ind] else {
-                panic!("Expected `Statement` to be of `Loop` variant")
-            };
-            body.statements
-                .extend(child_exec_fragment.statements.clone());
-        }
-
-        let initialization_loop_stack: Option<Statement> = (root && (*op == '>' || *op == '*'))
-            .then(|| Statement::Loop {
-                index: "i_".to_string(),
-                bound: Expr::Op {
-                    op: '*',
-                    inputs: loop_idents
-                        .iter()
-                        .filter(|(c, _)| index.contains(**c))
-                        .map(|(_, (bound_ident, _))| Expr::Ident(bound_ident.clone()))
-                        .collect(),
-                },
-                body: Block {
-                    statements: vec![Statement::Assignment {
-                        left: Expr::Indexed {
-                            ident: store_ident.clone(),
-                            index: Box::new(Expr::Ident("i_".to_string())),
-                        },
-                        right: Expr::Scalar(match op {
-                            '*' => 1.,
-                            '>' => f32::NEG_INFINITY,
-                            '<' => f32::INFINITY,
-                            _ => panic!("Attempted to initialize non-reduction."),
-                        }),
-                    }],
-                },
-                parallel: true,
-            });
-
-        let loop_stack: Statement =
-            loop_statements
-                .into_iter()
-                .fold(op_statement, |loop_stack, mut loop_| {
-                    if let Statement::Loop { ref mut body, .. } = loop_ {
-                        body.statements.push(loop_stack);
-                    }
-                    loop_
-                });
-
-        if root {
-            // push array arg
-            self.input_args.push(Arg {
-                type_: Type::ArrayRef(true),
-                ident: Expr::Ident(store_ident.clone()),
-            });
-
-            // push dim args
-            let dim_args = (0..Self::get_char_indices(&index).len()).map(|ind| Arg {
-                type_: Type::Int(false),
-                ident: Expr::Ident(format!("{}_{ind}", store_ident.clone())),
-            });
-            self.input_args.extend(dim_args.clone());
-        };
-
-        let function_ident = format!("_{}", store_ident.clone());
-
-        let exec_statements = [
-            initialization_loop_stack.into_iter().collect(),
-            vec![loop_stack],
-        ]
-        .concat();
-
-        // this will get drained for full kernels and returned populated for fragments
-        let mut def_args: Vec<Arg> = [
-            child_store_idents
-                .iter()
-                .map(|ident| Arg {
-                    type_: Type::ArrayRef(false),
-                    ident: Expr::Ident(ident.clone()),
-                })
-                .collect::<Vec<_>>(),
-            vec![Arg {
-                type_: Type::ArrayRef(true),
-                ident: Expr::Ident(store_ident.clone()),
-            }],
-            all_char_indices
-                .iter()
-                .map(|c| Arg {
-                    type_: Type::Int(false),
-                    ident: Expr::Ident(loop_idents[c].0.clone()),
-                })
-                .collect::<Vec<_>>(),
-        ]
-        .concat();
-
-        Self::merge_args(&mut def_args, child_def_args);
-
-        // this will get drained for full kernels and returned populated for fragments
-        let call_args: Vec<Arg> = def_args
-            .iter()
-            .map(|arg| match (arg.type_.clone(), arg.ident.clone()) {
-                (Type::ArrayRef(mutable), Expr::Ident(s)) => Arg {
-                    type_: Type::ArrayRef(mutable),
-                    ident: Expr::Ref(s, mutable),
-                },
-                (Type::Int(mutable), Expr::Ident(s)) => Arg {
-                    type_: Type::ArrayRef(mutable),
-                    ident: Expr::Ident(s),
-                },
-                _ => panic!("Invalid argument."),
-            })
-            .collect();
-
-        let (def_block, exec_block) = if pruned_loops.is_empty() {
-            let def_block = Block {
-                statements: [
-                    child_def_blocks
-                        .into_iter()
-                        .flat_map(|block| block.statements)
-                        .collect(),
-                    vec![Statement::Function {
-                        ident: function_ident.clone(),
-                        args: def_args.drain(..).collect(),
-                        body: Block {
-                            statements: exec_statements,
-                        },
-                    }],
-                ]
-                .concat(),
-            };
-
-            let call = Statement::Call {
-                ident: function_ident.clone(),
-                args: call_args,
-            };
-
-            let exec_block = Block {
-                statements: [
-                    child_exec_blocks
-                        .into_iter()
-                        .flat_map(|block| block.statements)
-                        .collect(),
-                    vec![call],
-                ]
-                .concat(),
-            };
-
-            (def_block, exec_block)
-        } else {
-            let exec_block = Block {
-                statements: [
-                    child_exec_blocks
-                        .into_iter()
-                        .flat_map(|block| block.statements)
-                        .collect(),
-                    exec_statements,
-                ]
-                .concat(),
-            };
-            (Block::default(), exec_block)
-        };
-
-        Lowered {
-            def_block,
-            alloc_statements,
-            exec_block,
-            def_args,
-            loop_idents,
-            store_ident,
-            indexing_expr: Some(indexing_expr),
-            shape,
-        }
+        });
     }
 
-    fn create_op_statement(
-        indexing_expr: &Expr,
-        child_indexing_exprs: &Vec<Expr>,
-        op: &char,
-        bound_exprs: &Vec<Expr>,
-        child_store_idents: &Vec<String>,
-        store_ident: &String,
-        index: &String,
-    ) -> Statement {
-        let out_expr = Expr::Indexed {
-            ident: store_ident.clone(),
-            index: Box::new(indexing_expr.clone()),
-        };
+    // TODO prune loops and fold storage based on compute level
+    //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
 
-        let mut in_exprs: Vec<Expr> = child_store_idents
-            .iter()
-            .zip(child_indexing_exprs)
-            .map(|(ident, indexing_expr)| Expr::Indexed {
-                ident: ident.clone(),
-                index: Box::new(indexing_expr.clone()),
-            })
-            .collect();
+    // for filtering prunable loops
+    let prunable = |loop_spec: &&LoopSpec| {
+        !prunable_loops.iter().any(|(dim_ind, pruned_bound)| {
+            Some(dim_ind) == loop_spec.output_dim.as_ref() && loop_spec.bound == *pruned_bound
+        })
+    };
 
-        if in_exprs.len() == 1 && matches!(op, '+' | '*' | '>' | '<') {
-            // Pushing to front here shouldn't be a problem unless we start allowing ops of
-            // arbitrary inputs.
-            in_exprs.insert(0, out_expr.clone());
-            assert_eq!(
-                in_exprs.len(),
-                2,
-                "Expected exactly two operands for op [{op}]."
-            );
+    // for globalizing the shape addrs of remaining loop specs
+    let globalize_loop_specs = |loop_spec: &LoopSpec| {
+        let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
+        LoopSpec {
+            addrs: loop_spec.addrs.iter().map(globalize).collect(),
+            ..loop_spec.clone()
         }
+    };
 
-        Statement::Assignment {
-            left: out_expr,
-            right: Expr::Op {
-                op: *op,
-                inputs: in_exprs,
-            },
-        }
-    }
+    let loop_specs: Vec<LoopSpec> = loop_specs
+        .into_iter()
+        .filter(prunable)
+        .map(globalize_loop_specs)
+        .collect();
 
-    fn create_empty_loop_statements(
-        schedule: &Schedule,
-        base_iterator_idents: &HashMap<char, String>,
-        bound_idents: &HashMap<char, String>,
-        split_factors: &HashMap<char, Vec<usize>>,
-        index: &String,
-        root: bool,
-    ) -> Vec<Statement> {
-        let mut statements = vec![];
+    // where the library function must start accessing
+    let mut readonly_args_offset = readonly_buffer_idents.len();
 
-        let mut needs_index_reconstruction: HashSet<char> = schedule
-            .splits
-            .iter()
-            .filter(|(_c, splits_factors)| splits_factors.len() > 0)
-            .map(|(c, _splits_factors)| *c)
-            .collect();
-
-        let output_char_indices: HashSet<char> = index.chars().collect();
-        for (char_index, rank) in schedule.loop_order.iter().rev() {
-            let splits = schedule.splits.get(char_index);
-
-            let base_iterator_ident = &base_iterator_idents[&char_index];
-            let index = if splits.is_some() {
-                format!("{}_{rank}", base_iterator_ident)
-            } else {
-                base_iterator_idents[&char_index].clone()
-            };
-
-            let bound = match (splits, rank) {
-                (None, _) => Expr::Ident(bound_idents[&char_index].clone()),
-                (Some(_splits), 0) => Self::create_split_bound_expr(
-                    &bound_idents[&char_index],
-                    &split_factors[&char_index],
-                ),
-                (Some(_splits), rank) => Expr::Int(split_factors[&char_index][*rank - 1]),
-            };
-
-            statements.push(Statement::Loop {
-                index: index.clone(),
-                bound: bound,
-                body: Block {
-                    statements: if needs_index_reconstruction.remove(&char_index) {
-                        Self::create_index_reconstruction_statements(
-                            &base_iterator_idents[&char_index],
-                            &bound_idents[&char_index],
-                            &split_factors[&char_index],
-                            root,
-                        )
-                    } else {
-                        vec![]
-                    },
-                },
-                parallel: output_char_indices.contains(&char_index),
-            });
-        }
-
-        statements
-    }
-
-    fn create_split_bound_expr(base_bound_ident: &String, split_factors: &Vec<usize>) -> Expr {
-        let tile_width_expr = Expr::Op {
-            op: '*',
-            inputs: split_factors
-                .iter()
-                .map(|factor| Expr::Int(*factor))
-                .collect(),
-        };
-
-        let numerator = Expr::Op {
-            op: '-',
-            inputs: vec![
-                Expr::Op {
-                    op: '+',
-                    inputs: vec![
-                        Expr::Ident(base_bound_ident.clone()),
-                        tile_width_expr.clone(),
-                    ],
-                },
-                Expr::Int(1),
-            ],
-        };
-
-        Expr::Op {
-            op: '/',
-            inputs: vec![numerator, tile_width_expr],
-        }
-    }
-
-    fn create_index_reconstruction_statements(
-        base_iterator_ident: &String,
-        base_bound_ident: &String,
-        split_factors: &Vec<usize>,
-        _root: bool,
-    ) -> Vec<Statement> {
-        let iterators: Vec<Expr> = (0..=split_factors.len())
-            .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_ident, ind)))
-            .collect();
-
-        let mut weights: Vec<Expr> = Vec::with_capacity(split_factors.len() + 1);
-        let mut acc: usize = split_factors.iter().product();
-        weights.push(Expr::Int(acc));
-        for f in split_factors.iter().take(split_factors.len()) {
-            acc /= *f;
-            weights.push(Expr::Int(acc));
-        }
-
-        let reconstructed_index = Expr::Op {
-            op: '+',
-            inputs: iterators
-                .into_iter()
-                .zip(weights.into_iter())
-                .map(|(it, w)| Expr::Op {
-                    op: '*',
-                    inputs: vec![w, it],
-                })
-                .collect(),
-        };
-
-        vec![
-            Statement::Declaration {
-                ident: base_iterator_ident.clone(),
-                value: reconstructed_index,
-                type_: Type::Int(false),
-            },
-            Statement::Skip {
-                index: base_iterator_ident.clone(),
-                bound: base_bound_ident.clone(),
-            },
-        ]
-    }
-
-    fn create_affine_index(indices: Vec<String>, bounds: &Vec<Expr>) -> Expr {
-        if bounds.len() == 1 && bounds[0] == Expr::Int(1) {
-            return Expr::Int(0);
-        }
-
-        let indices = bounds
-            .iter()
-            .rev()
-            .zip(indices.iter().rev())
-            .map(|(bound, index)| index)
-            .rev()
-            .collect::<Vec<_>>();
-        let d = indices.len();
-        let mut sum_expr = None;
-        for k in 0..d {
-            let mut product_expr = None;
-            for m in (k + 1)..d {
-                product_expr = Some(match product_expr {
-                    Some(expr) => Expr::Op {
-                        op: '*',
-                        inputs: vec![expr, bounds[m].clone()],
-                    },
-                    None => bounds[m].clone(),
-                });
-            }
-            let partial_expr = match product_expr {
-                Some(expr) => Expr::Op {
-                    op: '*',
-                    inputs: vec![Expr::Ident(indices[k].clone()), expr],
-                },
-                None => Expr::Ident(indices[k].clone()),
-            };
-            sum_expr = Some(match sum_expr {
-                Some(expr) => Expr::Op {
-                    op: '+',
-                    inputs: vec![expr, partial_expr],
-                },
-                None => partial_expr,
-            });
-        }
-        sum_expr.unwrap_or(Expr::Int(0)) // Return 0 if no indices are provided
-    }
-
-    /// Merge two arg lists without duplication, and preferring mutability
-    /// Mostly written by ChatGPT o1
-    fn merge_args(def_args: &mut Vec<Arg>, child_def_args: Vec<Arg>) {
-        for arg in child_def_args {
-            let ident = match &arg.ident {
-                Expr::Ident(s) => s,
-                _ => panic!("Invalid Arg.ident type."),
-            };
-            if let Some(existing) = def_args.iter_mut().find(|e| match &e.ident {
-                Expr::Ident(ei) => ei == ident,
-                _ => false,
-            }) {
-                let incoming_mutable = match &arg.type_ {
-                    Type::Int(m) | Type::Scalar(m) | Type::Array(m) | Type::ArrayRef(m) => *m,
-                };
-                if incoming_mutable {
-                    match &mut existing.type_ {
-                        Type::Int(em) | Type::Scalar(em) | Type::Array(em) | Type::ArrayRef(em) => {
-                            *em = true
-                        }
-                    }
+    readonly_buffer_idents.extend(child_buffer_idents.iter().zip(compute_levels).filter_map(
+        |(child_buffer_ident, compute_level)| match compute_level {
+            // add only non-fused children
+            0 => Some(match child_buffer_ident {
+                Expr::Ident(s) if s.starts_with('s') => {
+                    Expr::ReadOnly(Box::new(child_buffer_ident.clone()))
                 }
+                _ => child_buffer_ident.clone(),
+            }),
+            _ => None,
+        },
+    ));
+    writeable_buffer_idents.push(buffer_ident.clone());
+
+    let n_fused_nodes = child_buffer_idents
+        .iter()
+        .zip(compute_levels.iter())
+        .filter(|(_, &compute_level)| compute_level > 0)
+        .count();
+
+    // where the library function must start accessing
+    let mut writeable_args_offset = writeable_buffer_idents.len() - 1 - n_fused_nodes;
+
+    let child_args: Vec<Arg> = compute_levels
+        .iter()
+        .map(|compute_level| match *compute_level {
+            // non-fusing
+            0 => {
+                let offset = readonly_args_offset;
+                readonly_args_offset += 1;
+                Arg::ReadOnly(offset)
+            }
+            // fusing
+            _ => {
+                let offset = writeable_args_offset;
+                writeable_args_offset += 1;
+                Arg::Writeable(offset)
+            }
+        })
+        .collect();
+
+    let mut seen = HashSet::new();
+    let bound_decl_statements: Vec<Statement> = child_shape_addr_lists
+        .iter()
+        .enumerate()
+        .flat_map(|(child_ind, child_shape_addr_list)| {
+            let (arg_str, offset) = match child_args[child_ind] {
+                Arg::ReadOnly(offset) => ("inputs", offset),
+                Arg::Writeable(offset) => ("outputs", offset),
+            };
+            child_shape_addr_list
+                .iter()
+                .map(move |child_shape_addr| (arg_str, offset, child_shape_addr))
+        })
+        .filter_map(|(arg_str, offset, child_shape_addr)| {
+            let key = (child_shape_addr.input_ind, child_shape_addr.dim_ind);
+            if !seen.insert(key) {
+                return None;
+            }
+
+            Some(Statement::Declaration {
+                ident: Expr::Ident(format!(
+                    "b_{}_{}",
+                    child_shape_addr.input_ind, child_shape_addr.dim_ind
+                )),
+                value: Expr::Indexed {
+                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                        expr: Box::new(Expr::Ident(arg_str.into())),
+                        index: Box::new(Expr::Int(offset)),
+                    }))),
+                    index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
+                },
+                type_: Type::Int(false),
+            })
+        })
+        .collect();
+
+    let bound_decl_block = match prunable_loops.is_empty() {
+        true => Block {
+            statements: bound_decl_statements,
+        },
+        false => Block::default(),
+    };
+
+    let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
+        .iter()
+        .map(|list| {
+            list.iter()
+                .map(|addr| shape_addr_preference.get(addr).copied().unwrap_or(*addr))
+                .collect::<Vec<_>>()
+        })
+        .map(|shape_addrs| shape_addrs_to_indexing_expr(&shape_addrs))
+        .collect();
+
+    let indexing_expr: Expr = shape_addrs_to_indexing_expr(&shape_addrs);
+
+    let mut child_access_exprs: Vec<Expr> = child_args
+        .iter()
+        .zip(child_indexing_exprs)
+        .map(|(arg, indexing_expr)| make_access_expr(&arg, &indexing_expr))
+        .collect();
+
+    let access_expr: Expr =
+        make_access_expr(&Arg::Writeable(writeable_args_offset), &indexing_expr);
+
+    if child_access_exprs.len() == 1 {
+        child_access_exprs.insert(
+            0,
+            match op {
+                '+' | '*' | '>' | '<' => access_expr.clone(),
+                '-' => Expr::Int(0),
+                '/' => Expr::Int(1),
+                op => panic!("{op} cannot have exactly 1 arg."),
+            },
+        );
+    }
+
+    let op_statement = Statement::Assignment {
+        left: access_expr,
+        right: Expr::Op {
+            op: *op,
+            inputs: child_access_exprs,
+        },
+    };
+
+    // create library function
+    let function_fragment = build_library_function(
+        &loop_specs,
+        &child_fragments,
+        &compute_levels,
+        &op_statement,
+        bound_decl_block,
+    );
+
+    let mut fused_fragment = Block::default();
+    if prunable_loops.is_empty() {
+        // create library "kernel" function
+        library.statements.push(Statement::Function {
+            signature: FunctionSignature::Kernel(library_function_ident.clone()),
+            body: function_fragment,
+        });
+
+        // create call site
+        exec_block.statements.push(Statement::Call {
+            ident: library_function_ident,
+            in_args: readonly_buffer_idents.clone(),
+            out_args: writeable_buffer_idents.clone(),
+        });
+    } else {
+        fused_fragment
+            .statements
+            .extend(function_fragment.statements);
+    }
+
+    // TODO create drop
+
+    *topo_ind += 1;
+
+    (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
+}
+
+/// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
+fn globalize_shape_addr(
+    addr: ShapeAddr,
+    child_shape_addr_lists: &Vec<Vec<ShapeAddr>>,
+) -> ShapeAddr {
+    child_shape_addr_lists[addr.input_ind][addr.dim_ind]
+}
+
+/// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
+fn make_access_expr(arg: &Arg, indexing_expr: &Expr) -> Expr {
+    let (arglist_str, offset) = match arg {
+        Arg::ReadOnly(offset) => ("inputs", offset),
+        Arg::Writeable(offset) => ("outputs", offset),
+    };
+    Expr::Indexed {
+        expr: Box::new(Expr::DataOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::Ident(arglist_str.into())),
+            index: Box::new(Expr::Int(*offset)),
+        }))),
+        index: Box::new(indexing_expr.clone()),
+    }
+}
+
+/// Determines which loops should be pruned in the recursive call, specified by (dimension
+/// index, Bound)
+fn get_prunable_loops(
+    loop_specs: &Vec<LoopSpec>,
+    compute_level: usize,
+    child_ind: usize,
+) -> Vec<(usize, Bound)> {
+    loop_specs
+        .iter()
+        .take(compute_level)
+        .filter_map(|spec| {
+            spec.addrs
+                .iter()
+                .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
+                .map(|ShapeAddr { dim_ind, .. }| (*dim_ind, spec.bound))
+        })
+        .collect()
+}
+
+/// `Expr`s for the dims of the buffer accounting for splitting
+fn build_buffer_shape_exprs(
+    shape_addr_lists: &Vec<Vec<ShapeAddr>>,
+    split_factor_lists: &Vec<Vec<usize>>,
+    child_shape_addrs: &Vec<Vec<ShapeAddr>>,
+) -> Vec<Expr> {
+    shape_addr_lists
+        .iter()
+        .map(|list| list[0]) // any shape addr works, default to 0-th
+        .zip(split_factor_lists.iter())
+        .flat_map(|(addr, factors)| {
+            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
+            let base_shape_expr = input_shape_expr(&global_addr);
+            match factors.is_empty() {
+                true => vec![base_shape_expr],
+                false => std::iter::once(create_split_bound_expr(base_shape_expr, factors))
+                    .chain(factors.iter().map(|factor| Expr::Int(*factor)))
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+fn input_shape_expr(addr: &ShapeAddr) -> Expr {
+    Expr::Indexed {
+        expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::Ident("inputs".into())),
+            index: Box::new(Expr::Int(addr.input_ind)),
+        }))),
+        index: Box::new(Expr::Int(addr.dim_ind)),
+    }
+}
+
+fn build_library_function(
+    loop_specs: &Vec<LoopSpec>,
+    child_fragments: &Vec<Block>,
+    compute_levels: &Vec<usize>,
+    op_statement: &Statement,
+    preamble: Block,
+) -> Block {
+    let make_empty_loop = |spec: &LoopSpec| {
+        let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
+        let split_factors = &spec.split_factors;
+
+        let base_bound_string = format!("b_{input_ind}_{dim_ind}");
+        let base_index_string = format!("i_{input_ind}_{dim_ind}");
+
+        let statements = if let Some(split_factors) = &spec.index_reconstruction {
+            create_index_reconstruction_statements(
+                &Expr::Ident(base_index_string.clone()),
+                &Expr::Ident(base_bound_string.clone()),
+                split_factors,
+            )
+        } else {
+            Vec::new()
+        };
+
+        let (bound, index) = match &spec.bound {
+            Bound::Base => {
+                if split_factors.is_empty() {
+                    (
+                        Expr::Ident(base_bound_string),
+                        Expr::Ident(base_index_string),
+                    )
+                } else {
+                    (
+                        create_split_bound_expr(Expr::Ident(base_bound_string), split_factors),
+                        Expr::Ident(format!("{base_index_string}_0")),
+                    )
+                }
+            }
+            Bound::Factor(ind) => (
+                Expr::Int(split_factors[*ind - 1]),
+                Expr::Ident(format!("{base_index_string}_{ind}")),
+            ),
+        };
+
+        Statement::Loop {
+            index,
+            bound,
+            body: Block { statements },
+            parallel: true,
+        }
+    };
+
+    // perform loop fusions
+    let mut loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
+    for (child_ind, compute_level) in compute_levels.iter().enumerate() {
+        if *compute_level > 0 {
+            if let Statement::Loop { ref mut body, .. } = loops[*compute_level - 1] {
+                body.statements
+                    .extend(child_fragments[child_ind].statements.clone());
             } else {
-                def_args.push(arg);
+                panic!("Loop `Statement` not of variant `Loop`.")
             }
         }
     }
+
+    let loop_stack: Statement =
+        loops
+            .into_iter()
+            .rev()
+            .fold(op_statement.clone(), |loop_stack, mut loop_| {
+                if let Statement::Loop { ref mut body, .. } = loop_ {
+                    body.statements.push(loop_stack);
+                }
+                loop_
+            });
+
+    Block {
+        statements: [preamble.statements, vec![loop_stack]].concat(),
+    }
+}
+
+/// Get IR for `count` function
+fn count(count: usize) -> Statement {
+    Statement::Function {
+        signature: FunctionSignature::Count,
+        body: Block {
+            statements: vec![Statement::Return {
+                value: Expr::Int(count),
+            }],
+        },
+    }
+}
+
+/// Get IR for `ranks` function
+fn ranks(ranks: Vec<usize>) -> Statement {
+    Statement::Function {
+        signature: FunctionSignature::Ranks,
+        body: Block {
+            statements: ranks
+                .iter()
+                .enumerate()
+                .map(|(ind, rank)| Statement::Assignment {
+                    left: Expr::Indexed {
+                        expr: Box::new(Expr::Ident("ranks".into())),
+                        index: Box::new(Expr::Int(ind)),
+                    },
+                    right: Expr::Int(*rank),
+                })
+                .collect(),
+        },
+    }
+}
+
+/// Get IR for `shapes` function
+fn shapes(shapes: Vec<Vec<Expr>>) -> Statement {
+    Statement::Function {
+        signature: FunctionSignature::Shapes,
+        body: Block {
+            statements: shapes
+                .iter()
+                .enumerate()
+                .flat_map(|(shape_ind, shape)| {
+                    shape.iter().enumerate().map(move |(dim_ind, dim_expr)| {
+                        Statement::Assignment {
+                            left: Expr::Indexed {
+                                expr: Box::new(Expr::Indexed {
+                                    expr: Box::new(Expr::Ident("shapes".into())),
+                                    index: Box::new(Expr::Int(shape_ind)),
+                                }),
+                                index: Box::new(Expr::Int(dim_ind)),
+                            },
+                            right: dim_expr.clone(), // TODO avoid clone by taking ownership of input?
+                        }
+                    })
+                })
+                .collect(),
+        },
+    }
+}
+
+// TODO: take split_factors: &Vec<Expr> instead of mapping in this function
+fn create_split_bound_expr(buffer_ident: Expr, split_factors: &Vec<usize>) -> Expr {
+    let tile_width_expr = Expr::Op {
+        op: '*',
+        inputs: split_factors
+            .iter()
+            .map(|factor| Expr::Int(*factor))
+            .collect(),
+    };
+
+    let numerator = Expr::Op {
+        op: '-',
+        inputs: vec![
+            Expr::Op {
+                op: '+',
+                inputs: vec![buffer_ident, tile_width_expr.clone()],
+            },
+            Expr::Int(1),
+        ],
+    };
+
+    Expr::Op {
+        op: '/',
+        inputs: vec![numerator, tile_width_expr],
+    }
+}
+
+fn create_index_reconstruction_statements(
+    base_iterator_ident: &Expr,
+    base_bound_ident: &Expr,
+    split_factors: &Vec<usize>,
+) -> Vec<Statement> {
+    let Expr::Ident(base_iterator_string) = base_iterator_ident else {
+        panic!("Got non-Ident base ident.")
+    };
+    let iterators: Vec<Expr> = (0..=split_factors.len())
+        .map(|ind| Expr::Ident(format!("{}_{}", base_iterator_string, ind)))
+        .collect();
+
+    let mut weights: Vec<Expr> = Vec::with_capacity(split_factors.len() + 1);
+    let mut acc: usize = split_factors.iter().product();
+    weights.push(Expr::Int(acc));
+    for f in split_factors.iter().take(split_factors.len()) {
+        acc /= *f;
+        weights.push(Expr::Int(acc));
+    }
+
+    let reconstructed_index = Expr::Op {
+        op: '+',
+        inputs: iterators
+            .into_iter()
+            .zip(weights.into_iter())
+            .map(|(it, w)| Expr::Op {
+                op: '*',
+                inputs: vec![w, it],
+            })
+            .collect(),
+    };
+
+    vec![
+        Statement::Declaration {
+            ident: base_iterator_ident.clone(),
+            value: reconstructed_index,
+            type_: Type::Int(false),
+        },
+        Statement::Skip {
+            index: base_iterator_ident.clone(),
+            bound: base_bound_ident.clone(),
+        },
+    ]
+}
+
+fn shape_addrs_to_indexing_expr(shape_addrs: &Vec<ShapeAddr>) -> Expr {
+    let (iter_ident, bound_ident): (Vec<Expr>, Vec<Expr>) = shape_addrs
+        .iter()
+        .map(|ShapeAddr { input_ind, dim_ind }| {
+            (
+                Expr::Ident(format!("i_{}_{}", input_ind, dim_ind)),
+                Expr::Ident(format!("b_{}_{}", input_ind, dim_ind)),
+            )
+        })
+        .unzip();
+
+    create_affine_index(&iter_ident, &bound_ident)
+}
+
+fn create_affine_index(indices: &Vec<Expr>, bounds: &Vec<Expr>) -> Expr {
+    if bounds.len() == 1 && bounds[0] == Expr::Int(1) {
+        return Expr::Int(0);
+    }
+
+    let indices = bounds
+        .iter()
+        .rev()
+        .zip(indices.iter().rev())
+        .map(|(_bound, index)| index)
+        .rev()
+        .collect::<Vec<_>>();
+    let d = indices.len();
+    let mut sum_expr = None;
+    for k in 0..d {
+        let mut product_expr = None;
+        for m in (k + 1)..d {
+            product_expr = Some(match product_expr {
+                Some(expr) => Expr::Op {
+                    op: '*',
+                    inputs: vec![expr, bounds[m].clone()],
+                },
+                None => bounds[m].clone(),
+            });
+        }
+        let partial_expr = match product_expr {
+            Some(expr) => Expr::Op {
+                op: '*',
+                inputs: vec![indices[k].clone(), expr],
+            },
+            None => indices[k].clone(),
+        };
+        sum_expr = Some(match sum_expr {
+            Some(expr) => Expr::Op {
+                op: '+',
+                inputs: vec![expr, partial_expr],
+            },
+            None => partial_expr,
+        });
+    }
+    sum_expr.unwrap_or(Expr::Int(0)) // Return 0 if no indices are provided
 }

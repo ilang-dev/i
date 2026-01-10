@@ -6,7 +6,7 @@ use pyo3::types::{PyAny, PyList, PyTuple};
 use compiler::{
     backend::{c::CBackend, Build, Render},
     graph::Graph,
-    l2::lower,
+    lowerer::lower,
     parser::Parser,
 };
 
