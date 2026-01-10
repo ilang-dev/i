@@ -317,12 +317,15 @@ fn lower_node(
     let access_expr: Expr =
         make_access_expr(&Arg::Writeable(writeable_args_offset), &indexing_expr);
 
-    if child_access_exprs.len() == 1 && matches!(op, '+' | '*' | '>' | '<') {
-        child_access_exprs.insert(0, access_expr.clone());
-        assert_eq!(
-            child_access_exprs.len(),
-            2,
-            "Expected exactly two operands for op [{op}]."
+    if child_access_exprs.len() == 1 {
+        child_access_exprs.insert(
+            0,
+            match op {
+                '+' | '*' | '>' | '<' => access_expr.clone(),
+                '-' => Expr::Int(0),
+                '/' => Expr::Int(1),
+                op => panic!("{op} cannot have exactly 1 arg."),
+            },
         );
     }
 

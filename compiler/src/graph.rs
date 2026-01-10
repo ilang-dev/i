@@ -5,7 +5,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use crate::ast::{BinaryOp, Expr, NoOp, ScalarOp, UnaryOp};
+use crate::ast::{Expr, Op};
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -246,53 +246,32 @@ impl Graph {
 
     fn from_expr_with_parents(&mut self, expr: &Expr, parents: Vec<NodeRef>) -> NodeRef {
         let Expr { op, out, schedule } = expr;
-        let children = match op {
-            ScalarOp::BinaryOp(BinaryOp::Add(in0, in1))
-            | ScalarOp::BinaryOp(BinaryOp::Sub(in0, in1))
-            | ScalarOp::BinaryOp(BinaryOp::Mul(in0, in1))
-            | ScalarOp::BinaryOp(BinaryOp::Div(in0, in1))
-            | ScalarOp::BinaryOp(BinaryOp::Max(in0, in1))
-            | ScalarOp::BinaryOp(BinaryOp::Min(in0, in1)) => vec![
+        let children: Vec<(NodeRef, String)> = op
+            .args
+            .iter()
+            .map(|s| {
                 (
-                    self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                    in0.0.clone(),
-                ),
-                (
-                    self.add_node(in1.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                    in1.0.clone(),
-                ),
-            ],
-            ScalarOp::UnaryOp(UnaryOp::Accum(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Prod(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Relu(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Neg(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Max(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Min(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Recip(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Exp(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Log(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Sqrt(in0))
-            | ScalarOp::UnaryOp(UnaryOp::Abs(in0))
-            | ScalarOp::NoOp(NoOp(in0)) => {
-                vec![(
-                    self.add_node(in0.0.clone(), NodeBody::Leaf, vec![], vec![]),
-                    in0.0.clone(),
-                )]
-            }
-        };
-        let op = match op {
-            ScalarOp::UnaryOp(UnaryOp::Accum(_)) | ScalarOp::BinaryOp(BinaryOp::Add(_, _)) => '+',
-            ScalarOp::UnaryOp(UnaryOp::Prod(_)) | ScalarOp::BinaryOp(BinaryOp::Mul(_, _)) => '*',
-            ScalarOp::UnaryOp(UnaryOp::Relu(_)) => '!',
-            ScalarOp::UnaryOp(UnaryOp::Max(_)) | ScalarOp::BinaryOp(BinaryOp::Max(_, _)) => '>',
-            ScalarOp::UnaryOp(UnaryOp::Min(_)) | ScalarOp::BinaryOp(BinaryOp::Min(_, _)) => '<',
-            ScalarOp::UnaryOp(UnaryOp::Neg(_)) | ScalarOp::BinaryOp(BinaryOp::Sub(_, _)) => '-',
-            ScalarOp::UnaryOp(UnaryOp::Recip(_)) | ScalarOp::BinaryOp(BinaryOp::Div(_, _)) => '/',
-            ScalarOp::UnaryOp(UnaryOp::Exp(_)) => '^',
-            ScalarOp::UnaryOp(UnaryOp::Log(_)) => '$',
-            ScalarOp::UnaryOp(UnaryOp::Sqrt(_)) => '@',
-            ScalarOp::UnaryOp(UnaryOp::Abs(_)) => '#',
-            ScalarOp::NoOp(_) => ' ',
+                    self.add_node(s.0.clone(), NodeBody::Leaf, vec![], vec![]),
+                    s.0.clone(),
+                )
+            })
+            .collect();
+
+        let op = match op.op {
+            Op::Id => ' ',
+            Op::Add => '+',
+            Op::Sub => '-',
+            Op::Mul => '*',
+            Op::Div => '/',
+            Op::Max => '>',
+            Op::Min => '<',
+            Op::Relu => '!',
+            Op::Exp => '^',
+            Op::Log => '$',
+            Op::Sqrt => '@',
+            Op::Abs => '#',
+            Op::Neg => '-',
+            Op::Recip => '/',
         };
 
         let mut shape_table: HashMap<char, (Vec<ShapeAddr>, Vec<usize>)> = HashMap::new();

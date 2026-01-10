@@ -19,39 +19,20 @@ pub struct Schedule {
 }
 
 #[derive(Clone, Debug)]
-pub enum ScalarOp {
-    BinaryOp(BinaryOp),
-    UnaryOp(UnaryOp),
-    NoOp(NoOp),
+pub struct ScalarOp {
+    pub op: Op,
+    pub args: Vec<Symbol>,
 }
 
+#[rustfmt::skip]
 #[derive(Clone, Debug)]
-pub enum BinaryOp {
-    Mul(Symbol, Symbol),
-    Div(Symbol, Symbol),
-    Add(Symbol, Symbol),
-    Sub(Symbol, Symbol),
-    Max(Symbol, Symbol),
-    Min(Symbol, Symbol),
+pub enum Op {
+    Id, // no-op
+    Neg, Recip, // defaultable binary
+    Exp, Log, Sqrt, Abs, Relu, // strictly unary
+    Mul, Add, Max, Min, // reducible binary
+    Div, Sub, // strictly binary
 }
-
-#[derive(Clone, Debug)]
-pub enum UnaryOp {
-    Accum(Symbol),
-    Prod(Symbol),
-    Neg(Symbol),
-    Recip(Symbol),
-    Max(Symbol),
-    Min(Symbol),
-    Exp(Symbol),
-    Log(Symbol),
-    Sqrt(Symbol),
-    Abs(Symbol),
-    Relu(Symbol),
-}
-
-#[derive(Clone, Debug)]
-pub struct NoOp(pub Symbol);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Symbol(pub String);

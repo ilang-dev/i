@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::ast::{BinaryOp, Expr, NoOp, ScalarOp, Schedule, Symbol, UnaryOp};
+use crate::ast::{Expr, Op, ScalarOp, Schedule, Symbol};
 use crate::tokenizer::{Token, Tokenizer};
 
 #[derive(Debug)]
@@ -167,53 +167,50 @@ impl<'a> Parser<'a> {
 
     fn parse_scalarop(&mut self) -> Result<ScalarOp, ParseError> {
         match self.tokenizer.peek {
-            [Token::Operator(_), _] => Ok(ScalarOp::UnaryOp(self.parse_unaryop()?)),
-            [Token::Symbol(_), Token::Operator(_)] => {
-                Ok(ScalarOp::BinaryOp(self.parse_binaryop()?))
+            [Token::Operator(_), _] => {
+                let op = self.parse_op_token()?;
+                let a = self.parse_symbol()?;
+                Ok(ScalarOp { op, args: vec![a] })
             }
-            [Token::Symbol(_), Token::Squiggle] => Ok(ScalarOp::NoOp(self.parse_noop()?)),
+            [Token::Symbol(_), Token::Operator(_)] => {
+                let a = self.parse_symbol()?;
+                let op = self.parse_op_token()?;
+                let b = self.parse_symbol()?;
+                Ok(ScalarOp {
+                    op,
+                    args: vec![a, b],
+                })
+            }
+            [Token::Symbol(_), Token::Squiggle] => {
+                let a = self.parse_symbol()?;
+                Ok(ScalarOp {
+                    op: Op::Id,
+                    args: vec![a],
+                })
+            }
             _ => Err(ParseError::InvalidToken {
                 expected: "[Operator]<Any>, [Symbol][Operator], [Symbol][Squiggle]".to_string(),
             }),
         }
     }
 
-    fn parse_binaryop(&mut self) -> Result<BinaryOp, ParseError> {
-        let left = self.parse_symbol()?;
+    fn parse_op_token(&mut self) -> Result<Op, ParseError> {
         match self.next() {
-            Token::Operator('*') => Ok(BinaryOp::Mul(left, self.parse_symbol()?)),
-            Token::Operator('/') => Ok(BinaryOp::Div(left, self.parse_symbol()?)),
-            Token::Operator('+') => Ok(BinaryOp::Add(left, self.parse_symbol()?)),
-            Token::Operator('-') => Ok(BinaryOp::Sub(left, self.parse_symbol()?)),
-            Token::Operator('>') => Ok(BinaryOp::Max(left, self.parse_symbol()?)),
-            Token::Operator('<') => Ok(BinaryOp::Min(left, self.parse_symbol()?)),
+            Token::Operator('+') => Ok(Op::Add),
+            Token::Operator('-') => Ok(Op::Sub),
+            Token::Operator('*') => Ok(Op::Mul),
+            Token::Operator('/') => Ok(Op::Div),
+            Token::Operator('>') => Ok(Op::Max),
+            Token::Operator('<') => Ok(Op::Min),
+            Token::Operator('!') => Ok(Op::Relu),
+            Token::Operator('^') => Ok(Op::Exp),
+            Token::Operator('$') => Ok(Op::Log),
+            Token::Operator('@') => Ok(Op::Sqrt),
+            Token::Operator('#') => Ok(Op::Abs),
             _ => Err(ParseError::InvalidToken {
                 expected: "Operator".to_string(),
             }),
         }
-    }
-
-    fn parse_unaryop(&mut self) -> Result<UnaryOp, ParseError> {
-        match self.next() {
-            Token::Operator('*') => Ok(UnaryOp::Prod(self.parse_symbol()?)),
-            Token::Operator('+') => Ok(UnaryOp::Accum(self.parse_symbol()?)),
-            Token::Operator('>') => Ok(UnaryOp::Max(self.parse_symbol()?)),
-            Token::Operator('<') => Ok(UnaryOp::Min(self.parse_symbol()?)),
-            Token::Operator('!') => Ok(UnaryOp::Relu(self.parse_symbol()?)),
-            Token::Operator('-') => Ok(UnaryOp::Neg(self.parse_symbol()?)),
-            Token::Operator('/') => Ok(UnaryOp::Recip(self.parse_symbol()?)),
-            Token::Operator('^') => Ok(UnaryOp::Exp(self.parse_symbol()?)),
-            Token::Operator('$') => Ok(UnaryOp::Log(self.parse_symbol()?)),
-            Token::Operator('@') => Ok(UnaryOp::Sqrt(self.parse_symbol()?)),
-            Token::Operator('#') => Ok(UnaryOp::Abs(self.parse_symbol()?)),
-            _ => Err(ParseError::InvalidToken {
-                expected: "Operator".to_string(),
-            }),
-        }
-    }
-
-    fn parse_noop(&mut self) -> Result<NoOp, ParseError> {
-        Ok(NoOp(self.parse_symbol()?))
     }
 
     fn parse_symbol(&mut self) -> Result<Symbol, ParseError> {
