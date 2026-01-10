@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
-use crate::graph::{Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
+use crate::graph::{Axis, Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 #[derive(Clone, Debug)]
 enum Arg {
@@ -65,7 +65,7 @@ pub fn lower(graph: &Graph) -> Program {
     }
 }
 
-/// Lower node. Update library and exec block, return (rank, shape addrs, buffer ident, fused fragment)
+/// Lower node. Update library and exec block, return (rank, semantic shape, physical shape, buffer ident, fused fragment)
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
@@ -82,6 +82,7 @@ fn lower_node(
         op,
         shape_addr_lists,
         logical_shape,
+        physical_shape,
         split_factor_lists,
         loop_specs,
         compute_levels,
@@ -91,10 +92,18 @@ fn lower_node(
         // handle leaf nodes
         let leaf_ind = node_to_leaf_ind[&node.id];
         let rank = node.index.len();
-        let shape_addr = (0..node.index.len())
+        let logical_shape: Vec<ShapeAddr> = (0..node.index.len())
             .map(|dim_ind| ShapeAddr {
                 input_ind: leaf_ind,
                 dim_ind: dim_ind,
+            })
+            .collect();
+
+        let physical_shape: Vec<Axis> = logical_shape
+            .iter()
+            .map(|addr| Axis {
+                addr: *addr,
+                kind: Bound::Base,
             })
             .collect();
 
@@ -103,7 +112,7 @@ fn lower_node(
             index: Box::new(Expr::Int(leaf_ind)),
         };
 
-        return (rank, shape_addr, buffer_ident, Block::default());
+        return (rank, logical_shape, buffer_ident, Block::default());
     };
 
     assert!(

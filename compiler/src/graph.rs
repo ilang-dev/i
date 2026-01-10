@@ -26,6 +26,12 @@ pub struct ShapeAddr {
 }
 
 #[derive(Clone, Debug)]
+pub struct Axis {
+    pub addr: ShapeAddr,
+    pub kind: Bound,
+}
+
+#[derive(Clone, Debug)]
 pub struct LoopSpec {
     pub output_dim: Option<usize>, // None only for reduction dimensions
     pub addrs: Vec<ShapeAddr>,     // (input index, dimension index)
@@ -46,6 +52,7 @@ pub enum NodeBody {
         // `ShapeAddr{input_ind: 1, dim_ind: 0}`
         shape_addr_lists: Vec<Vec<ShapeAddr>>,
         logical_shape: Vec<ShapeAddr>,
+        physical_shape: Vec<Axis>,
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
         compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
@@ -401,10 +408,32 @@ impl Graph {
             .map(|list| list[0]) // prefer earliest instance
             .collect();
 
+        let physical_shape: Vec<Axis> = logical_shape
+            .iter()
+            .zip(split_factor_lists.iter())
+            .flat_map(|(addr, split_factors)| {
+                let addr = *addr;
+                std::iter::once(Axis {
+                    addr,
+                    kind: Bound::Base,
+                })
+                .chain(split_factors.iter().map(move |&factor| Axis {
+                    addr,
+                    kind: Bound::Factor(factor),
+                }))
+            })
+            .collect();
+
+        // TODO this will be the logical shape plus any splits, minus any
+        // pruned loops, but the pruned loops are not known until lowering
+        // since they are not strictly local to this node
+        let physical_shape: Vec<Axis> = vec![];
+
         let body = NodeBody::Interior {
             op,
             shape_addr_lists,
             logical_shape,
+            physical_shape,
             split_factor_lists,
             loop_specs,
             compute_levels,
