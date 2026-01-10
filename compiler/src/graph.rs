@@ -45,6 +45,7 @@ pub enum NodeBody {
         // `ShapeAddr{input_ind: 0, dim_ind: 1}` or
         // `ShapeAddr{input_ind: 1, dim_ind: 0}`
         shape_addr_lists: Vec<Vec<ShapeAddr>>,
+        logical_shape: Vec<ShapeAddr>,
         split_factor_lists: Vec<Vec<usize>>,
         loop_specs: Vec<LoopSpec>,
         compute_levels: Vec<usize>, // compute-levels of children (0 reserved for non-fused)
@@ -395,9 +396,15 @@ impl Graph {
 
         //// TODO validate number of loop_specs: one per unique char index plus one per split
 
+        let logical_shape: Vec<ShapeAddr> = shape_addr_lists
+            .iter()
+            .map(|list| list[0]) // prefer earliest instance
+            .collect();
+
         let body = NodeBody::Interior {
             op,
             shape_addr_lists,
+            logical_shape,
             split_factor_lists,
             loop_specs,
             compute_levels,

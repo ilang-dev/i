@@ -81,6 +81,7 @@ fn lower_node(
     let NodeBody::Interior {
         op,
         shape_addr_lists,
+        logical_shape,
         split_factor_lists,
         loop_specs,
         compute_levels,
@@ -160,10 +161,9 @@ fn lower_node(
     };
 
     // semantic shape addrs of current node without regard to splitting or fusion
-    let shape_addrs: Vec<ShapeAddr> = shape_addr_lists
+    let shape_addrs: Vec<ShapeAddr> = logical_shape
         .iter()
-        .map(|shape_addr_list| shape_addr_list[0]) // any shape addr works, default to 0-th
-        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[input_ind][dim_ind])
+        .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[*input_ind][*dim_ind])
         .collect();
 
     // create allocation
@@ -177,7 +177,7 @@ fn lower_node(
                 _ => 0.,
             })),
             shape: build_buffer_shape_exprs(
-                &shape_addr_lists,
+                &logical_shape,
                 &split_factor_lists,
                 &child_shape_addr_lists,
             ),
@@ -417,13 +417,12 @@ fn get_prunable_loops(
 
 /// `Expr`s for the dims of the buffer accounting for splitting
 fn build_buffer_shape_exprs(
-    shape_addr_lists: &Vec<Vec<ShapeAddr>>,
+    logical_shape: &Vec<ShapeAddr>,
     split_factor_lists: &Vec<Vec<usize>>,
     child_shape_addrs: &Vec<Vec<ShapeAddr>>,
 ) -> Vec<Expr> {
-    shape_addr_lists
+    logical_shape
         .iter()
-        .map(|list| list[0]) // any shape addr works, default to 0-th
         .zip(split_factor_lists.iter())
         .flat_map(|(addr, factors)| {
             let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
