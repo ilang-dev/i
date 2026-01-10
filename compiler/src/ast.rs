@@ -34,5 +34,5 @@ pub enum Op {
     Div, Sub, // strictly binary
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Symbol(pub String);
