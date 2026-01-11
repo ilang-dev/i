@@ -27,7 +27,7 @@ pub fn lower(graph: &Graph) -> Program {
         .collect();
     let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
 
-    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -77,7 +77,7 @@ fn lower_node(
     prunable_axes: &Vec<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
-) -> (usize, Vec<ShapeAddr>, Expr, Block) {
+) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -112,7 +112,13 @@ fn lower_node(
             index: Box::new(Expr::Int(leaf_ind)),
         };
 
-        return (rank, logical_shape, buffer_ident, Block::default());
+        return (
+            rank,
+            logical_shape,
+            physical_shape,
+            buffer_ident,
+            Block::default(),
+        );
     };
 
     assert!(
@@ -125,7 +131,7 @@ fn lower_node(
         false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
     };
 
-    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -148,8 +154,10 @@ fn lower_node(
 
     let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
         children_lowereds.iter().map(|l| l.1.clone()).collect();
-    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_physical_shapes: Vec<Vec<Axis>> =
+        children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.4.clone()).collect();
 
     // update shape addr prefs
     for list in shape_addr_lists {
@@ -173,6 +181,25 @@ fn lower_node(
     let shape_addrs: Vec<ShapeAddr> = logical_shape
         .iter()
         .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[*input_ind][*dim_ind])
+        .collect();
+
+    // TODO clean this up
+    let prunable_axes_set: HashSet<Axis> = prunable_axes
+        .iter()
+        .map(|Axis { addr, kind }| Axis {
+            addr: shape_addrs[addr.dim_ind],
+            kind: *kind,
+        })
+        .collect();
+
+    // physical shape of the buffer allocated for the current node
+    let physical_shape: Vec<Axis> = physical_shape
+        .iter()
+        .filter(|axis| !prunable_axes_set.contains(axis))
+        .map(|Axis { addr, kind }| Axis {
+            addr: child_shape_addr_lists[addr.input_ind][addr.dim_ind],
+            kind: *kind,
+        })
         .collect();
 
     // create allocation
@@ -379,7 +406,13 @@ fn lower_node(
 
     *topo_ind += 1;
 
-    (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
+    (
+        node.index.len(),
+        shape_addrs,
+        physical_shape,
+        buffer_ident,
+        fused_fragment,
+    )
 }
 
 /// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
