@@ -40,7 +40,7 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut exec_block,
                 &mut node_to_leaf_ind,
                 &mut shape_addr_preference,
-                &vec![],
+                &HashSet::new(),
                 &mut vec![],
                 &mut vec![],
             )
@@ -74,7 +74,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
-    prunable_axes: &Vec<Axis>,
+    prunable_axes: &HashSet<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
 ) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
@@ -183,8 +183,7 @@ fn lower_node(
         .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[*input_ind][*dim_ind])
         .collect();
 
-    // TODO clean this up
-    let prunable_axes_set: HashSet<Axis> = prunable_axes
+    let prunable_axes: HashSet<Axis> = prunable_axes
         .iter()
         .map(|Axis { addr, kind }| Axis {
             addr: shape_addrs[addr.dim_ind],
@@ -195,7 +194,7 @@ fn lower_node(
     // physical shape of the buffer allocated for the current node
     let physical_shape: Vec<Axis> = physical_shape
         .iter()
-        .filter(|axis| !prunable_axes_set.contains(axis))
+        .filter(|axis| !prunable_axes.contains(axis))
         .map(|Axis { addr, kind }| Axis {
             addr: child_shape_addr_lists[addr.input_ind][addr.dim_ind],
             kind: *kind,
@@ -234,7 +233,7 @@ fn lower_node(
 
     let loop_specs: Vec<LoopSpec> = loop_specs
         .into_iter()
-        .filter(|spec| !prunable_axes_set.contains(&spec.axis))
+        .filter(|spec| !prunable_axes.contains(&spec.axis))
         .map(globalize_loop_specs)
         .collect();
 
@@ -437,7 +436,7 @@ fn get_prunable_axes(
     loop_specs: &Vec<LoopSpec>,
     compute_level: usize,
     child_ind: usize,
-) -> Vec<Axis> {
+) -> HashSet<Axis> {
     loop_specs
         .iter()
         .take(compute_level)
