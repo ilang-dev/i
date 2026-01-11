@@ -223,13 +223,6 @@ fn lower_node(
     // TODO prune loops and fold storage based on compute level
     //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
 
-    // for filtering prunable loops
-    let prunable = |loop_spec: &&LoopSpec| {
-        !prunable_axes.iter().any(|axis| {
-            Some(axis.addr.dim_ind) == loop_spec.output_dim && loop_spec.bound == axis.kind
-        })
-    };
-
     // for globalizing the shape addrs of remaining loop specs
     let globalize_loop_specs = |loop_spec: &LoopSpec| {
         let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
@@ -241,7 +234,7 @@ fn lower_node(
 
     let loop_specs: Vec<LoopSpec> = loop_specs
         .into_iter()
-        .filter(prunable)
+        .filter(|spec| !prunable_axes_set.contains(&spec.axis))
         .map(globalize_loop_specs)
         .collect();
 
