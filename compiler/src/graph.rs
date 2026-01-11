@@ -417,10 +417,12 @@ impl Graph {
                     addr,
                     kind: Bound::Base,
                 })
-                .chain(split_factors.iter().map(move |&factor| Axis {
-                    addr,
-                    kind: Bound::Factor(factor),
-                }))
+                .chain(split_factors.iter().enumerate().map(
+                    move |(ind, &factor)| Axis {
+                        addr,
+                        kind: Bound::Factor(ind + 1),
+                    },
+                ))
             })
             .collect();
 
