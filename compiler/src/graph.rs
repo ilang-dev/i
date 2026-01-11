@@ -37,6 +37,7 @@ pub struct LoopSpec {
     pub addrs: Vec<ShapeAddr>,     // (input index, dimension index)
     pub split_factors: Vec<usize>,
     pub bound: Bound,
+    pub axis: Axis,
     pub index_reconstruction: Option<Vec<usize>>, // contains split factors necessary to reconstruct
 }
 
@@ -327,6 +328,10 @@ impl Graph {
                         addrs: shape_addrs.clone(),
                         split_factors: split_factors.clone(),
                         bound: Bound::Base,
+                        axis: Axis {
+                            addr: shape_addrs[0],
+                            kind: Bound::Base,
+                        },
                         index_reconstruction: None, // TODO
                     };
 
@@ -340,6 +345,10 @@ impl Graph {
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
                                 bound: Bound::Factor(ind),
+                                axis: Axis {
+                                    addr: shape_addrs[0],
+                                    kind: Bound::Factor(ind),
+                                },
                                 index_reconstruction: if split_factors.is_empty() {
                                     None
                                 } else {
@@ -353,6 +362,10 @@ impl Graph {
                             addrs: shape_addrs.clone(),
                             split_factors: split_factors.clone(),
                             bound: Bound::Factor(ind),
+                            axis: Axis {
+                                addr: shape_addrs[0],
+                                kind: Bound::Factor(ind),
+                            },
                             index_reconstruction: None,
                         });
 
@@ -390,6 +403,10 @@ impl Graph {
                         addrs: shape_addrs.clone(),
                         split_factors: split_factors.clone(),
                         bound,
+                        axis: Axis {
+                            addr: shape_addrs[0],
+                            kind: bound,
+                        },
                         index_reconstruction,
                     }
                 })
