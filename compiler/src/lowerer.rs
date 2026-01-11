@@ -27,7 +27,7 @@ pub fn lower(graph: &Graph) -> Program {
         .collect();
     let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
 
-    let lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -77,7 +77,7 @@ fn lower_node(
     prunable_axes: &HashSet<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
-) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
+) -> (usize, Vec<ShapeAddr>, Expr, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -112,13 +112,7 @@ fn lower_node(
             index: Box::new(Expr::Int(leaf_ind)),
         };
 
-        return (
-            rank,
-            logical_shape,
-            physical_shape,
-            buffer_ident,
-            Block::default(),
-        );
+        return (rank, logical_shape, buffer_ident, Block::default());
     };
 
     assert!(
@@ -131,7 +125,7 @@ fn lower_node(
         false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
     };
 
-    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -154,10 +148,8 @@ fn lower_node(
 
     let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
         children_lowereds.iter().map(|l| l.1.clone()).collect();
-    let child_physical_shapes: Vec<Vec<Axis>> =
-        children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.3.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.4.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
 
     // update shape addr prefs
     for list in shape_addr_lists {
@@ -398,13 +390,7 @@ fn lower_node(
 
     *topo_ind += 1;
 
-    (
-        node.index.len(),
-        shape_addrs,
-        physical_shape,
-        buffer_ident,
-        fused_fragment,
-    )
+    (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
 }
 
 /// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
