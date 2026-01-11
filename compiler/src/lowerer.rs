@@ -331,7 +331,9 @@ fn lower_node(
         .map(|shape_addrs| shape_addrs_to_indexing_expr(&shape_addrs))
         .collect();
 
-    let indexing_expr: Expr = shape_addrs_to_indexing_expr(&shape_addrs);
+    let (iter_idents, bound_idents): (Vec<Expr>, Vec<Expr>) =
+        physical_shape_to_indexing_idents(physical_shape, addr_to_split_factor_list);
+    let indexing_expr: Expr = create_affine_index(&iter_idents, &bound_idents);
 
     let mut child_access_exprs: Vec<Expr> = child_args
         .iter()
@@ -477,6 +479,37 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
         }))),
         index: Box::new(Expr::Int(addr.dim_ind)),
     }
+}
+
+fn physical_shape_to_indexing_idents(
+    physical_shape: Vec<Axis>,
+    addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>>,
+) -> (Vec<Expr>, Vec<Expr>) {
+    physical_shape
+        .iter()
+        .map(|axis| {
+            let split_factors = addr_to_split_factor_list[&axis.addr];
+            let iter_ident = match axis.kind {
+                Bound::Base => match split_factors.is_empty() {
+                    true => Expr::Ident(format!("i_{}_{}", axis.addr.input_ind, axis.addr.dim_ind)),
+                    false => {
+                        Expr::Ident(format!("i_{}_{}_0", axis.addr.input_ind, axis.addr.dim_ind))
+                    }
+                },
+                Bound::Factor(factor) => Expr::Ident(format!(
+                    "i_{}_{}_{}",
+                    axis.addr.input_ind, axis.addr.dim_ind, factor
+                )),
+            };
+            let bound_ident = match axis.kind {
+                Bound::Base => {
+                    Expr::Ident(format!("b_{}_{}", axis.addr.input_ind, axis.addr.dim_ind))
+                }
+                Bound::Factor(factor) => Expr::Int(split_factors[factor - 1]),
+            };
+            (iter_ident, bound_ident)
+        })
+        .unzip()
 }
 
 fn build_library_function(
