@@ -183,6 +183,7 @@ fn lower_node(
         })
         .collect();
 
+    // TODO we will also need the physical shapes for the kernel args at some point
     // physical shape of the buffer allocated for the current node
     let physical_shape: Vec<Axis> = physical_shape
         .iter()
@@ -192,6 +193,9 @@ fn lower_node(
             kind: *kind,
         })
         .collect();
+
+    let addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>> =
+        shape_addrs.iter().zip(split_factor_lists.iter()).collect();
 
     // create allocation
     if root_ind.is_none() {
@@ -204,9 +208,10 @@ fn lower_node(
                 _ => 0.,
             })),
             shape: build_buffer_shape_exprs(
-                &logical_shape,
+                &physical_shape,
                 &split_factor_lists,
                 &child_shape_addr_lists,
+                &addr_to_split_factor_list,
             ),
         });
     }
@@ -443,21 +448,22 @@ fn get_prunable_axes(
 
 /// `Expr`s for the dims of the buffer accounting for splitting
 fn build_buffer_shape_exprs(
-    logical_shape: &Vec<ShapeAddr>,
+    physical_shape: &Vec<Axis>,
     split_factor_lists: &Vec<Vec<usize>>,
     child_shape_addrs: &Vec<Vec<ShapeAddr>>,
+    build_buffer_shape_exprs: &HashMap<&ShapeAddr, &Vec<usize>>,
 ) -> Vec<Expr> {
-    logical_shape
+    physical_shape
         .iter()
-        .zip(split_factor_lists.iter())
-        .flat_map(|(addr, factors)| {
-            let global_addr = child_shape_addrs[addr.input_ind][addr.dim_ind];
-            let base_shape_expr = input_shape_expr(&global_addr);
-            match factors.is_empty() {
-                true => vec![base_shape_expr],
-                false => std::iter::once(create_split_bound_expr(base_shape_expr, factors))
-                    .chain(factors.iter().map(|factor| Expr::Int(*factor)))
-                    .collect(),
+        .map(|axis| {
+            let base_shape_expr = input_shape_expr(&axis.addr);
+            let factors = build_buffer_shape_exprs[&axis.addr];
+            match &axis.kind {
+                Bound::Base => match factors.is_empty() {
+                    false => create_split_bound_expr(base_shape_expr, factors),
+                    true => base_shape_expr,
+                },
+                Bound::Factor(factor) => Expr::Int(factors[*factor - 1]),
             }
         })
         .collect()
