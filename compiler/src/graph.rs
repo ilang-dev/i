@@ -443,11 +443,6 @@ impl Graph {
             })
             .collect();
 
-        // TODO this will be the logical shape plus any splits, minus any
-        // pruned loops, but the pruned loops are not known until lowering
-        // since they are not strictly local to this node
-        let physical_shape: Vec<Axis> = vec![];
-
         let body = NodeBody::Interior {
             op,
             shape_addr_lists,
