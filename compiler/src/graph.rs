@@ -9,7 +9,7 @@ use crate::ast::{Expr, Op};
 
 static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Bound {
     Base,
     Factor(usize),
@@ -25,7 +25,7 @@ pub struct ShapeAddr {
     pub dim_ind: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Axis {
     pub addr: ShapeAddr,
     pub kind: Bound,
