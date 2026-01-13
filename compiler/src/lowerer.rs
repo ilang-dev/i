@@ -224,6 +224,10 @@ fn lower_node(
         let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
         LoopSpec {
             addrs: loop_spec.addrs.iter().map(globalize).collect(),
+            axis: Axis {
+                addr: globalize(&loop_spec.axis.addr),
+                kind: loop_spec.axis.kind,
+            },
             ..loop_spec.clone()
         }
     };
