@@ -27,7 +27,7 @@ pub fn lower(graph: &Graph) -> Program {
         .collect();
     let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
 
-    let lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = graph
+    let lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -77,7 +77,7 @@ fn lower_node(
     prunable_axes: &HashSet<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
-) -> (usize, Vec<ShapeAddr>, Expr, Block) {
+) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -112,7 +112,13 @@ fn lower_node(
             index: Box::new(Expr::Int(leaf_ind)),
         };
 
-        return (rank, logical_shape, buffer_ident, Block::default());
+        return (
+            rank,
+            logical_shape,
+            physical_shape,
+            buffer_ident,
+            Block::default(),
+        );
     };
 
     assert!(
@@ -125,7 +131,7 @@ fn lower_node(
         false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
     };
 
-    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Expr, Block)> = node
+    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -148,8 +154,10 @@ fn lower_node(
 
     let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
         children_lowereds.iter().map(|l| l.1.clone()).collect();
-    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_physical_shapes: Vec<Vec<Axis>> =
+        children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.3.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.4.clone()).collect();
 
     // update shape addr prefs
     for list in shape_addr_lists {
@@ -194,7 +202,8 @@ fn lower_node(
         })
         .collect();
 
-    let addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>> =
+    // mutable for updating for child indexing exprs
+    let mut addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>> =
         shape_addrs.iter().zip(split_factor_lists.iter()).collect();
 
     // create allocation
@@ -325,18 +334,34 @@ fn lower_node(
         false => Block::default(),
     };
 
-    let child_indexing_exprs: Vec<Expr> = child_shape_addr_lists
+    // TODO can we do this better?
+    addr_to_split_factor_list.extend(
+        loop_specs
+            .iter()
+            .map(|spec| (&spec.axis.addr, &spec.split_factors)),
+    );
+
+    let child_indexing_exprs: Vec<Expr> = child_physical_shapes
         .iter()
-        .map(|list| {
-            list.iter()
-                .map(|addr| shape_addr_preference.get(addr).copied().unwrap_or(*addr))
-                .collect::<Vec<_>>()
+        .map(|child_physical_shape| {
+            let child_physical_shape = child_physical_shape
+                .iter()
+                .map(|Axis { addr, kind }| Axis {
+                    addr: shape_addr_preference.get(addr).copied().unwrap_or(*addr),
+                    kind: *kind,
+                })
+                .collect::<Vec<_>>();
+            let (iter_idents, bound_idents): (Vec<Expr>, Vec<Expr>) =
+                physical_shape_to_indexing_idents(
+                    &child_physical_shape,
+                    &addr_to_split_factor_list,
+                );
+            create_affine_index(&iter_idents, &bound_idents)
         })
-        .map(|shape_addrs| shape_addrs_to_indexing_expr(&shape_addrs))
         .collect();
 
     let (iter_idents, bound_idents): (Vec<Expr>, Vec<Expr>) =
-        physical_shape_to_indexing_idents(physical_shape, addr_to_split_factor_list);
+        physical_shape_to_indexing_idents(&physical_shape, &addr_to_split_factor_list);
     let indexing_expr: Expr = create_affine_index(&iter_idents, &bound_idents);
 
     let mut child_access_exprs: Vec<Expr> = child_args
@@ -401,7 +426,13 @@ fn lower_node(
 
     *topo_ind += 1;
 
-    (node.index.len(), shape_addrs, buffer_ident, fused_fragment)
+    (
+        node.index.len(),
+        shape_addrs,
+        physical_shape,
+        buffer_ident,
+        fused_fragment,
+    )
 }
 
 /// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
@@ -457,13 +488,13 @@ fn build_buffer_shape_exprs(
     physical_shape: &Vec<Axis>,
     split_factor_lists: &Vec<Vec<usize>>,
     child_shape_addrs: &Vec<Vec<ShapeAddr>>,
-    build_buffer_shape_exprs: &HashMap<&ShapeAddr, &Vec<usize>>,
+    addr_to_split_factor_list: &HashMap<&ShapeAddr, &Vec<usize>>,
 ) -> Vec<Expr> {
-    physical_shape
+    let exprs: Vec<Expr> = physical_shape
         .iter()
         .map(|axis| {
             let base_shape_expr = input_shape_expr(&axis.addr);
-            let factors = build_buffer_shape_exprs[&axis.addr];
+            let factors = addr_to_split_factor_list[&axis.addr];
             match &axis.kind {
                 Bound::Base => match factors.is_empty() {
                     false => create_split_bound_expr(base_shape_expr, factors),
@@ -472,7 +503,11 @@ fn build_buffer_shape_exprs(
                 Bound::Factor(factor) => Expr::Int(factors[*factor - 1]),
             }
         })
-        .collect()
+        .collect();
+    match exprs.is_empty() {
+        true => vec![Expr::Int(1)],
+        false => exprs,
+    }
 }
 
 fn input_shape_expr(addr: &ShapeAddr) -> Expr {
@@ -486,8 +521,8 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
 }
 
 fn physical_shape_to_indexing_idents(
-    physical_shape: Vec<Axis>,
-    addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>>,
+    physical_shape: &Vec<Axis>,
+    addr_to_split_factor_list: &HashMap<&ShapeAddr, &Vec<usize>>,
 ) -> (Vec<Expr>, Vec<Expr>) {
     physical_shape
         .iter()
