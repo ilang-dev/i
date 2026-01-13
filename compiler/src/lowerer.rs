@@ -225,28 +225,6 @@ fn lower_node(
         });
     }
 
-    // TODO prune loops and fold storage based on compute level
-    //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
-
-    // for globalizing the shape addrs of remaining loop specs
-    let globalize_loop_specs = |loop_spec: &LoopSpec| {
-        let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
-        LoopSpec {
-            addrs: loop_spec.addrs.iter().map(globalize).collect(),
-            axis: Axis {
-                addr: globalize(&loop_spec.axis.addr),
-                kind: loop_spec.axis.kind,
-            },
-            ..loop_spec.clone()
-        }
-    };
-
-    let loop_specs: Vec<LoopSpec> = loop_specs
-        .into_iter()
-        .filter(|spec| !prunable_axes.contains(&spec.axis))
-        .map(globalize_loop_specs)
-        .collect();
-
     // where the library function must start accessing
     let mut readonly_args_offset = readonly_buffer_idents.len();
 
@@ -291,39 +269,38 @@ fn lower_node(
         })
         .collect();
 
-    let mut seen = HashSet::new();
-    let bound_decl_statements: Vec<Statement> = child_shape_addr_lists
+    let bound_decl_statements: Vec<Statement> = loop_specs
         .iter()
-        .enumerate()
-        .flat_map(|(child_ind, child_shape_addr_list)| {
-            let (arg_str, offset) = match child_args[child_ind] {
+        .map(|spec| {
+            let Axis { addr, kind } = &spec.axis;
+            let split_factors = &spec.split_factors;
+
+            let (arg_str, offset) = match child_args[addr.input_ind] {
                 Arg::ReadOnly(offset) => ("inputs", offset),
                 Arg::Writeable(offset) => ("outputs", offset),
             };
-            child_shape_addr_list
-                .iter()
-                .map(move |child_shape_addr| (arg_str, offset, child_shape_addr))
-        })
-        .filter_map(|(arg_str, offset, child_shape_addr)| {
-            let key = (child_shape_addr.input_ind, child_shape_addr.dim_ind);
-            if !seen.insert(key) {
-                return None;
-            }
 
-            Some(Statement::Declaration {
-                ident: Expr::Ident(format!(
-                    "b_{}_{}",
-                    child_shape_addr.input_ind, child_shape_addr.dim_ind
-                )),
+            let addr = globalize_shape_addr(*addr, &child_shape_addr_lists);
+
+            let ident_str = format!("b_{}_{}", addr.input_ind, addr.dim_ind);
+            let ident = Expr::Ident(match (kind, split_factors.is_empty()) {
+                (Bound::Base, true) => ident_str,
+                (Bound::Base, false) => format!("{}_0", &ident_str),
+                (Bound::Factor(factor), true) => panic!("Found factor Axis with no splits."),
+                (Bound::Factor(factor), false) => format!("{}_{}", &ident_str, factor),
+            });
+
+            Statement::Declaration {
+                ident,
                 value: Expr::Indexed {
                     expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
                         expr: Box::new(Expr::Ident(arg_str.into())),
                         index: Box::new(Expr::Int(offset)),
                     }))),
-                    index: Box::new(Expr::Int(child_shape_addr.dim_ind)),
+                    index: Box::new(Expr::Int(addr.dim_ind)),
                 },
                 type_: Type::Int(false),
-            })
+            }
         })
         .collect();
 
@@ -333,6 +310,28 @@ fn lower_node(
         },
         false => Block::default(),
     };
+
+    // TODO prune loops and fold storage based on compute level
+    //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
+
+    // for globalizing the shape addrs of remaining loop specs
+    let globalize_loop_specs = |loop_spec: &LoopSpec| {
+        let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
+        LoopSpec {
+            addrs: loop_spec.addrs.iter().map(globalize).collect(),
+            axis: Axis {
+                addr: globalize(&loop_spec.axis.addr),
+                kind: loop_spec.axis.kind,
+            },
+            ..loop_spec.clone()
+        }
+    };
+
+    let loop_specs: Vec<LoopSpec> = loop_specs
+        .into_iter()
+        .filter(|spec| !prunable_axes.contains(&spec.axis))
+        .map(globalize_loop_specs)
+        .collect();
 
     // TODO can we do this better?
     addr_to_split_factor_list.extend(
