@@ -39,8 +39,7 @@ impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_unscheduled_expr()?;
         if matches!(self.peek0(), Token::Bar) {
-            let schedule = self.parse_schedule()?;
-            expr.schedule = schedule;
+            expr.schedule = self.parse_schedule()?;
         }
         Ok(expr)
     }
