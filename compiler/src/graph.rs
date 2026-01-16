@@ -12,7 +12,10 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Bound {
     Base,
-    Factor(usize),
+    Factor {
+        factor: usize,
+        ind: usize, // 1-index (0 reserved for base loop)
+    },
 }
 
 /// Used to associate objects to a particular domain `(input_ind, dim_ind)`.
@@ -340,14 +343,14 @@ impl Graph {
                     let index_reconstructed_loop_spec =
                         enumerated_split_factors
                             .next()
-                            .map(move |(ind, _factor)| LoopSpec {
+                            .map(move |(ind, &factor)| LoopSpec {
                                 output_dim,
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
-                                bound: Bound::Factor(ind),
+                                bound: Bound::Factor { factor, ind },
                                 axis: Axis {
                                     addr: shape_addrs[0],
-                                    kind: Bound::Factor(ind),
+                                    kind: Bound::Factor { factor, ind },
                                 },
                                 index_reconstruction: if split_factors.is_empty() {
                                     None
@@ -357,14 +360,14 @@ impl Graph {
                             });
 
                     let remaining_factor_loop_specs =
-                        enumerated_split_factors.map(move |(ind, _factor)| LoopSpec {
+                        enumerated_split_factors.map(move |(ind, &factor)| LoopSpec {
                             output_dim,
                             addrs: shape_addrs.clone(),
                             split_factors: split_factors.clone(),
-                            bound: Bound::Factor(ind),
+                            bound: Bound::Factor { factor, ind },
                             axis: Axis {
                                 addr: shape_addrs[0],
-                                kind: Bound::Factor(ind),
+                                kind: Bound::Factor { factor, ind },
                             },
                             index_reconstruction: None,
                         });
@@ -387,7 +390,10 @@ impl Graph {
 
                     let bound = match (split_factors.is_empty(), split_factor_ind) {
                         (false, 0) | (true, _) => Bound::Base,
-                        (false, ind) => Bound::Factor(*ind),
+                        (false, ind) => Bound::Factor {
+                            factor: split_factors[ind - 1],
+                            ind: *ind,
+                        },
                     };
 
                     let index_reconstruction = if !split_factors.is_empty()
@@ -437,7 +443,10 @@ impl Graph {
                 .chain(split_factors.iter().enumerate().map(
                     move |(ind, &factor)| Axis {
                         addr,
-                        kind: Bound::Factor(ind + 1),
+                        kind: Bound::Factor {
+                            factor,
+                            ind: ind + 1,
+                        },
                     },
                 ))
             })
