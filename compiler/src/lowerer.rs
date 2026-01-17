@@ -375,7 +375,6 @@ fn lower_node(
             child_physical_shape
                 .iter()
                 .map(|Axis { addr, kind }| {
-                    //let addr = child_shape_addr_lists[addr.input_ind][addr.dim_ind];
                     let addr = shape_addr_preference.get(addr).copied().unwrap_or(*addr);
                     let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
                     Expr::Ident(match kind {
