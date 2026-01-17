@@ -225,11 +225,8 @@ fn lower_node(
             shape: build_buffer_shape_exprs(
                 &physical_shape
                     .iter()
-                    .map(|Axis { addr, kind }| Axis {
-                        addr: child_shape_addr_lists[addr.input_ind][addr.dim_ind],
-                        kind: *kind,
-                    })
-                    .collect(), // globalize axis addrs
+                    .map(|axis| globalize_axis(axis, &child_shape_addr_lists))
+                    .collect(),
                 &split_factor_lists,
                 &child_shape_addr_lists,
                 &addr_to_split_factor_list,
@@ -486,6 +483,14 @@ fn lower_node(
         buffer_ident,
         fused_fragment,
     )
+}
+
+/// Convert `Axis`'s `ShapeAddr` from local (per-node) to global (per-graph)
+fn globalize_axis(axis: &Axis, child_shape_addr_lists: &Vec<Vec<ShapeAddr>>) -> Axis {
+    Axis {
+        addr: globalize_shape_addr(axis.addr, child_shape_addr_lists),
+        kind: axis.kind,
+    }
 }
 
 /// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
