@@ -430,15 +430,12 @@ fn lower_node(
         make_access_expr(&Arg::Writeable(writeable_args_offset), &indexing_expr);
 
     if child_access_exprs.len() == 1 {
-        child_access_exprs.insert(
-            0,
-            match op {
-                '+' | '*' | '>' | '<' => access_expr.clone(),
-                '-' => Expr::Int(0),
-                '/' => Expr::Int(1),
-                op => panic!("{op} cannot have exactly 1 arg."),
-            },
-        );
+        match op {
+            '+' | '*' | '>' | '<' => child_access_exprs.insert(0, access_expr.clone()),
+            '-' => child_access_exprs.insert(0, Expr::Int(0)),
+            '/' => child_access_exprs.insert(0, Expr::Int(1)),
+            _ => (),
+        }
     }
 
     let op_statement = Statement::Assignment {
