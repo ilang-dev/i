@@ -577,37 +577,6 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
     }
 }
 
-fn physical_shape_to_indexing_idents(
-    physical_shape: &Vec<Axis>,
-    addr_to_split_factor_list: &HashMap<&ShapeAddr, &Vec<usize>>,
-) -> (Vec<Expr>, Vec<Expr>) {
-    physical_shape
-        .iter()
-        .map(|axis| {
-            let split_factors = addr_to_split_factor_list[&axis.addr];
-            let iter_ident = match axis.kind {
-                Bound::Base => match split_factors.is_empty() {
-                    true => Expr::Ident(format!("i_{}_{}", axis.addr.input_ind, axis.addr.dim_ind)),
-                    false => {
-                        Expr::Ident(format!("i_{}_{}_0", axis.addr.input_ind, axis.addr.dim_ind))
-                    }
-                },
-                Bound::Split { ind, .. } => Expr::Ident(format!(
-                    "i_{}_{}_{}",
-                    axis.addr.input_ind, axis.addr.dim_ind, ind
-                )),
-            };
-            let bound_ident = match axis.kind {
-                Bound::Base => {
-                    Expr::Ident(format!("b_{}_{}", axis.addr.input_ind, axis.addr.dim_ind))
-                }
-                Bound::Split { ind, .. } => Expr::Int(ind),
-            };
-            (iter_ident, bound_ident)
-        })
-        .unzip()
-}
-
 fn build_library_function(
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
