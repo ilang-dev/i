@@ -286,8 +286,8 @@ fn lower_node(
             let ident = Expr::Ident(match (kind, split_factors.is_empty()) {
                 (Bound::Base, true) => ident_str,
                 (Bound::Base, false) => format!("{}_0", &ident_str),
-                (Bound::Factor { .. }, true) => panic!("Found factor Axis with no splits."),
-                (Bound::Factor { factor, .. }, false) => format!("{}_{}", &ident_str, factor),
+                (Bound::Split { .. }, true) => panic!("Found factor Axis with no splits."),
+                (Bound::Split { factor, .. }, false) => format!("{}_{}", &ident_str, factor),
             });
 
             Statement::Declaration {
@@ -495,11 +495,11 @@ fn build_buffer_shape_exprs(
             let base_shape_expr = input_shape_expr(&axis.addr);
             let factors = addr_to_split_factor_list[&axis.addr];
             match &axis.kind {
-                Bound::Base => match factors.is_empty() {
-                    false => create_split_bound_expr(base_shape_expr, factors),
-                    true => base_shape_expr,
-                },
-                Bound::Factor { factor, .. } => Expr::Int(*factor),
+                Bound::Base => base_shape_expr,
+                Bound::Split { factor, ind: 0 } => {
+                    create_split_bound_expr(base_shape_expr, factors)
+                }
+                Bound::Split { factor, ind } => Expr::Int(*factor),
             }
         })
         .collect();
@@ -534,7 +534,7 @@ fn physical_shape_to_indexing_idents(
                         Expr::Ident(format!("i_{}_{}_0", axis.addr.input_ind, axis.addr.dim_ind))
                     }
                 },
-                Bound::Factor { ind, .. } => Expr::Ident(format!(
+                Bound::Split { ind, .. } => Expr::Ident(format!(
                     "i_{}_{}_{}",
                     axis.addr.input_ind, axis.addr.dim_ind, ind
                 )),
@@ -543,7 +543,7 @@ fn physical_shape_to_indexing_idents(
                 Bound::Base => {
                     Expr::Ident(format!("b_{}_{}", axis.addr.input_ind, axis.addr.dim_ind))
                 }
-                Bound::Factor { ind, .. } => Expr::Int(ind),
+                Bound::Split { ind, .. } => Expr::Int(ind),
             };
             (iter_ident, bound_ident)
         })
@@ -588,7 +588,7 @@ fn build_library_function(
                     )
                 }
             }
-            Bound::Factor { factor, ind } => (
+            Bound::Split { factor, ind } => (
                 Expr::Int(*factor),
                 Expr::Ident(format!("{base_index_string}_{ind}")),
             ),

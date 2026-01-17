@@ -12,7 +12,7 @@ static NODE_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Bound {
     Base,
-    Factor {
+    Split {
         factor: usize,
         ind: usize, // 1-index (0 reserved for base loop)
     },
@@ -333,7 +333,10 @@ impl Graph {
                         bound: Bound::Base,
                         axis: Axis {
                             addr: shape_addrs[0],
-                            kind: Bound::Base,
+                            kind: match split_factors.is_empty() {
+                                true => Bound::Base,
+                                false => Bound::Split { factor: 0, ind: 0 },
+                            },
                         },
                         index_reconstruction: None, // TODO
                     };
@@ -347,10 +350,10 @@ impl Graph {
                                 output_dim,
                                 addrs: shape_addrs.clone(),
                                 split_factors: split_factors.clone(),
-                                bound: Bound::Factor { factor, ind },
+                                bound: Bound::Split { factor, ind },
                                 axis: Axis {
                                     addr: shape_addrs[0],
-                                    kind: Bound::Factor { factor, ind },
+                                    kind: Bound::Split { factor, ind },
                                 },
                                 index_reconstruction: if split_factors.is_empty() {
                                     None
@@ -364,10 +367,10 @@ impl Graph {
                             output_dim,
                             addrs: shape_addrs.clone(),
                             split_factors: split_factors.clone(),
-                            bound: Bound::Factor { factor, ind },
+                            bound: Bound::Split { factor, ind },
                             axis: Axis {
                                 addr: shape_addrs[0],
-                                kind: Bound::Factor { factor, ind },
+                                kind: Bound::Split { factor, ind },
                             },
                             index_reconstruction: None,
                         });
@@ -388,11 +391,14 @@ impl Graph {
                     let output_dim = char_index_to_output_dim.get(&c).copied();
                     let (shape_addrs, split_factors) = &shape_table[&c];
 
-                    let bound = match (split_factors.is_empty(), split_factor_ind) {
-                        (false, 0) | (true, _) => Bound::Base,
-                        (false, ind) => Bound::Factor {
-                            factor: split_factors[ind - 1],
-                            ind: *ind,
+                    let bound = match split_factors.is_empty() {
+                        true => Bound::Base,
+                        false => Bound::Split {
+                            factor: match split_factor_ind {
+                                0 => 0,
+                                _ => split_factors[split_factor_ind - 1],
+                            },
+                            ind: *split_factor_ind,
                         },
                     };
 
@@ -436,19 +442,21 @@ impl Graph {
             .zip(split_factor_lists.iter())
             .flat_map(|(addr, split_factors)| {
                 let addr = *addr;
-                std::iter::once(Axis {
-                    addr,
-                    kind: Bound::Base,
-                })
-                .chain(split_factors.iter().enumerate().map(
-                    move |(ind, &factor)| Axis {
+                std::iter::once((0usize, 0usize))
+                    .chain(
+                        split_factors
+                            .iter()
+                            .enumerate()
+                            .map(|(ind, &factor)| (ind + 1, factor)),
+                    )
+                    .map(move |(ind, factor)| Axis {
                         addr,
-                        kind: Bound::Factor {
-                            factor,
-                            ind: ind + 1,
+                        kind: if split_factors.is_empty() {
+                            Bound::Base
+                        } else {
+                            Bound::Split { factor, ind }
                         },
-                    },
-                ))
+                    })
             })
             .collect();
 
