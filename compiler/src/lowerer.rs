@@ -191,16 +191,22 @@ fn lower_node(
         })
         .collect();
 
-    // TODO we will also need the physical shapes for the kernel args at some point
-    // physical shape of the buffer allocated for the current node
-    let physical_shape: Vec<Axis> = physical_shape
-        .iter()
-        .filter(|axis| !prunable_axes.contains(axis))
-        .map(|Axis { addr, kind }| Axis {
-            addr: child_shape_addr_lists[addr.input_ind][addr.dim_ind],
-            kind: *kind,
-        })
-        .collect();
+    let physical_shape: Vec<Axis> = match root_ind.is_some() {
+        // roots always have semantic shape
+        true => logical_shape
+            .iter()
+            .map(|addr| Axis {
+                addr: *addr,
+                kind: Bound::Base,
+            })
+            .collect(),
+        // other interior node can be folded
+        false => physical_shape
+            .iter()
+            .filter(|axis| !prunable_axes.contains(axis))
+            .cloned()
+            .collect(),
+    };
 
     // mutable for updating for child indexing exprs
     let mut addr_to_split_factor_list: HashMap<&ShapeAddr, &Vec<usize>> =
@@ -217,7 +223,13 @@ fn lower_node(
                 _ => 0.,
             })),
             shape: build_buffer_shape_exprs(
-                &physical_shape,
+                &physical_shape
+                    .iter()
+                    .map(|Axis { addr, kind }| Axis {
+                        addr: child_shape_addr_lists[addr.input_ind][addr.dim_ind],
+                        kind: *kind,
+                    })
+                    .collect(), // globalize axis addrs
                 &split_factor_lists,
                 &child_shape_addr_lists,
                 &addr_to_split_factor_list,
@@ -340,28 +352,73 @@ fn lower_node(
             .map(|spec| (&spec.axis.addr, &spec.split_factors)),
     );
 
-    let child_indexing_exprs: Vec<Expr> = child_physical_shapes
+    let child_buffer_bound_lists: Vec<Vec<Expr>> = child_physical_shapes
         .iter()
-        .map(|child_physical_shape| {
-            let child_physical_shape = child_physical_shape
-                .iter()
-                .map(|Axis { addr, kind }| Axis {
-                    addr: shape_addr_preference.get(addr).copied().unwrap_or(*addr),
-                    kind: *kind,
+        .zip(child_args.iter())
+        .map(|(child_physical_shape, child_arg)| {
+            let (arg_str, offset) = match child_arg {
+                Arg::ReadOnly(offset) => ("inputs", offset),
+                Arg::Writeable(offset) => ("outputs", offset),
+            };
+            (0..child_physical_shape.len())
+                .map(|dim_ind| Expr::Indexed {
+                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                        expr: Box::new(Expr::Ident(arg_str.into())),
+                        index: Box::new(Expr::Int(*offset)),
+                    }))),
+                    index: Box::new(Expr::Int(dim_ind)),
                 })
-                .collect::<Vec<_>>();
-            let (iter_idents, bound_idents): (Vec<Expr>, Vec<Expr>) =
-                physical_shape_to_indexing_idents(
-                    &child_physical_shape,
-                    &addr_to_split_factor_list,
-                );
-            create_affine_index(&iter_idents, &bound_idents)
+                .collect()
         })
         .collect();
 
-    let (iter_idents, bound_idents): (Vec<Expr>, Vec<Expr>) =
-        physical_shape_to_indexing_idents(&physical_shape, &addr_to_split_factor_list);
-    let indexing_expr: Expr = create_affine_index(&iter_idents, &bound_idents);
+    let child_iter_ident_lists: Vec<Vec<Expr>> = child_physical_shapes
+        .iter()
+        .map(|child_physical_shape| {
+            child_physical_shape
+                .iter()
+                .map(|Axis { addr, kind }| {
+                    //let addr = child_shape_addr_lists[addr.input_ind][addr.dim_ind];
+                    let addr = shape_addr_preference.get(addr).copied().unwrap_or(*addr);
+                    let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
+                    Expr::Ident(match kind {
+                        Bound::Base => base_str,
+                        Bound::Split { ind, .. } => format!("{base_str}_{ind}"),
+                    })
+                })
+                .collect()
+        })
+        .collect();
+
+    let child_indexing_exprs: Vec<Expr> = child_buffer_bound_lists
+        .iter()
+        .zip(child_iter_ident_lists.iter())
+        .map(|(bound_idents, iter_idents)| create_affine_index(&iter_idents, &bound_idents))
+        .collect();
+
+    let iter_idents: Vec<Expr> = physical_shape
+        .iter()
+        .map(|Axis { addr, kind }| {
+            let addr = child_shape_addr_lists[addr.input_ind][addr.dim_ind];
+            let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
+            Expr::Ident(match kind {
+                Bound::Base => base_str,
+                Bound::Split { ind, .. } => format!("{base_str}_{ind}"),
+            })
+        })
+        .collect();
+
+    let buffer_bounds: Vec<Expr> = (0..physical_shape.len())
+        .map(|dim_ind| Expr::Indexed {
+            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                expr: Box::new(Expr::Ident("outputs".into())),
+                index: Box::new(Expr::Int(writeable_args_offset)),
+            }))),
+            index: Box::new(Expr::Int(dim_ind)),
+        })
+        .collect();
+
+    let indexing_expr: Expr = create_affine_index(&iter_idents, &buffer_bounds);
 
     let mut child_access_exprs: Vec<Expr> = child_args
         .iter()
