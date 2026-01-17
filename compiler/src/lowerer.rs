@@ -102,7 +102,7 @@ fn lower_node(
         let physical_shape: Vec<Axis> = logical_shape
             .iter()
             .map(|addr| Axis {
-                addr: *addr,
+                addrs: vec![*addr],
                 kind: Bound::Base,
             })
             .collect();
@@ -161,7 +161,7 @@ fn lower_node(
 
     // update shape addr prefs
     for list in shape_addr_lists {
-        let globalize = |addr: &ShapeAddr| globalize_shape_addr(*addr, &child_shape_addr_lists);
+        let globalize = |addr: &ShapeAddr| globalize_shape_addr(addr, &child_shape_addr_lists);
         let list: Vec<ShapeAddr> = list.iter().map(globalize).collect();
         for i in 0..list.len() {
             shape_addr_preference.entry(list[i]).or_insert(list[0]);
@@ -185,18 +185,18 @@ fn lower_node(
 
     let prunable_axes: HashSet<Axis> = prunable_axes
         .iter()
-        .map(|Axis { addr, kind }| Axis {
-            addr: shape_addrs[addr.dim_ind],
+        .map(|Axis { addrs, kind }| Axis {
+            addrs: addrs.iter().map(|addr| shape_addrs[addr.dim_ind]).collect(),
             kind: *kind,
         })
         .collect();
 
     let physical_shape: Vec<Axis> = match root_ind.is_some() {
         // roots always have semantic shape
-        true => logical_shape
+        true => shape_addr_lists
             .iter()
-            .map(|addr| Axis {
-                addr: *addr,
+            .map(|addrs| Axis {
+                addrs: addrs.clone(),
                 kind: Bound::Base,
             })
             .collect(),
@@ -281,7 +281,8 @@ fn lower_node(
     let bound_decl_statements: Vec<Statement> = loop_specs
         .iter()
         .map(|spec| {
-            let Axis { addr, kind } = &spec.axis;
+            let Axis { addrs, kind } = &spec.axis;
+            let addr = addrs[0];
             let split_factors = &spec.split_factors;
 
             let (arg_str, offset) = match child_args[addr.input_ind] {
@@ -289,7 +290,7 @@ fn lower_node(
                 Arg::Writeable(offset) => ("outputs", offset),
             };
 
-            let addr = globalize_shape_addr(*addr, &child_shape_addr_lists);
+            let addr = globalize_shape_addr(&addr, &child_shape_addr_lists);
 
             let ident_str = format!("b_{}_{}", addr.input_ind, addr.dim_ind);
             let ident = Expr::Ident(match (kind, split_factors.is_empty()) {
@@ -325,13 +326,10 @@ fn lower_node(
 
     // for globalizing the shape addrs of remaining loop specs
     let globalize_loop_specs = |loop_spec: &LoopSpec| {
-        let globalize = |&addr| globalize_shape_addr(addr, &child_shape_addr_lists);
+        let globalize_shape_addr = |addr| globalize_shape_addr(addr, &child_shape_addr_lists);
         LoopSpec {
-            addrs: loop_spec.addrs.iter().map(globalize).collect(),
-            axis: Axis {
-                addr: globalize(&loop_spec.axis.addr),
-                kind: loop_spec.axis.kind,
-            },
+            addrs: loop_spec.addrs.iter().map(globalize_shape_addr).collect(),
+            axis: globalize_axis(&loop_spec.axis, &child_shape_addr_lists),
             ..loop_spec.clone()
         }
     };
@@ -343,11 +341,12 @@ fn lower_node(
         .collect();
 
     // TODO can we do this better?
-    addr_to_split_factor_list.extend(
-        loop_specs
+    addr_to_split_factor_list.extend(loop_specs.iter().flat_map(|spec| {
+        spec.axis
+            .addrs
             .iter()
-            .map(|spec| (&spec.axis.addr, &spec.split_factors)),
-    );
+            .map(|addr| (addr, &spec.split_factors))
+    }));
 
     let child_buffer_bound_lists: Vec<Vec<Expr>> = child_physical_shapes
         .iter()
@@ -374,8 +373,9 @@ fn lower_node(
         .map(|child_physical_shape| {
             child_physical_shape
                 .iter()
-                .map(|Axis { addr, kind }| {
-                    let addr = shape_addr_preference.get(addr).copied().unwrap_or(*addr);
+                .map(|Axis { addrs, kind }| {
+                    let addr = addrs[0];
+                    let addr = shape_addr_preference.get(&addr).copied().unwrap_or(addr);
                     let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
                     Expr::Ident(match kind {
                         Bound::Base => base_str,
@@ -394,7 +394,8 @@ fn lower_node(
 
     let iter_idents: Vec<Expr> = physical_shape
         .iter()
-        .map(|Axis { addr, kind }| {
+        .map(|Axis { addrs, kind }| {
+            let addr = addrs[0];
             let addr = child_shape_addr_lists[addr.input_ind][addr.dim_ind];
             let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
             Expr::Ident(match kind {
@@ -487,14 +488,18 @@ fn lower_node(
 /// Convert `Axis`'s `ShapeAddr` from local (per-node) to global (per-graph)
 fn globalize_axis(axis: &Axis, child_shape_addr_lists: &Vec<Vec<ShapeAddr>>) -> Axis {
     Axis {
-        addr: globalize_shape_addr(axis.addr, child_shape_addr_lists),
+        addrs: axis
+            .addrs
+            .iter()
+            .map(|addr| globalize_shape_addr(addr, child_shape_addr_lists))
+            .collect(),
         kind: axis.kind,
     }
 }
 
 /// Convert from local (per-node) `ShapeAddr` to global (per-graph) `ShapeAddr`
 fn globalize_shape_addr(
-    addr: ShapeAddr,
+    addr: &ShapeAddr,
     child_shape_addr_lists: &Vec<Vec<ShapeAddr>>,
 ) -> ShapeAddr {
     child_shape_addr_lists[addr.input_ind][addr.dim_ind]
@@ -526,16 +531,18 @@ fn get_prunable_axes(
         .iter()
         .take(compute_level)
         .filter_map(|spec| {
-            spec.addrs
+            let addrs: Vec<ShapeAddr> = spec
+                .axis
+                .addrs
                 .iter()
-                .find(|ShapeAddr { input_ind, .. }| *input_ind == child_ind)
-                .map(|ShapeAddr { dim_ind, .. }| Axis {
-                    addr: ShapeAddr {
-                        input_ind: child_ind,
-                        dim_ind: *dim_ind,
-                    },
-                    kind: spec.bound,
-                })
+                .filter(|a| a.input_ind == child_ind)
+                .cloned()
+                .collect();
+
+            (!addrs.is_empty()).then(|| Axis {
+                addrs,
+                kind: spec.bound,
+            })
         })
         .collect()
 }
@@ -550,8 +557,9 @@ fn build_buffer_shape_exprs(
     let exprs: Vec<Expr> = physical_shape
         .iter()
         .map(|axis| {
-            let base_shape_expr = input_shape_expr(&axis.addr);
-            let factors = addr_to_split_factor_list[&axis.addr];
+            let addr = axis.addrs[0];
+            let base_shape_expr = input_shape_expr(&addr);
+            let factors = addr_to_split_factor_list[&addr];
             match &axis.kind {
                 Bound::Base => base_shape_expr,
                 Bound::Split { factor, ind: 0 } => {

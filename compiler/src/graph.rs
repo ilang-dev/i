@@ -30,7 +30,7 @@ pub struct ShapeAddr {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct Axis {
-    pub addr: ShapeAddr,
+    pub addrs: Vec<ShapeAddr>,
     pub kind: Bound,
 }
 
@@ -332,7 +332,7 @@ impl Graph {
                         split_factors: split_factors.clone(),
                         bound: Bound::Base,
                         axis: Axis {
-                            addr: shape_addrs[0],
+                            addrs: shape_addrs.clone(),
                             kind: match split_factors.is_empty() {
                                 true => Bound::Base,
                                 false => Bound::Split { factor: 0, ind: 0 },
@@ -352,7 +352,7 @@ impl Graph {
                                 split_factors: split_factors.clone(),
                                 bound: Bound::Split { factor, ind },
                                 axis: Axis {
-                                    addr: shape_addrs[0],
+                                    addrs: shape_addrs.clone(),
                                     kind: Bound::Split { factor, ind },
                                 },
                                 index_reconstruction: if split_factors.is_empty() {
@@ -369,7 +369,7 @@ impl Graph {
                             split_factors: split_factors.clone(),
                             bound: Bound::Split { factor, ind },
                             axis: Axis {
-                                addr: shape_addrs[0],
+                                addrs: shape_addrs.clone(),
                                 kind: Bound::Split { factor, ind },
                             },
                             index_reconstruction: None,
@@ -416,7 +416,7 @@ impl Graph {
                         split_factors: split_factors.clone(),
                         bound,
                         axis: Axis {
-                            addr: shape_addrs[0],
+                            addrs: shape_addrs.clone(),
                             kind: bound,
                         },
                         index_reconstruction,
@@ -437,11 +437,10 @@ impl Graph {
             .map(|list| list[0]) // prefer earliest instance
             .collect();
 
-        let physical_shape: Vec<Axis> = logical_shape
+        let physical_shape: Vec<Axis> = shape_addr_lists
             .iter()
             .zip(split_factor_lists.iter())
-            .flat_map(|(addr, split_factors)| {
-                let addr = *addr;
+            .flat_map(|(addrs, split_factors)| {
                 std::iter::once((0usize, 0usize))
                     .chain(
                         split_factors
@@ -450,7 +449,7 @@ impl Graph {
                             .map(|(ind, &factor)| (ind + 1, factor)),
                     )
                     .map(move |(ind, factor)| Axis {
-                        addr,
+                        addrs: addrs.clone(),
                         kind: if split_factors.is_empty() {
                             Bound::Base
                         } else {
