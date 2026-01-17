@@ -203,7 +203,7 @@ fn lower_node(
         // other interior node can be folded
         false => physical_shape
             .iter()
-            .filter(|axis| !prunable_axes.contains(axis))
+            .filter(|axis| !prunable_axes.contains(&globalize_axis(axis, &child_shape_addr_lists)))
             .cloned()
             .collect(),
     };
