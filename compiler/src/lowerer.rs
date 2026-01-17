@@ -633,20 +633,15 @@ fn build_library_function(
         };
 
         let (bound, index) = match &spec.bound {
-            Bound::Base => {
-                if split_factors.is_empty() {
-                    (
-                        Expr::Ident(base_bound_string),
-                        Expr::Ident(base_index_string),
-                    )
-                } else {
-                    (
-                        create_split_bound_expr(Expr::Ident(base_bound_string), split_factors),
-                        Expr::Ident(format!("{base_index_string}_0")),
-                    )
-                }
-            }
-            Bound::Split { factor, ind } => (
+            Bound::Base => (
+                Expr::Ident(base_bound_string),
+                Expr::Ident(base_index_string),
+            ),
+            Bound::Split { ind: 0, .. } => (
+                create_split_bound_expr(Expr::Ident(base_bound_string), split_factors),
+                Expr::Ident(format!("{base_index_string}_0")),
+            ),
+            Bound::Split { ind, factor } => (
                 Expr::Int(*factor),
                 Expr::Ident(format!("{base_index_string}_{ind}")),
             ),
