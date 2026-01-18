@@ -186,7 +186,10 @@ fn lower_node(
     let prunable_axes: HashSet<Axis> = prunable_axes
         .iter()
         .map(|Axis { addrs, kind }| Axis {
-            addrs: addrs.iter().map(|addr| shape_addrs[addr.dim_ind]).collect(),
+            addrs: addrs
+                .iter()
+                .flat_map(|addr| shape_addr_lists[addr.dim_ind].clone())
+                .collect(),
             kind: *kind,
         })
         .collect();
