@@ -40,7 +40,7 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut exec_block,
                 &mut node_to_leaf_ind,
                 &mut shape_addr_preference,
-                &HashSet::new(),
+                HashSet::new(),
                 &mut vec![],
                 &mut vec![],
             )
@@ -74,7 +74,7 @@ fn lower_node(
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
-    prunable_axes: &HashSet<Axis>,
+    prunable_axes: HashSet<Axis>,
     readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
     writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
 ) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
@@ -145,7 +145,7 @@ fn lower_node(
                 exec_block,
                 node_to_leaf_ind,
                 shape_addr_preference,
-                &get_prunable_axes(&loop_specs, compute_level, child_ind),
+                get_prunable_axes(&loop_specs, compute_level, child_ind),
                 readonly_buffer_idents,
                 writeable_buffer_idents,
             )
