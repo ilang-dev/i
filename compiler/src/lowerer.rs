@@ -4,9 +4,15 @@ use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
 use crate::graph::{Axis, Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 #[derive(Clone, Debug)]
-enum Arg {
-    ReadOnly(usize),
-    Writeable(usize),
+struct Arg {
+    offset: usize,
+    type_: ArgType,
+}
+
+#[derive(Clone, Debug)]
+enum ArgType {
+    ReadOnly,
+    Writeable,
 }
 
 // TODO write a real docstring here
@@ -270,13 +276,19 @@ fn lower_node(
             0 => {
                 let offset = readonly_args_offset;
                 readonly_args_offset += 1;
-                Arg::ReadOnly(offset)
+                Arg {
+                    offset,
+                    type_: ArgType::ReadOnly,
+                }
             }
             // fusing
             _ => {
                 let offset = writeable_args_offset;
                 writeable_args_offset += 1;
-                Arg::Writeable(offset)
+                Arg {
+                    offset,
+                    type_: ArgType::Writeable,
+                }
             }
         })
         .collect();
@@ -288,9 +300,10 @@ fn lower_node(
             let addr = addrs[0];
             let split_factors = &spec.split_factors;
 
-            let (arg_str, offset) = match child_args[addr.input_ind] {
-                Arg::ReadOnly(offset) => ("inputs", offset),
-                Arg::Writeable(offset) => ("outputs", offset),
+            let offset = &child_args[addr.input_ind].offset;
+            let arg_str = match &child_args[addr.input_ind].type_ {
+                ArgType::ReadOnly => "inputs",
+                ArgType::Writeable => "outputs",
             };
 
             let addr = globalize_shape_addr(&addr, &child_shape_addr_lists);
@@ -308,7 +321,7 @@ fn lower_node(
                 value: Expr::Indexed {
                     expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
                         expr: Box::new(Expr::Ident(arg_str.into())),
-                        index: Box::new(Expr::Int(offset)),
+                        index: Box::new(Expr::Int(*offset)),
                     }))),
                     index: Box::new(Expr::Int(addr.dim_ind)),
                 },
@@ -355,15 +368,16 @@ fn lower_node(
         .iter()
         .zip(child_args.iter())
         .map(|(child_physical_shape, child_arg)| {
-            let (arg_str, offset) = match child_arg {
-                Arg::ReadOnly(offset) => ("inputs", offset),
-                Arg::Writeable(offset) => ("outputs", offset),
+            let offset = child_arg.offset;
+            let arg_str = match child_arg.type_ {
+                ArgType::ReadOnly => "inputs",
+                ArgType::Writeable => "outputs",
             };
             (0..child_physical_shape.len())
                 .map(|dim_ind| Expr::Indexed {
                     expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
                         expr: Box::new(Expr::Ident(arg_str.into())),
-                        index: Box::new(Expr::Int(*offset)),
+                        index: Box::new(Expr::Int(offset)),
                     }))),
                     index: Box::new(Expr::Int(dim_ind)),
                 })
@@ -426,8 +440,12 @@ fn lower_node(
         .map(|(arg, indexing_expr)| make_access_expr(&arg, &indexing_expr))
         .collect();
 
-    let access_expr: Expr =
-        make_access_expr(&Arg::Writeable(writeable_args_offset), &indexing_expr);
+    let arg = Arg {
+        offset: writeable_args_offset,
+        type_: ArgType::Writeable,
+    };
+
+    let access_expr: Expr = make_access_expr(&arg, &indexing_expr);
 
     if child_access_exprs.len() == 1 {
         match op {
@@ -510,14 +528,15 @@ fn globalize_shape_addr(
 
 /// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
 fn make_access_expr(arg: &Arg, indexing_expr: &Expr) -> Expr {
-    let (arglist_str, offset) = match arg {
-        Arg::ReadOnly(offset) => ("inputs", offset),
-        Arg::Writeable(offset) => ("outputs", offset),
+    let offset = arg.offset;
+    let arg_str = match arg.type_ {
+        ArgType::ReadOnly => "inputs",
+        ArgType::Writeable => "outputs",
     };
     Expr::Indexed {
         expr: Box::new(Expr::DataOf(Box::new(Expr::Indexed {
-            expr: Box::new(Expr::Ident(arglist_str.into())),
-            index: Box::new(Expr::Int(*offset)),
+            expr: Box::new(Expr::Ident(arg_str.into())),
+            index: Box::new(Expr::Int(offset)),
         }))),
         index: Box::new(indexing_expr.clone()),
     }
