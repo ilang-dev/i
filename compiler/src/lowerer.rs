@@ -5,7 +5,6 @@ use crate::graph::{Axis, Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 
 #[derive(Clone, Debug)]
 struct Arg {
-    offset: usize,
     type_: ArgType,
     physical_shape: Vec<Axis>,
     ident: Expr,
@@ -50,7 +49,6 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut shape_addr_preference,
                 HashSet::new(),
                 &mut vec![],
-                &mut vec![],
             )
         })
         .collect();
@@ -83,8 +81,7 @@ fn lower_node(
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
     prunable_axes: HashSet<Axis>,
-    readonly_buffer_idents: &mut Vec<Expr>, // (ident for call site)
-    writeable_buffer_idents: &mut Vec<Expr>, // (ident for call site)
+    args: &mut Vec<Arg>,
 ) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     let NodeBody::Interior {
         op,
@@ -134,9 +131,11 @@ fn lower_node(
         "Number of compute level specifications does not match number of children"
     );
 
-    let (readonly_buffer_idents, writeable_buffer_idents) = match prunable_axes.is_empty() {
-        true => (&mut vec![], &mut vec![]), // non-fused -> new arg lists
-        false => (readonly_buffer_idents, writeable_buffer_idents), // fused -> use existing lists
+    // non-fused -> start new arg lists, fused -> use existing list
+    let args = if prunable_axes.is_empty() {
+        &mut vec![]
+    } else {
+        args
     };
 
     let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
@@ -154,8 +153,7 @@ fn lower_node(
                 node_to_leaf_ind,
                 shape_addr_preference,
                 get_prunable_axes(&loop_specs, compute_level, child_ind),
-                readonly_buffer_idents,
-                writeable_buffer_idents,
+                args,
             )
         })
         .collect();
@@ -245,33 +243,16 @@ fn lower_node(
         });
     }
 
-    // where the library function must start accessing
-    let mut readonly_args_offset = readonly_buffer_idents.len();
-
-    readonly_buffer_idents.extend(child_buffer_idents.iter().zip(compute_levels).filter_map(
-        |(child_buffer_ident, compute_level)| match compute_level {
-            // add only non-fused children
-            0 => Some(match child_buffer_ident {
-                Expr::Ident(s) if s.starts_with('s') => {
-                    Expr::ReadOnly(Box::new(child_buffer_ident.clone()))
-                }
-                _ => child_buffer_ident.clone(),
-            }),
-            _ => None,
+    let (mut readonly_offset, mut writeable_offset) = args.iter().fold(
+        (0, 0),
+        |(readonly_offset, writeable_offset), arg| match arg.type_ {
+            ArgType::ReadOnly => (readonly_offset + 1, writeable_offset),
+            ArgType::Writeable => (readonly_offset, writeable_offset + 1),
         },
-    ));
-    writeable_buffer_idents.push(buffer_ident.clone());
+    );
 
-    let n_fused_nodes = child_buffer_idents
-        .iter()
-        .zip(compute_levels.iter())
-        .filter(|(_, &compute_level)| compute_level > 0)
-        .count();
-
-    // where the library function must start accessing
-    let mut writeable_args_offset = writeable_buffer_idents.len() - 1 - n_fused_nodes;
-
-    let child_args: Vec<Arg> = compute_levels
+    // the Arg and its offset in its corresponding arg list
+    let child_args: Vec<(Arg, usize)> = compute_levels
         .iter()
         .zip(child_physical_shapes.iter())
         .zip(child_buffer_idents.iter())
@@ -279,25 +260,34 @@ fn lower_node(
             |((compute_level, physical_shape), buffer_ident)| match *compute_level {
                 // non-fusing
                 0 => {
-                    let offset = readonly_args_offset;
-                    readonly_args_offset += 1;
-                    Arg {
+                    let offset = readonly_offset;
+                    readonly_offset += 1;
+                    (
+                        Arg {
+                            type_: ArgType::ReadOnly,
+                            physical_shape: physical_shape.clone(),
+                            ident: match buffer_ident {
+                                Expr::Ident(s) if s.starts_with('s') => {
+                                    Expr::ReadOnly(Box::new(buffer_ident.clone()))
+                                }
+                                _ => buffer_ident.clone(),
+                            },
+                        },
                         offset,
-                        type_: ArgType::ReadOnly,
-                        physical_shape: physical_shape.clone(),
-                        ident: buffer_ident.clone(),
-                    }
+                    )
                 }
                 // fusing
                 _ => {
-                    let offset = writeable_args_offset;
-                    writeable_args_offset += 1;
-                    Arg {
+                    let offset = writeable_offset;
+                    writeable_offset += 1;
+                    (
+                        Arg {
+                            type_: ArgType::Writeable,
+                            physical_shape: physical_shape.clone(),
+                            ident: buffer_ident.clone(),
+                        },
                         offset,
-                        type_: ArgType::Writeable,
-                        physical_shape: physical_shape.clone(),
-                        ident: buffer_ident.clone(),
-                    }
+                    )
                 }
             },
         )
@@ -310,8 +300,8 @@ fn lower_node(
             let addr = addrs[0];
             let split_factors = &spec.split_factors;
 
-            let offset = &child_args[addr.input_ind].offset;
-            let arg_str = match &child_args[addr.input_ind].type_ {
+            let (arg, offset) = &child_args[addr.input_ind];
+            let arg_str = match arg.type_ {
                 ArgType::ReadOnly => "inputs",
                 ArgType::Writeable => "outputs",
             };
@@ -377,8 +367,7 @@ fn lower_node(
     let child_buffer_bound_lists: Vec<Vec<Expr>> = child_physical_shapes
         .iter()
         .zip(child_args.iter())
-        .map(|(child_physical_shape, child_arg)| {
-            let offset = child_arg.offset;
+        .map(|(child_physical_shape, (child_arg, offset))| {
             let arg_str = match child_arg.type_ {
                 ArgType::ReadOnly => "inputs",
                 ArgType::Writeable => "outputs",
@@ -387,7 +376,7 @@ fn lower_node(
                 .map(|dim_ind| Expr::Indexed {
                     expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
                         expr: Box::new(Expr::Ident(arg_str.into())),
-                        index: Box::new(Expr::Int(offset)),
+                        index: Box::new(Expr::Int(*offset)),
                     }))),
                     index: Box::new(Expr::Int(dim_ind)),
                 })
@@ -436,7 +425,7 @@ fn lower_node(
         .map(|dim_ind| Expr::Indexed {
             expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
                 expr: Box::new(Expr::Ident("outputs".into())),
-                index: Box::new(Expr::Int(writeable_args_offset)),
+                index: Box::new(Expr::Int(writeable_offset)),
             }))),
             index: Box::new(Expr::Int(dim_ind)),
         })
@@ -447,17 +436,26 @@ fn lower_node(
     let mut child_access_exprs: Vec<Expr> = child_args
         .iter()
         .zip(child_indexing_exprs)
-        .map(|(arg, indexing_expr)| make_access_expr(&arg, &indexing_expr))
+        .map(|((arg, offset), indexing_expr)| make_access_expr(&arg, *offset, &indexing_expr))
         .collect();
 
     let arg = Arg {
-        offset: writeable_args_offset,
         type_: ArgType::Writeable,
         physical_shape: physical_shape.clone(),
         ident: buffer_ident.clone(),
     };
 
-    let access_expr: Expr = make_access_expr(&arg, &indexing_expr);
+    let access_expr: Expr = make_access_expr(&arg, writeable_offset, &indexing_expr);
+
+    args.extend(
+        child_args
+            .into_iter()
+            .map(|(arg, _)| arg)
+            .collect::<Vec<_>>(),
+    );
+    if prunable_axes.is_empty() {
+        args.push(arg);
+    }
 
     if child_access_exprs.len() == 1 {
         match op {
@@ -496,8 +494,16 @@ fn lower_node(
         // create call site
         exec_block.statements.push(Statement::Call {
             ident: library_function_ident,
-            in_args: readonly_buffer_idents.clone(),
-            out_args: writeable_buffer_idents.clone(),
+            in_args: args
+                .iter()
+                .filter(|arg| matches!(arg.type_, ArgType::ReadOnly))
+                .map(|arg| arg.ident.clone())
+                .collect(),
+            out_args: args
+                .iter()
+                .filter(|arg| matches!(arg.type_, ArgType::Writeable))
+                .map(|arg| arg.ident.clone())
+                .collect(),
         });
     } else {
         fused_fragment
@@ -539,8 +545,7 @@ fn globalize_shape_addr(
 }
 
 /// Build up the access Expr, e.g., `outputs[offset].data[affine_indexing_expr]`
-fn make_access_expr(arg: &Arg, indexing_expr: &Expr) -> Expr {
-    let offset = arg.offset;
+fn make_access_expr(arg: &Arg, offset: usize, indexing_expr: &Expr) -> Expr {
     let arg_str = match arg.type_ {
         ArgType::ReadOnly => "inputs",
         ArgType::Writeable => "outputs",
