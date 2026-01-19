@@ -596,35 +596,33 @@ fn build_library_function(
     preamble: Block,
 ) -> Block {
     let make_empty_loop = |spec: &LoopSpec| {
-        let ShapeAddr { input_ind, dim_ind } = spec.addrs[0]; // any addr works, default to 0-th
+        let axis = &spec.axis;
         let split_factors = &spec.split_factors;
 
-        let base_bound_string = format!("b_{input_ind}_{dim_ind}");
-        let base_index_string = format!("i_{input_ind}_{dim_ind}");
+        let base_index_str = format!("i_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
+        let base_bound_str = format!("b_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
 
         let statements = if let Some(split_factors) = &spec.index_reconstruction {
             create_index_reconstruction_statements(
-                &Expr::Ident(base_index_string.clone()),
-                &Expr::Ident(base_bound_string.clone()),
+                &Expr::Ident(base_index_str.clone()),
+                &Expr::Ident(base_bound_str.clone()),
                 split_factors,
             )
         } else {
             Vec::new()
         };
 
-        let (bound, index) = match &spec.bound {
-            Bound::Base => (
-                Expr::Ident(base_bound_string),
-                Expr::Ident(base_index_string),
-            ),
-            Bound::Split { ind: 0, .. } => (
-                create_split_bound_expr(Expr::Ident(base_bound_string), split_factors),
-                Expr::Ident(format!("{base_index_string}_0")),
-            ),
-            Bound::Split { ind, factor } => (
-                Expr::Int(*factor),
-                Expr::Ident(format!("{base_index_string}_{ind}")),
-            ),
+        let index: Expr = Expr::Ident(match axis.kind {
+            Bound::Base => base_index_str,
+            Bound::Split { ind, .. } => format!("{base_index_str}_{ind}"),
+        });
+
+        let bound: Expr = match axis.kind {
+            Bound::Base => Expr::Ident(base_bound_str),
+            Bound::Split { ind: 0, .. } => {
+                create_split_bound_expr(Expr::Ident(base_bound_str), split_factors)
+            }
+            Bound::Split { factor, .. } => Expr::Int(factor),
         };
 
         Statement::Loop {
