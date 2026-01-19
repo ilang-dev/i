@@ -7,6 +7,7 @@ use crate::graph::{Axis, Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 struct Arg {
     offset: usize,
     type_: ArgType,
+    physical_shape: Vec<Axis>,
 }
 
 #[derive(Clone, Debug)]
@@ -271,7 +272,8 @@ fn lower_node(
 
     let child_args: Vec<Arg> = compute_levels
         .iter()
-        .map(|compute_level| match *compute_level {
+        .zip(child_physical_shapes.iter())
+        .map(|(compute_level, physical_shape)| match *compute_level {
             // non-fusing
             0 => {
                 let offset = readonly_args_offset;
@@ -279,6 +281,7 @@ fn lower_node(
                 Arg {
                     offset,
                     type_: ArgType::ReadOnly,
+                    physical_shape: physical_shape.clone(),
                 }
             }
             // fusing
@@ -288,6 +291,7 @@ fn lower_node(
                 Arg {
                     offset,
                     type_: ArgType::Writeable,
+                    physical_shape: physical_shape.clone(),
                 }
             }
         })
@@ -443,6 +447,7 @@ fn lower_node(
     let arg = Arg {
         offset: writeable_args_offset,
         type_: ArgType::Writeable,
+        physical_shape: physical_shape.clone(),
     };
 
     let access_expr: Expr = make_access_expr(&arg, &indexing_expr);
