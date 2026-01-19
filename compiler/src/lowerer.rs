@@ -81,7 +81,7 @@ fn lower_node(
     node_to_leaf_ind: &mut HashMap<usize, usize>,
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
     prunable_axes: HashSet<Axis>,
-    args: &mut Vec<Arg>,
+    args: &mut Vec<(Arg, usize)>,
 ) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     let NodeBody::Interior {
         op,
@@ -243,13 +243,16 @@ fn lower_node(
         });
     }
 
-    let (mut readonly_offset, mut writeable_offset) = args.iter().fold(
-        (0, 0),
-        |(readonly_offset, writeable_offset), arg| match arg.type_ {
-            ArgType::ReadOnly => (readonly_offset + 1, writeable_offset),
-            ArgType::Writeable => (readonly_offset, writeable_offset + 1),
-        },
-    );
+    let (mut readonly_offset, mut writeable_offset) =
+        args.iter()
+            .map(|(arg, _)| arg)
+            .fold(
+                (0, 0),
+                |(readonly_offset, writeable_offset), arg| match arg.type_ {
+                    ArgType::ReadOnly => (readonly_offset + 1, writeable_offset),
+                    ArgType::Writeable => (readonly_offset, writeable_offset + 1),
+                },
+            );
 
     // the Arg and its offset in its corresponding arg list
     let child_args: Vec<(Arg, usize)> = compute_levels
@@ -447,14 +450,9 @@ fn lower_node(
 
     let access_expr: Expr = make_access_expr(&arg, writeable_offset, &indexing_expr);
 
-    args.extend(
-        child_args
-            .into_iter()
-            .map(|(arg, _)| arg)
-            .collect::<Vec<_>>(),
-    );
+    args.extend(child_args);
     if prunable_axes.is_empty() {
-        args.push(arg);
+        args.push((arg, writeable_offset));
     }
 
     if child_access_exprs.len() == 1 {
@@ -496,13 +494,13 @@ fn lower_node(
             ident: library_function_ident,
             in_args: args
                 .iter()
-                .filter(|arg| matches!(arg.type_, ArgType::ReadOnly))
-                .map(|arg| arg.ident.clone())
+                .filter(|(arg, _)| matches!(arg.type_, ArgType::ReadOnly))
+                .map(|(arg, _)| arg.ident.clone())
                 .collect(),
             out_args: args
                 .iter()
-                .filter(|arg| matches!(arg.type_, ArgType::Writeable))
-                .map(|arg| arg.ident.clone())
+                .filter(|(arg, _)| matches!(arg.type_, ArgType::Writeable))
+                .map(|(arg, _)| arg.ident.clone())
                 .collect(),
         });
     } else {
