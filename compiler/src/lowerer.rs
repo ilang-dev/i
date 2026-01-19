@@ -8,6 +8,7 @@ struct Arg {
     offset: usize,
     type_: ArgType,
     physical_shape: Vec<Axis>,
+    ident: Expr,
 }
 
 #[derive(Clone, Debug)]
@@ -273,28 +274,33 @@ fn lower_node(
     let child_args: Vec<Arg> = compute_levels
         .iter()
         .zip(child_physical_shapes.iter())
-        .map(|(compute_level, physical_shape)| match *compute_level {
-            // non-fusing
-            0 => {
-                let offset = readonly_args_offset;
-                readonly_args_offset += 1;
-                Arg {
-                    offset,
-                    type_: ArgType::ReadOnly,
-                    physical_shape: physical_shape.clone(),
+        .zip(child_buffer_idents.iter())
+        .map(
+            |((compute_level, physical_shape), buffer_ident)| match *compute_level {
+                // non-fusing
+                0 => {
+                    let offset = readonly_args_offset;
+                    readonly_args_offset += 1;
+                    Arg {
+                        offset,
+                        type_: ArgType::ReadOnly,
+                        physical_shape: physical_shape.clone(),
+                        ident: buffer_ident.clone(),
+                    }
                 }
-            }
-            // fusing
-            _ => {
-                let offset = writeable_args_offset;
-                writeable_args_offset += 1;
-                Arg {
-                    offset,
-                    type_: ArgType::Writeable,
-                    physical_shape: physical_shape.clone(),
+                // fusing
+                _ => {
+                    let offset = writeable_args_offset;
+                    writeable_args_offset += 1;
+                    Arg {
+                        offset,
+                        type_: ArgType::Writeable,
+                        physical_shape: physical_shape.clone(),
+                        ident: buffer_ident.clone(),
+                    }
                 }
-            }
-        })
+            },
+        )
         .collect();
 
     let bound_decl_statements: Vec<Statement> = loop_specs
@@ -448,6 +454,7 @@ fn lower_node(
         offset: writeable_args_offset,
         type_: ArgType::Writeable,
         physical_shape: physical_shape.clone(),
+        ident: buffer_ident.clone(),
     };
 
     let access_expr: Expr = make_access_expr(&arg, &indexing_expr);
