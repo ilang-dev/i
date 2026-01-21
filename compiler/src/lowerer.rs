@@ -474,6 +474,7 @@ fn lower_node(
 
     // create library function
     let function_fragment = build_library_function(
+        &args,
         &loop_specs,
         &child_fragments,
         &compute_levels,
@@ -623,23 +624,75 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
 }
 
 fn build_library_function(
+    args: &Vec<(Arg, usize)>,
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
     op_statement: &Statement,
     preamble: Block,
 ) -> Block {
+    // value: (arg, offset, dim_ind)
+    let axis_to_arg_info: HashMap<Axis, (Arg, usize, usize)> = args
+        .iter()
+        .rev()
+        .flat_map(|(arg, offset)| {
+            arg.physical_shape
+                .iter()
+                .enumerate()
+                .map(|(dim_ind, axis)| (axis.clone(), (arg.clone(), *offset, dim_ind)))
+        })
+        .collect();
+
+    fn loop_bound_from_arg_info(arg: &Arg, offset: usize, dim_ind: usize) -> Expr {
+        let ident = match arg.type_ {
+            ArgType::ReadOnly => "inputs",
+            ArgType::Writeable => "outputs",
+        };
+        Expr::Indexed {
+            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                expr: Box::new(Expr::Ident(ident.into())),
+                index: Box::new(Expr::Int(offset)),
+            }))),
+            index: Box::new(Expr::Int(dim_ind)),
+        }
+    }
+
+    let get_bound = |spec: &LoopSpec| match &spec.axis.kind {
+        Bound::Base => {
+            let (arg, offset, dim_ind) = axis_to_arg_info
+                .get(&spec.axis)
+                .expect("Could not find kernel arg informing loop bound.");
+            (loop_bound_from_arg_info(arg, *offset, *dim_ind), None)
+        }
+        Bound::Split { factor, ind } => {
+            let base_axis = Axis {
+                kind: Bound::Base,
+                ..spec.axis.clone()
+            };
+            let (arg, offset, dim_ind) = axis_to_arg_info
+                .get(&base_axis)
+                .expect("Could not find kernel arg informing base loop bound.");
+            let base_ident = loop_bound_from_arg_info(arg, *offset, *dim_ind);
+            let ident = match ind {
+                0 => create_split_bound_expr(base_ident.clone(), &spec.split_factors),
+                _ => Expr::Int(*factor),
+            };
+            (ident, Some(base_ident))
+        }
+    };
+
     let make_empty_loop = |spec: &LoopSpec| {
         let axis = &spec.axis;
         let split_factors = &spec.split_factors;
 
         let base_index_str = format!("i_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
-        let base_bound_str = format!("b_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
+
+        let (bound, base_bound) = get_bound(&spec);
 
         let statements = if let Some(split_factors) = &spec.index_reconstruction {
             create_index_reconstruction_statements(
                 &Expr::Ident(base_index_str.clone()),
-                &Expr::Ident(base_bound_str.clone()),
+                &base_bound.expect("Found split factors but `None` base loop bound."),
                 split_factors,
             )
         } else {
@@ -650,14 +703,6 @@ fn build_library_function(
             Bound::Base => base_index_str,
             Bound::Split { ind, .. } => format!("{base_index_str}_{ind}"),
         });
-
-        let bound: Expr = match axis.kind {
-            Bound::Base => Expr::Ident(base_bound_str),
-            Bound::Split { ind: 0, .. } => {
-                create_split_bound_expr(Expr::Ident(base_bound_str), split_factors)
-            }
-            Bound::Split { factor, .. } => Expr::Int(factor),
-        };
 
         Statement::Loop {
             index,
