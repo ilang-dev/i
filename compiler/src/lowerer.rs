@@ -259,8 +259,19 @@ fn lower_node(
         .iter()
         .zip(child_physical_shapes.iter())
         .zip(child_buffer_idents.iter())
-        .map(
-            |((compute_level, physical_shape), buffer_ident)| match *compute_level {
+        .map(|((compute_level, physical_shape), buffer_ident)| {
+            let physical_shape: Vec<Axis> = physical_shape
+                .iter()
+                .map(|Axis { addrs, kind }| Axis {
+                    addrs: addrs
+                        .iter()
+                        .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(*addr))
+                        .collect(),
+                    kind: *kind,
+                })
+                .collect();
+
+            match *compute_level {
                 // non-fusing
                 0 => {
                     let offset = readonly_offset;
@@ -268,7 +279,7 @@ fn lower_node(
                     (
                         Arg {
                             type_: ArgType::ReadOnly,
-                            physical_shape: physical_shape.clone(),
+                            physical_shape: physical_shape,
                             ident: match buffer_ident {
                                 Expr::Ident(s) if s.starts_with('s') => {
                                     Expr::ReadOnly(Box::new(buffer_ident.clone()))
@@ -286,14 +297,14 @@ fn lower_node(
                     (
                         Arg {
                             type_: ArgType::Writeable,
-                            physical_shape: physical_shape.clone(),
+                            physical_shape: physical_shape,
                             ident: buffer_ident.clone(),
                         },
                         offset,
                     )
                 }
-            },
-        )
+            }
+        })
         .collect();
 
     let bound_decl_statements: Vec<Statement> = loop_specs
@@ -474,6 +485,7 @@ fn lower_node(
 
     // create library function
     let function_fragment = build_library_function(
+        &args,
         &loop_specs,
         &child_fragments,
         &compute_levels,
@@ -512,6 +524,11 @@ fn lower_node(
     // TODO create drop
 
     *topo_ind += 1;
+
+    let physical_shape = physical_shape
+        .iter()
+        .map(|axis| globalize_axis(axis, &child_shape_addr_lists))
+        .collect();
 
     (
         node.index.len(),
@@ -623,23 +640,93 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
 }
 
 fn build_library_function(
+    args: &Vec<(Arg, usize)>,
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
     op_statement: &Statement,
     preamble: Block,
 ) -> Block {
+    // value: (arg, offset, dim_ind)
+    let axis_to_arg_info: HashMap<Axis, (Arg, usize, usize)> = args
+        .iter()
+        .rev()
+        .flat_map(|(arg, offset)| {
+            arg.physical_shape
+                .iter()
+                .enumerate()
+                .flat_map(move |(dim_ind, axis)| {
+                    axis.addrs.iter().copied().map(move |addr| {
+                        (
+                            Axis {
+                                addrs: vec![addr],
+                                kind: axis.kind,
+                            },
+                            (arg.clone(), *offset, dim_ind),
+                        )
+                    })
+                })
+        })
+        .collect();
+
+    fn loop_bound_from_arg_info(arg: &Arg, offset: usize, dim_ind: usize) -> Expr {
+        let ident = match arg.type_ {
+            ArgType::ReadOnly => "inputs",
+            ArgType::Writeable => "outputs",
+        };
+        Expr::Indexed {
+            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                expr: Box::new(Expr::Ident(ident.into())),
+                index: Box::new(Expr::Int(offset)),
+            }))),
+            index: Box::new(Expr::Int(dim_ind)),
+        }
+    }
+
+    let axis_to_bound = |axis: &Axis| match axis_to_arg_info.get(&axis) {
+        Some((arg, offset, dim_ind)) => Some(loop_bound_from_arg_info(arg, *offset, *dim_ind)),
+        None => None,
+    };
+
+    let get_bound = |spec: &LoopSpec| {
+        // TODO prefer factor over indexed shape
+        let bound = axis_to_bound(&Axis {
+            addrs: vec![spec.axis.addrs[0]],
+            kind: spec.axis.kind,
+        });
+
+        bound.unwrap_or_else(|| {
+            match &spec.axis.kind {
+                Bound::Base => todo!(), // TODO look for split0 and reconstruct
+                Bound::Split { factor, ind } => match ind {
+                    0 => todo!(), // TODO use split or look for split0
+                    _ => Expr::Int(*factor),
+                },
+            }
+        })
+    };
+
+    let get_base_bound = |spec: &LoopSpec| match &spec.axis.kind {
+        Bound::Base | Bound::Split { ind: 0, .. } => Some(get_bound(spec)),
+        Bound::Split { factor, ind } => axis_to_bound(&Axis {
+            kind: Bound::Base,
+            addrs: vec![spec.axis.addrs[0]],
+        }),
+    };
+
     let make_empty_loop = |spec: &LoopSpec| {
         let axis = &spec.axis;
         let split_factors = &spec.split_factors;
 
         let base_index_str = format!("i_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
-        let base_bound_str = format!("b_{}_{}", axis.addrs[0].input_ind, axis.addrs[0].dim_ind);
+
+        let bound = get_bound(&spec);
 
         let statements = if let Some(split_factors) = &spec.index_reconstruction {
+            let base_bound = get_base_bound(&spec);
             create_index_reconstruction_statements(
                 &Expr::Ident(base_index_str.clone()),
-                &Expr::Ident(base_bound_str.clone()),
+                &base_bound.expect("Found split factors but `None` base loop bound."),
                 split_factors,
             )
         } else {
@@ -650,14 +737,6 @@ fn build_library_function(
             Bound::Base => base_index_str,
             Bound::Split { ind, .. } => format!("{base_index_str}_{ind}"),
         });
-
-        let bound: Expr = match axis.kind {
-            Bound::Base => Expr::Ident(base_bound_str),
-            Bound::Split { ind: 0, .. } => {
-                create_split_bound_expr(Expr::Ident(base_bound_str), split_factors)
-            }
-            Bound::Split { factor, .. } => Expr::Int(factor),
-        };
 
         Statement::Loop {
             index,
