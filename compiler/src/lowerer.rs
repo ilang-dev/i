@@ -307,50 +307,6 @@ fn lower_node(
         })
         .collect();
 
-    let bound_decl_statements: Vec<Statement> = loop_specs
-        .iter()
-        .map(|spec| {
-            let Axis { addrs, kind } = &spec.axis;
-            let addr = addrs[0];
-            let split_factors = &spec.split_factors;
-
-            let (arg, offset) = &child_args[addr.input_ind];
-            let arg_str = match arg.type_ {
-                ArgType::ReadOnly => "inputs",
-                ArgType::Writeable => "outputs",
-            };
-
-            let addr = globalize_shape_addr(&addr, &child_shape_addr_lists);
-
-            let ident_str = format!("b_{}_{}", addr.input_ind, addr.dim_ind);
-            let ident = Expr::Ident(match (kind, split_factors.is_empty()) {
-                (Bound::Base, true) => ident_str,
-                (Bound::Base, false) => format!("{}_0", &ident_str),
-                (Bound::Split { .. }, true) => panic!("Found factor Axis with no splits."),
-                (Bound::Split { factor, .. }, false) => format!("{}_{}", &ident_str, factor),
-            });
-
-            Statement::Declaration {
-                ident,
-                value: Expr::Indexed {
-                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
-                        expr: Box::new(Expr::Ident(arg_str.into())),
-                        index: Box::new(Expr::Int(*offset)),
-                    }))),
-                    index: Box::new(Expr::Int(addr.dim_ind)),
-                },
-                type_: Type::Int(false),
-            }
-        })
-        .collect();
-
-    let bound_decl_block = match prunable_axes.is_empty() {
-        true => Block {
-            statements: bound_decl_statements,
-        },
-        false => Block::default(),
-    };
-
     // TODO prune loops and fold storage based on compute level
     //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
 
@@ -495,7 +451,6 @@ fn lower_node(
         &child_fragments,
         &compute_levels,
         &op_statement,
-        bound_decl_block,
     );
 
     let mut fused_fragment = Block::default();
@@ -645,7 +600,6 @@ fn build_library_function(
     child_fragments: &Vec<Block>,
     compute_levels: &Vec<usize>,
     op_statement: &Statement,
-    preamble: Block,
 ) -> Block {
     // value: (arg, offset, dim_ind)
     let axis_to_arg_info: HashMap<Axis, (Arg, usize, usize)> = args
@@ -782,7 +736,7 @@ fn build_library_function(
             });
 
     Block {
-        statements: [preamble.statements, vec![loop_stack]].concat(),
+        statements: vec![loop_stack],
     }
 }
 
