@@ -453,6 +453,11 @@ fn lower_node(
         .map(|((arg, offset), indexing_expr)| make_access_expr(&arg, *offset, &indexing_expr))
         .collect();
 
+    let physical_shape: Vec<Axis> = physical_shape
+        .iter()
+        .map(|axis| globalize_axis(axis, &child_shape_addr_lists))
+        .collect();
+
     let arg = Arg {
         type_: ArgType::Writeable,
         physical_shape: physical_shape.clone(),
@@ -524,11 +529,6 @@ fn lower_node(
     // TODO create drop
 
     *topo_ind += 1;
-
-    let physical_shape = physical_shape
-        .iter()
-        .map(|axis| globalize_axis(axis, &child_shape_addr_lists))
-        .collect();
 
     (
         node.index.len(),
@@ -699,7 +699,14 @@ fn build_library_function(
             match &spec.axis.kind {
                 Bound::Base => todo!(), // TODO look for split0 and reconstruct
                 Bound::Split { factor, ind } => match ind {
-                    0 => todo!(), // TODO use split or look for split0
+                    0 => {
+                        let base_bound = axis_to_bound(&Axis {
+                            addrs: vec![spec.axis.addrs[0]],
+                            kind: Bound::Base,
+                        })
+                        .expect("Could not compute split or base bound.");
+                        create_split_bound_expr(base_bound, &spec.split_factors)
+                    }
                     _ => Expr::Int(*factor),
                 },
             }
@@ -724,11 +731,15 @@ fn build_library_function(
 
         let statements = if let Some(split_factors) = &spec.index_reconstruction {
             let base_bound = get_base_bound(&spec);
-            create_index_reconstruction_statements(
-                &Expr::Ident(base_index_str.clone()),
-                &base_bound.expect("Found split factors but `None` base loop bound."),
-                split_factors,
-            )
+            // TODO find some way to still guard here--probably passing original shape as metadata
+            match base_bound {
+                Some(base_bound) => create_index_reconstruction_statements(
+                    &Expr::Ident(base_index_str.clone()),
+                    &base_bound,
+                    split_factors,
+                ),
+                None => vec![],
+            }
         } else {
             Vec::new()
         };
