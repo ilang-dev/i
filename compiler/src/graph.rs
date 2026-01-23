@@ -140,10 +140,6 @@ impl Graph {
         self.roots.iter().cloned().collect()
     }
 
-    pub fn root(&self) -> NodeRef {
-        Arc::clone(self.roots.last().expect("Graph has no roots"))
-    }
-
     pub fn from_expr(expr: &Expr) -> Graph {
         let mut graph = Self { roots: Vec::new() };
         let root = graph.from_expr_with_parents(&expr, vec![]);
