@@ -84,7 +84,8 @@ impl Node {
 
 #[derive(Clone, Debug)]
 pub struct Graph {
-    roots: Vec<NodeRef>,
+    pub roots: Vec<NodeRef>,
+    pub inputs: Vec<NodeRef>,
 }
 
 impl Graph {
@@ -92,6 +93,8 @@ impl Graph {
         fn copy_recursive(
             node_ref: &NodeRef,
             visited: &mut HashMap<*const Node, NodeRef>,
+            input_map: &HashMap<usize, usize>,
+            inputs: &mut Vec<Option<NodeRef>>,
         ) -> NodeRef {
             let node = node_ref.lock().unwrap();
             let ptr = &*node as *const Node;
@@ -108,10 +111,14 @@ impl Graph {
             }));
             visited.insert(ptr, Arc::clone(&new_node));
 
+            if let Some(&ind) = input_map.get(&node.id) {
+                inputs[ind] = Some(new_node.clone());
+            }
+
             let children: Vec<_> = node
                 .children
                 .iter()
-                .map(|(c, idx)| (copy_recursive(c, visited), idx.clone()))
+                .map(|(c, idx)| (copy_recursive(c, visited, input_map, inputs), idx.clone()))
                 .collect();
 
             let mut new_lock = new_node.lock().unwrap();
@@ -120,13 +127,26 @@ impl Graph {
 
             new_node
         }
+
+        let input_map: HashMap<usize, usize> = self
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(ind, node)| (node.lock().unwrap().id, ind))
+            .collect();
+
+        let mut inputs: Vec<Option<NodeRef>> = vec![None; self.inputs.len()];
+
         let mut visited = HashMap::new();
         let roots = self
             .roots
             .iter()
-            .map(|r| copy_recursive(r, &mut visited))
+            .map(|r| copy_recursive(r, &mut visited, &input_map, &mut inputs))
             .collect();
-        Self { roots }
+
+        let inputs: Vec<NodeRef> = inputs.into_iter().map(Option::unwrap).collect();
+
+        Self { roots, inputs }
     }
 
     pub fn roots(&self) -> Vec<NodeRef> {
@@ -141,33 +161,21 @@ impl Graph {
         let mut left = self.deepcopy();
         let right = other.deepcopy();
 
-        let mut r_iter = right.roots.into_iter();
-        let map: HashMap<usize, NodeRef> = left
-            .leaves()
-            .into_iter()
-            .filter_map(|leaf| {
-                r_iter
-                    .next()
-                    .map(|root| (Arc::as_ptr(&leaf) as usize, root))
-            })
-            .collect();
+        let mut right_roots = right.roots.into_iter();
+        let left_inputs = left.inputs.into_iter();
+        let mut inputs = right.inputs;
 
-        let mut seen = HashSet::new();
-        let mut stack = left.roots.clone();
-        while let Some(node) = stack.pop() {
-            if !seen.insert(Arc::as_ptr(&node) as usize) {
-                continue;
+        for input in left_inputs {
+            if let Some(root) = right_roots.next() {
+                let root_snapshot = { root.lock().unwrap().clone() };
+                *input.lock().unwrap() = root_snapshot;
+            } else {
+                inputs.push(input)
             }
-            let mut n = node.lock().unwrap();
-            for (child, _) in &mut n.children {
-                if let Some(repl) = map.get(&(Arc::as_ptr(child) as usize)) {
-                    *child = repl.clone();
-                }
-            }
-            stack.extend(n.children.iter().map(|(c, _)| c.clone()));
         }
 
-        left.roots.extend(r_iter);
+        left.roots.extend(right_roots);
+        left.inputs = inputs;
         left
     }
 
@@ -175,35 +183,31 @@ impl Graph {
         let mut left = self.deepcopy();
         let right = other.deepcopy();
 
-        let map: HashMap<usize, NodeRef> = right
-            .leaves()
-            .into_iter()
-            .zip(left.leaves())
-            .map(|(r, l)| (Arc::as_ptr(&r) as usize, l))
-            .collect();
+        let mut left_inputs = left.inputs.into_iter();
+        let mut right_inputs = right.inputs.into_iter();
+        let mut inputs = Vec::new();
 
-        let mut seen = HashSet::new();
-        let mut stack = right.roots.clone();
-        while let Some(node) = stack.pop() {
-            if !seen.insert(Arc::as_ptr(&node) as usize) {
-                continue;
+        for input in left_inputs {
+            if let Some(other_input) = right_inputs.next() {
+                let snapshot = { input.lock().unwrap().clone() };
+                *other_input.lock().unwrap() = snapshot;
+                inputs.push(input);
+            } else {
+                inputs.push(input);
             }
-            let mut n = node.lock().unwrap();
-            for (child, _) in &mut n.children {
-                if let Some(repl) = map.get(&(Arc::as_ptr(child) as usize)) {
-                    *child = repl.clone();
-                }
-            }
-            stack.extend(n.children.iter().map(|(c, _)| c.clone()));
         }
 
+        inputs.extend(right_inputs);
         left.roots.extend(right.roots);
+        left.inputs = inputs;
         left
     }
 
     pub fn pair(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
-        left.roots.extend(other.deepcopy().roots);
+        let right = other.deepcopy();
+        left.roots.extend(right.roots);
+        left.inputs.extend(right.inputs);
         left
     }
 
@@ -222,7 +226,10 @@ impl Graph {
     }
 
     pub fn from_expr(expr: &Expr) -> Graph {
-        let mut graph = Self { roots: Vec::new() };
+        let mut graph = Self {
+            roots: Vec::new(),
+            inputs: Vec::new(),
+        };
 
         let Expr { op, out, schedule } = expr;
         let children: Vec<(NodeRef, String)> = op
@@ -444,6 +451,7 @@ impl Graph {
         let root = graph.add_node(out.0.clone(), body, children);
 
         graph.roots.push(root);
+        graph.inputs.extend(graph.leaves());
         graph
     }
 
