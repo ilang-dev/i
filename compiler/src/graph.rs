@@ -220,6 +220,12 @@ impl Graph {
         left
     }
 
+    pub fn swap(&self) -> Self {
+        let mut graph = self.deepcopy();
+        graph.roots = vec![graph.roots[1].clone(), graph.roots[0].clone()];
+        graph
+    }
+
     fn add_node(
         &mut self,
         index: String,
