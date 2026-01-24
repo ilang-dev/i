@@ -99,8 +99,9 @@ impl Graph {
                 return Arc::clone(n);
             }
 
+            let new_id = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
             let new_node = Arc::new(Mutex::new(Node {
-                id: node.id,
+                id: new_id,
                 index: node.index.clone(),
                 body: node.body.clone(),
                 children: Vec::new(),
