@@ -68,7 +68,6 @@ pub struct Node {
     pub id: usize,
     pub index: String,
     pub body: NodeBody,
-    parents: Vec<NodeRef>,
     children: Vec<(NodeRef, String)>,
 }
 
@@ -104,7 +103,6 @@ impl Graph {
                 id: node.id,
                 index: node.index.clone(),
                 body: node.body.clone(),
-                parents: Vec::new(),
                 children: Vec::new(),
             }));
             visited.insert(ptr, Arc::clone(&new_node));
@@ -114,15 +112,9 @@ impl Graph {
                 .iter()
                 .map(|(c, idx)| (copy_recursive(c, visited), idx.clone()))
                 .collect();
-            let parents: Vec<_> = node
-                .parents
-                .iter()
-                .map(|p| copy_recursive(p, visited))
-                .collect();
 
             let mut new_lock = new_node.lock().unwrap();
             new_lock.children = children;
-            new_lock.parents = parents;
             drop(new_lock);
 
             new_node
@@ -138,13 +130,6 @@ impl Graph {
 
     pub fn roots(&self) -> Vec<NodeRef> {
         self.roots.iter().cloned().collect()
-    }
-
-    pub fn from_expr(expr: &Expr) -> Graph {
-        let mut graph = Self { roots: Vec::new() };
-        let root = graph.from_expr_with_parents(&expr, vec![]);
-        graph.roots.push(root);
-        graph
     }
 
     pub fn chain(&self, other: &Self) -> Self {
@@ -225,35 +210,26 @@ impl Graph {
         &mut self,
         index: String,
         body: NodeBody,
-        parents: Vec<NodeRef>,
         children: Vec<(NodeRef, String)>,
     ) -> NodeRef {
-        let node = Arc::new(Mutex::new(Node {
+        Arc::new(Mutex::new(Node {
             id: NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             index: index.clone(),
             body,
-            parents: parents.clone(),
             children,
-        }));
-
-        for p in parents {
-            p.lock()
-                .unwrap()
-                .children
-                .push((Arc::clone(&node), index.clone()));
-        }
-
-        node
+        }))
     }
 
-    fn from_expr_with_parents(&mut self, expr: &Expr, parents: Vec<NodeRef>) -> NodeRef {
+    pub fn from_expr(expr: &Expr) -> Graph {
+        let mut graph = Self { roots: Vec::new() };
+
         let Expr { op, out, schedule } = expr;
         let children: Vec<(NodeRef, String)> = op
             .args
             .iter()
             .map(|s| {
                 (
-                    self.add_node(s.0.clone(), NodeBody::Leaf, vec![], vec![]),
+                    graph.add_node(s.0.clone(), NodeBody::Leaf, vec![]),
                     s.0.clone(),
                 )
             })
@@ -464,7 +440,10 @@ impl Graph {
             loop_specs,
             compute_levels,
         };
-        self.add_node(out.0.clone(), body, parents, children)
+        let root = graph.add_node(out.0.clone(), body, children);
+
+        graph.roots.push(root);
+        graph
     }
 
     pub fn leaves(&self) -> Vec<NodeRef> {
