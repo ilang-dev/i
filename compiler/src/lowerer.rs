@@ -34,7 +34,7 @@ pub fn lower(graph: &Graph) -> Program {
         .collect();
     let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
 
-    let lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
+    let lowereds: Vec<(Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
         .roots()
         .iter()
         .enumerate()
@@ -55,13 +55,20 @@ pub fn lower(graph: &Graph) -> Program {
 
     let shape_exprs: Vec<Vec<Expr>> = lowereds
         .iter()
-        .map(|lowered| lowered.1.clone())
+        .map(|lowered| lowered.0.clone())
         .map(|shape_addr_list| shape_addr_list.iter().map(input_shape_expr).collect())
         .collect();
 
     Program {
         count: count(graph.roots().len()),
-        ranks: ranks(lowereds.iter().map(|l| l.0).collect()),
+        //ranks: ranks(lowereds.iter().map(|l| l.0).collect()),
+        ranks: ranks(
+            graph
+                .roots()
+                .iter()
+                .map(|root| root.lock().unwrap().rank)
+                .collect(),
+        ),
         shapes: shapes(shape_exprs),
         library: library,
         exec: Statement::Function {
@@ -71,7 +78,7 @@ pub fn lower(graph: &Graph) -> Program {
     }
 }
 
-/// Lower node. Update library and exec block, return (rank, semantic shape, physical shape, buffer ident, fused fragment)
+/// Lower node. Update library and exec block, return (semantic shape, physical shape, buffer ident, fused fragment)
 fn lower_node(
     node: &Node,
     root_ind: Option<usize>,
@@ -82,7 +89,7 @@ fn lower_node(
     shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
     prunable_axes: HashSet<Axis>,
     args: &mut Vec<(Arg, usize)>,
-) -> (usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
+) -> (Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -96,8 +103,7 @@ fn lower_node(
         assert!(prunable_axes.is_empty(), "Cannot fuse leaf nodes.");
         // handle leaf nodes
         let leaf_ind = node_to_leaf_ind[&node.id];
-        let rank = node.index.len();
-        let logical_shape: Vec<ShapeAddr> = (0..node.index.len())
+        let logical_shape: Vec<ShapeAddr> = (0..node.rank)
             .map(|dim_ind| ShapeAddr {
                 input_ind: leaf_ind,
                 dim_ind: dim_ind,
@@ -118,7 +124,6 @@ fn lower_node(
         };
 
         return (
-            rank,
             logical_shape,
             physical_shape,
             buffer_ident,
@@ -138,7 +143,7 @@ fn lower_node(
         args
     };
 
-    let children_lowereds: Vec<(usize, Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
+    let children_lowereds: Vec<(Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = node
         .children()
         .iter()
         .zip(compute_levels.iter())
@@ -159,11 +164,11 @@ fn lower_node(
         .collect();
 
     let child_shape_addr_lists: Vec<Vec<ShapeAddr>> =
-        children_lowereds.iter().map(|l| l.1.clone()).collect();
+        children_lowereds.iter().map(|l| l.0.clone()).collect();
     let child_physical_shapes: Vec<Vec<Axis>> =
-        children_lowereds.iter().map(|l| l.2.clone()).collect();
-    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.3.clone()).collect();
-    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.4.clone()).collect();
+        children_lowereds.iter().map(|l| l.1.clone()).collect();
+    let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
+    let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
 
     // update shape addr prefs
     for list in shape_addr_lists {
@@ -485,13 +490,7 @@ fn lower_node(
 
     *topo_ind += 1;
 
-    (
-        node.index.len(),
-        shape_addrs,
-        physical_shape,
-        buffer_ident,
-        fused_fragment,
-    )
+    (shape_addrs, physical_shape, buffer_ident, fused_fragment)
 }
 
 /// Convert `Axis`'s `ShapeAddr` from local (per-node) to global (per-graph)

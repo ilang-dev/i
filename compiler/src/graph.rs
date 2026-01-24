@@ -66,8 +66,9 @@ pub enum NodeBody {
 #[derive(Clone, Debug)]
 pub struct Node {
     pub id: usize,
-    pub index: String,
+    pub rank: usize,
     pub body: NodeBody,
+    index: String,
     children: Vec<(NodeRef, String)>,
 }
 
@@ -106,6 +107,7 @@ impl Graph {
             let new_node = Arc::new(Mutex::new(Node {
                 id: new_id,
                 index: node.index.clone(),
+                rank: node.index.len(),
                 body: node.body.clone(),
                 children: Vec::new(),
             }));
@@ -235,6 +237,7 @@ impl Graph {
         Arc::new(Mutex::new(Node {
             id: NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             index: index.clone(),
+            rank: index.len(),
             body,
             children,
         }))
