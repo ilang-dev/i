@@ -27,7 +27,7 @@ pub fn lower(graph: &Graph) -> Program {
     let mut library = Block::default();
     let mut exec_block = Block::default();
     let mut node_to_leaf_ind: HashMap<usize, usize> = graph
-        .leaves()
+        .inputs
         .iter()
         .enumerate()
         .map(|(ind, node)| (node.lock().unwrap().id, ind))
