@@ -16,6 +16,70 @@ enum ArgType {
     Writeable,
 }
 
+fn get_addr_pref_table(graph: &Graph) -> HashMap<ShapeAddr, ShapeAddr> {
+    let mut node_to_leaf_ind: HashMap<usize, usize> = graph
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(ind, node)| (node.lock().unwrap().id, ind))
+        .collect();
+
+    let mut table = HashMap::new();
+
+    // updates table, returns semantic shape of node
+    fn _f(
+        node: &Node,
+        table: &mut HashMap<ShapeAddr, ShapeAddr>,
+        node_to_leaf_ind: &HashMap<usize, usize>,
+    ) -> Vec<ShapeAddr> {
+        match &node.body {
+            NodeBody::Leaf => {
+                let leaf_ind = node_to_leaf_ind[&node.id];
+                (0..node.rank)
+                    .map(|dim_ind| {
+                        let addr = ShapeAddr {
+                            input_ind: leaf_ind,
+                            dim_ind: dim_ind,
+                        };
+                        table.insert(addr, addr);
+                        addr
+                    })
+                    .collect()
+            }
+            NodeBody::Interior {
+                shape_addr_lists, ..
+            } => {
+                let child_shapes: Vec<Vec<ShapeAddr>> = node
+                    .childs()
+                    .iter()
+                    .map(|node| _f(&node.lock().unwrap(), table, node_to_leaf_ind))
+                    .collect();
+                shape_addr_lists
+                    .iter()
+                    .map(|list| {
+                        // update pref table, return preferred
+                        assert!(list.len() > 0);
+                        let list: Vec<ShapeAddr> = list
+                            .iter()
+                            .map(|addr| child_shapes[addr.input_ind][addr.dim_ind])
+                            .collect(); // globalize list
+                        let pref = list[0];
+                        let pref_pairs = (1..list.len()).map(|i| (list[i], pref));
+                        table.extend(pref_pairs);
+                        pref
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    for root in graph.roots() {
+        _f(&root.lock().unwrap(), &mut table, &node_to_leaf_ind);
+    }
+
+    table
+}
+
 // TODO write a real docstring here
 // This function is responsible for the rank, shape, and exec functions.
 // `rank` and `shape` are easy, but `exec` has some complexity. The API should
@@ -32,7 +96,8 @@ pub fn lower(graph: &Graph) -> Program {
         .enumerate()
         .map(|(ind, node)| (node.lock().unwrap().id, ind))
         .collect();
-    let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
+    //let mut shape_addr_preference = HashMap::<ShapeAddr, ShapeAddr>::new();
+    let shape_addr_preference = get_addr_pref_table(graph);
 
     let lowereds: Vec<(Vec<ShapeAddr>, Vec<Axis>, Expr, Block)> = graph
         .roots()
@@ -46,7 +111,7 @@ pub fn lower(graph: &Graph) -> Program {
                 &mut library,
                 &mut exec_block,
                 &mut node_to_leaf_ind,
-                &mut shape_addr_preference,
+                &shape_addr_preference,
                 HashSet::new(),
                 &mut vec![],
             )
@@ -86,7 +151,7 @@ fn lower_node(
     library: &mut Block,
     exec_block: &mut Block,
     node_to_leaf_ind: &mut HashMap<usize, usize>,
-    shape_addr_preference: &mut HashMap<ShapeAddr, ShapeAddr>,
+    shape_addr_preference: &HashMap<ShapeAddr, ShapeAddr>,
     prunable_axes: HashSet<Axis>,
     args: &mut Vec<(Arg, usize)>,
 ) -> (Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
@@ -169,15 +234,6 @@ fn lower_node(
         children_lowereds.iter().map(|l| l.1.clone()).collect();
     let child_buffer_idents: Vec<Expr> = children_lowereds.iter().map(|l| l.2.clone()).collect();
     let child_fragments: Vec<Block> = children_lowereds.iter().map(|l| l.3.clone()).collect();
-
-    // update shape addr prefs
-    for list in shape_addr_lists {
-        let globalize = |addr: &ShapeAddr| globalize_shape_addr(addr, &child_shape_addr_lists);
-        let list: Vec<ShapeAddr> = list.iter().map(globalize).collect();
-        for i in 0..list.len() {
-            shape_addr_preference.entry(list[i]).or_insert(list[0]);
-        }
-    }
 
     let library_function_ident = Expr::Ident(format!("f{topo_ind}"));
     let buffer_ident = match root_ind {
