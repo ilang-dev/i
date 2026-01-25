@@ -68,13 +68,20 @@ pub struct Node {
     pub id: usize,
     pub rank: usize,
     pub body: NodeBody,
-    index: String,
+    pub index: String,
     children: Vec<(NodeRef, String)>,
 }
 
 pub type NodeRef = Arc<Mutex<Node>>;
 
 impl Node {
+    pub fn childs(&self) -> Vec<NodeRef> {
+        self.children
+            .iter()
+            .map(|(child, _)| child.clone())
+            .collect()
+    }
+
     pub fn children(&self) -> Vec<(Node, String)> {
         self.children
             .iter()
