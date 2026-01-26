@@ -181,25 +181,34 @@ impl Graph {
 
     pub fn fanout(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
-        let right = other.deepcopy();
+        let mut right = other.deepcopy();
 
-        let mut left_inputs = left.inputs.into_iter();
-        let mut right_inputs = right.inputs.into_iter();
-        let mut inputs = Vec::new();
+        assert_eq!(left.inputs.len(), right.inputs.len());
 
-        for input in left_inputs {
-            if let Some(other_input) = right_inputs.next() {
-                let snapshot = { input.lock().unwrap().clone() };
-                *other_input.lock().unwrap() = snapshot;
-                inputs.push(input);
-            } else {
-                inputs.push(input);
+        let map: HashMap<usize, NodeRef> = right
+            .inputs
+            .iter()
+            .cloned()
+            .zip(left.inputs.iter().cloned())
+            .map(|(r, l)| (Arc::as_ptr(&r) as usize, l))
+            .collect();
+
+        let mut seen = HashSet::new();
+        let mut stack = right.roots.clone();
+        while let Some(node) = stack.pop() {
+            if !seen.insert(Arc::as_ptr(&node) as usize) {
+                continue;
             }
+            let mut n = node.lock().unwrap();
+            for (child, _) in &mut n.children {
+                if let Some(repl) = map.get(&(Arc::as_ptr(child) as usize)) {
+                    *child = repl.clone();
+                }
+            }
+            stack.extend(n.children.iter().map(|(c, _)| c.clone()));
         }
 
-        inputs.extend(right_inputs);
         left.roots.extend(right.roots);
-        left.inputs = inputs;
         left
     }
 
