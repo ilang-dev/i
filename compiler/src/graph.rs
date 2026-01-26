@@ -170,24 +170,41 @@ impl Graph {
         let mut left = self.deepcopy();
         let right = other.deepcopy();
 
-        let mut right_roots = right.roots.into_iter();
-        let left_inputs = left.inputs.into_iter();
-        let mut inputs = right.inputs;
+        let consumed = left.inputs.len().min(right.roots.len());
 
-        for input in left_inputs {
-            if let Some(root) = right_roots.next() {
-                let root_snapshot = { root.lock().unwrap().clone() };
-                *input.lock().unwrap() = root_snapshot;
-            } else {
-                inputs.push(input)
+        let map: HashMap<usize, NodeRef> = left
+            .inputs
+            .iter()
+            .take(consumed)
+            .cloned()
+            .zip(right.roots.iter().take(consumed).cloned())
+            .map(|(inp, root)| (Arc::as_ptr(&inp) as usize, root))
+            .collect();
+
+        let mut seen = HashSet::new();
+        let mut stack = left.roots.clone();
+        while let Some(node) = stack.pop() {
+            if !seen.insert(Arc::as_ptr(&node) as usize) {
+                continue;
             }
+            let mut n = node.lock().unwrap();
+            for (child, _) in &mut n.children {
+                if let Some(repl) = map.get(&(Arc::as_ptr(child) as usize)) {
+                    *child = repl.clone();
+                }
+            }
+            stack.extend(n.children.iter().map(|(c, _)| c.clone()));
         }
 
-        left.roots.extend(right_roots);
+        left.roots
+            .extend(right.roots.iter().skip(consumed).cloned());
+
+        let mut inputs = right.inputs;
+        inputs.extend(left.inputs.into_iter().skip(consumed));
         left.inputs = inputs;
+
         left
     }
-
     pub fn fanout(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
         let mut right = other.deepcopy();
