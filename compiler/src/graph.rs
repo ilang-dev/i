@@ -71,7 +71,7 @@ pub struct Node {
     children: Vec<(NodeRef, String)>,
 }
 
-type NodeRef = Arc<Mutex<Node>>;
+pub type NodeRef = Arc<Mutex<Node>>;
 
 impl Node {
     pub fn children(&self) -> Vec<(Node, String)> {
@@ -508,6 +508,251 @@ impl Graph {
             let child_id = &*child_node as *const _ as usize;
             writeln!(out, "\t{} -> {} [label=\"{}\"];", id, child_id, edge_label).unwrap();
             Self::dot_node(&child_node, visited, out);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser;
+    use std::collections::{HashMap, HashSet};
+
+    fn i(input: &str) -> Graph {
+        let expr = parser::Parser::new(input).unwrap().parse().unwrap();
+        Graph::from_expr(&expr)
+    }
+
+    fn collect_nodes(g: &Graph) -> Vec<NodeRef> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::<usize>::new();
+        let mut stack: Vec<NodeRef> = g
+            .roots()
+            .into_iter()
+            .chain(g.inputs.iter().cloned())
+            .collect();
+
+        while let Some(n) = stack.pop() {
+            let p = Arc::as_ptr(&n) as usize;
+            if !seen.insert(p) {
+                continue;
+            }
+            out.push(n.clone());
+            let cs = n
+                .lock()
+                .unwrap()
+                .children
+                .iter()
+                .map(|(c, _)| c.clone())
+                .collect::<Vec<_>>();
+            stack.extend(cs);
+        }
+        out
+    }
+
+    fn collect_ids(g: &Graph) -> Vec<usize> {
+        collect_nodes(g)
+            .into_iter()
+            .map(|n| n.lock().unwrap().id)
+            .collect()
+    }
+
+    fn assert_all_unique(ids: &[usize]) {
+        let mut s = HashSet::new();
+        for &id in ids {
+            assert!(s.insert(id), "duplicate id: {id}");
+        }
+    }
+
+    fn assert_disjoint(a: &[usize], b: &[usize]) {
+        let sa: HashSet<usize> = a.iter().copied().collect();
+        for &id in b {
+            assert!(!sa.contains(&id), "id reused across graphs: {id}");
+        }
+    }
+
+    fn snapshot_edges(g: &Graph) -> Vec<(usize, Vec<(usize, String)>, String)> {
+        let mut nodes = collect_nodes(g);
+        nodes.sort_by_key(|n| n.lock().unwrap().id);
+
+        nodes
+            .into_iter()
+            .map(|n| {
+                let n_lock = n.lock().unwrap();
+                let id = n_lock.id;
+                let index = n_lock.index.clone();
+                let children = n_lock
+                    .children
+                    .iter()
+                    .map(|(c, lbl)| (c.lock().unwrap().id, lbl.clone()))
+                    .collect::<Vec<_>>();
+                (id, children, index)
+            })
+            .collect()
+    }
+
+    fn snapshot_edges_by_ptr(g: &Graph) -> Vec<(usize, Vec<(usize, String)>, String)> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::<usize>::new();
+        let mut stack: Vec<NodeRef> = g
+            .roots()
+            .into_iter()
+            .chain(g.inputs.iter().cloned())
+            .collect();
+
+        while let Some(n) = stack.pop() {
+            let p = Arc::as_ptr(&n) as usize;
+            if !seen.insert(p) {
+                continue;
+            }
+            let n_lock = n.lock().unwrap();
+            let id = n_lock.id;
+            let index = n_lock.index.clone();
+            let children = n_lock
+                .children
+                .iter()
+                .map(|(c, lbl)| (c.lock().unwrap().id, lbl.clone()))
+                .collect::<Vec<_>>();
+            out.push((id, children, index));
+            stack.extend(n_lock.children.iter().map(|(c, _)| c.clone()));
+        }
+
+        out.sort_by_key(|x| x.0);
+        out
+    }
+
+    #[test]
+    fn deepcopy_generates_new_globally_unique_ids() {
+        let g = i("ij*j~ij");
+        let g2 = g.deepcopy();
+
+        let ids1 = collect_ids(&g);
+        let ids2 = collect_ids(&g2);
+
+        assert_all_unique(&ids1);
+        assert_all_unique(&ids2);
+        assert_disjoint(&ids1, &ids2);
+    }
+
+    #[test]
+    fn deepcopy_preserves_topology_and_labels() {
+        let g = i("ij*j~ij");
+        let before = snapshot_edges_by_ptr(&g);
+
+        let g2 = g.deepcopy();
+        let after = snapshot_edges_by_ptr(&g2);
+
+        assert_eq!(before.len(), after.len());
+
+        let normalize = |v: Vec<(usize, Vec<(usize, String)>, String)>| {
+            v.into_iter()
+                .map(|(_id, mut cs, index)| {
+                    cs.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                    (
+                        index,
+                        cs.len(),
+                        cs.into_iter().map(|(_cid, lbl)| lbl).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut nb = normalize(before);
+        let mut na = normalize(after);
+        nb.sort();
+        na.sort();
+        assert_eq!(nb, na);
+    }
+
+    #[test]
+    fn deepcopy_does_not_share_nodes_with_original() {
+        let g = i("ij*j~ij");
+        let g2 = g.deepcopy();
+
+        let ptrs1: HashSet<usize> = collect_nodes(&g)
+            .into_iter()
+            .map(|n| Arc::as_ptr(&n) as usize)
+            .collect();
+        let ptrs2: HashSet<usize> = collect_nodes(&g2)
+            .into_iter()
+            .map(|n| Arc::as_ptr(&n) as usize)
+            .collect();
+
+        for p in ptrs2 {
+            assert!(!ptrs1.contains(&p));
+        }
+    }
+
+    #[test]
+    fn deepcopy_preserves_inputs_and_roots_arity() {
+        let g = i("ij*j~ij");
+        let g2 = g.deepcopy();
+        assert_eq!(g.inputs.len(), g2.inputs.len());
+        assert_eq!(g.roots().len(), g2.roots().len());
+    }
+
+    fn assert_no_unregistered_leaf_nodes(g: &Graph) {
+        fn collect_leaf_nodes(g: &Graph) -> Vec<NodeRef> {
+            let mut out = Vec::new();
+            let mut seen = HashSet::<usize>::new();
+            let mut stack = g.roots();
+
+            while let Some(n) = stack.pop() {
+                let ptr = Arc::as_ptr(&n) as usize;
+                if !seen.insert(ptr) {
+                    continue;
+                }
+                let node = n.lock().unwrap();
+                match node.body {
+                    NodeBody::Leaf => out.push(n.clone()),
+                    _ => stack.extend(node.children.iter().map(|(c, _)| c.clone())),
+                }
+            }
+            out
+        }
+
+        let input_ptrs: HashSet<usize> = g.inputs.iter().map(|n| Arc::as_ptr(n) as usize).collect();
+
+        let leaf_nodes = collect_leaf_nodes(g);
+
+        for leaf in leaf_nodes {
+            let p = Arc::as_ptr(&leaf) as usize;
+            assert!(
+                input_ptrs.contains(&p),
+                "found NodeBody::Leaf not present in graph.inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn no_unregistered_leaf_nodes_on_various_graphs() {
+        let mvpp = i("ij*j~ij");
+        let row_accum = i("+ij~i");
+        let mvp = mvpp.chain(&row_accum);
+        let mmpp = i("ij*jk~ijk");
+        let layer_accum = i("+ijk~ij");
+        let mm = mmpp.chain(&layer_accum);
+        let relu1 = i("!i~i");
+
+        let id2 = i("ij~ij");
+        let row_div = i("ij/i~ij");
+        let id2_fanout_row_accum = id2.fanout(&row_accum);
+        let row_normalize = id2_fanout_row_accum.chain(&row_div);
+
+        for s in [
+            mvpp,
+            row_accum,
+            mvp,
+            mmpp,
+            layer_accum,
+            mm,
+            relu1,
+            id2,
+            row_div,
+            id2_fanout_row_accum,
+            row_normalize,
+        ] {
+            assert_no_unregistered_leaf_nodes(&s);
         }
     }
 }
