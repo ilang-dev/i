@@ -797,4 +797,106 @@ mod tests {
             assert_no_unregistered_leaf_nodes(&s);
         }
     }
+
+    fn assert_inputs_unique(g: &Graph) {
+        let mut seen = HashSet::<usize>::new();
+        for n in &g.inputs {
+            let p = Arc::as_ptr(n) as usize;
+            assert!(seen.insert(p), "duplicate NodeRef in graph.inputs");
+        }
+    }
+
+    fn assert_leaf_ptrs_match_inputs(g: &Graph) {
+        let input_ptrs: HashSet<usize> = g.inputs.iter().map(|n| Arc::as_ptr(n) as usize).collect();
+        let leaf_ptrs: HashSet<usize> = collect_nodes(g)
+            .into_iter()
+            .filter_map(|n| match n.lock().unwrap().body {
+                NodeBody::Leaf => Some(Arc::as_ptr(&n) as usize),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leaf_ptrs, input_ptrs, "leaf set != inputs set");
+    }
+
+    #[test]
+    fn compose_equal_arity_no_leftovers() {
+        let left = i("i~i").pair(&i("j~j")); // inputs 2, roots 2
+        let right = i("i~i").pair(&i("j~j")); // inputs 2, roots 2
+        let out = left.compose(&right);
+
+        assert_eq!(out.inputs.len(), 2);
+        assert_eq!(out.roots().len(), 2);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
+
+    #[test]
+    fn compose_left_has_leftover_inputs() {
+        let left = i("i~i").pair(&i("j~j")).pair(&i("k~k")); // inputs 3, roots 3
+        let right = i("i~i").pair(&i("j~j")); // inputs 2, roots 2
+
+        let out = left.compose(&right);
+
+        assert_eq!(out.inputs.len(), 3);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
+
+    #[test]
+    fn compose_right_has_leftover_roots() {
+        let left = i("i~i").pair(&i("j~j")); // inputs 2, roots 2
+        let right = i("i~i").pair(&i("j~j")).pair(&i("k~k")); // inputs 3, roots 3
+
+        let out = left.compose(&right);
+
+        assert_eq!(out.inputs.len(), 3);
+        assert_eq!(out.roots().len(), 3);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
+
+    #[test]
+    fn fanout_equal_arity_no_leftovers() {
+        let left = i("ij~ij"); // inputs 1, roots 1 (one arg)
+        let right = i("+ij~i"); // inputs 1, roots 1
+        let out = left.fanout(&right);
+
+        assert_eq!(out.inputs.len(), 1);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
+
+    #[test]
+    fn fanout_leftover_inputs() {
+        let left = i("i~i").pair(&i("j~j")).pair(&i("k~k")); // inputs 3
+        let right = i("i~i").pair(&i("j~j")); // inputs 2
+        let out = left.fanout(&right);
+
+        assert_eq!(out.inputs.len(), 3);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
+
+    #[test]
+    fn fanout_rightover_inputs() {
+        let left = i("i~i").pair(&i("j~j")); // inputs 2
+        let right = i("i~i").pair(&i("j~j")).pair(&i("k~k")); // inputs 3
+        let out = left.fanout(&right);
+
+        assert_eq!(out.inputs.len(), 3);
+        assert_all_unique(&collect_ids(&out));
+        assert_inputs_unique(&out);
+        assert_no_unregistered_leaf_nodes(&out);
+        assert_leaf_ptrs_match_inputs(&out);
+    }
 }
