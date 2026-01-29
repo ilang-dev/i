@@ -205,17 +205,19 @@ impl Graph {
 
         left
     }
+
     pub fn fanout(&self, other: &Self) -> Self {
         let mut left = self.deepcopy();
         let mut right = other.deepcopy();
 
-        assert_eq!(left.inputs.len(), right.inputs.len());
+        let n = left.inputs.len().min(right.inputs.len());
 
         let map: HashMap<usize, NodeRef> = right
             .inputs
             .iter()
+            .take(n)
             .cloned()
-            .zip(left.inputs.iter().cloned())
+            .zip(left.inputs.iter().take(n).cloned())
             .map(|(r, l)| (Arc::as_ptr(&r) as usize, l))
             .collect();
 
@@ -225,16 +227,21 @@ impl Graph {
             if !seen.insert(Arc::as_ptr(&node) as usize) {
                 continue;
             }
-            let mut n = node.lock().unwrap();
-            for (child, _) in &mut n.children {
+            let mut nn = node.lock().unwrap();
+            for (child, _) in &mut nn.children {
                 if let Some(repl) = map.get(&(Arc::as_ptr(child) as usize)) {
                     *child = repl.clone();
                 }
             }
-            stack.extend(n.children.iter().map(|(c, _)| c.clone()));
+            stack.extend(nn.children.iter().map(|(c, _)| c.clone()));
         }
 
         left.roots.extend(right.roots);
+
+        let mut inputs = left.inputs;
+        inputs.extend(right.inputs.into_iter().skip(n));
+        left.inputs = inputs;
+
         left
     }
 
