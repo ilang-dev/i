@@ -168,6 +168,18 @@ impl Component {
         self.pair(other)
     }
 
+    #[pyo3(name = "swap")]
+    fn swap(&self) -> PyResult<Component> {
+        Ok(Component {
+            graph: self.graph.swap(),
+        })
+    }
+
+    #[pyo3(name = "__invert__")]
+    fn _swap(&self) -> PyResult<Component> {
+        self.swap()
+    }
+
     #[pyo3(signature = (*args))]
     fn exec<'py>(&self, py: Python<'py>, args: &Bound<'py, PyTuple>) -> PyResult<Py<PyAny>> {
         let inputs: Vec<PyTensor> = args.extract()?;
