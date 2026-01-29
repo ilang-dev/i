@@ -248,6 +248,12 @@ fn lower_node(
     let shape_addrs: Vec<ShapeAddr> = logical_shape
         .iter()
         .map(|ShapeAddr { input_ind, dim_ind }| child_shape_addr_lists[*input_ind][*dim_ind])
+        .map(|addr| {
+            shape_addr_preference
+                .get(&addr)
+                .copied()
+                .expect("Could not canonicalize shape addr.")
+        })
         .collect();
 
     let prunable_axes: HashSet<Axis> = prunable_axes
@@ -295,7 +301,20 @@ fn lower_node(
             shape: build_buffer_shape_exprs(
                 &physical_shape
                     .iter()
-                    .map(|axis| globalize_axis(axis, &child_shape_addr_lists))
+                    .map(|axis| Axis {
+                        addrs: axis
+                            .addrs
+                            .iter()
+                            .map(|addr| globalize_shape_addr(addr, &child_shape_addr_lists))
+                            .map(|addr| {
+                                shape_addr_preference
+                                    .get(&addr)
+                                    .copied()
+                                    .expect("Could not canonicalize shape addr.")
+                            })
+                            .collect(),
+                        kind: axis.kind,
+                    })
                     .collect(),
                 &split_factor_lists,
                 &child_shape_addr_lists,
@@ -372,13 +391,34 @@ fn lower_node(
     //      to fold storage, you have to remove only dimensions that exist on the output (non-reduction dimensions)
 
     // for globalizing the shape addrs of remaining loop specs
-    let globalize_loop_specs = |loop_spec: &LoopSpec| {
-        let globalize_shape_addr = |addr| globalize_shape_addr(addr, &child_shape_addr_lists);
-        LoopSpec {
-            addrs: loop_spec.addrs.iter().map(globalize_shape_addr).collect(),
-            axis: globalize_axis(&loop_spec.axis, &child_shape_addr_lists),
-            ..loop_spec.clone()
-        }
+    let globalize_loop_specs = |loop_spec: &LoopSpec| LoopSpec {
+        addrs: loop_spec
+            .addrs
+            .iter()
+            .map(|addr| globalize_shape_addr(addr, &child_shape_addr_lists))
+            .map(|addr| {
+                shape_addr_preference
+                    .get(&addr)
+                    .copied()
+                    .expect("Could not canonicalize shape addr.")
+            })
+            .collect(),
+        axis: Axis {
+            addrs: loop_spec
+                .axis
+                .addrs
+                .iter()
+                .map(|addr| globalize_shape_addr(addr, &child_shape_addr_lists))
+                .map(|addr| {
+                    shape_addr_preference
+                        .get(&addr)
+                        .copied()
+                        .expect("Could not canonicalize shape addr.")
+                })
+                .collect(),
+            kind: loop_spec.axis.kind,
+        },
+        ..loop_spec.clone()
     };
 
     let loop_specs: Vec<LoopSpec> = loop_specs
@@ -422,7 +462,10 @@ fn lower_node(
                 .iter()
                 .map(|Axis { addrs, kind }| {
                     let addr = addrs[0];
-                    let addr = shape_addr_preference.get(&addr).copied().unwrap_or(addr);
+                    let addr = shape_addr_preference
+                        .get(&addr)
+                        .copied()
+                        .expect("Could not canonicalize shape addr.");
                     let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
                     Expr::Ident(match kind {
                         Bound::Base => base_str,
@@ -444,6 +487,10 @@ fn lower_node(
         .map(|Axis { addrs, kind }| {
             let addr = addrs[0];
             let addr = child_shape_addr_lists[addr.input_ind][addr.dim_ind];
+            let addr = shape_addr_preference
+                .get(&addr)
+                .copied()
+                .expect("Could not canonicalize shape addr.");
             let base_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
             Expr::Ident(match kind {
                 Bound::Base => base_str,
