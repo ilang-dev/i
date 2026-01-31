@@ -67,6 +67,8 @@ scheduling
 ---
 TODO
 
+ops
+---
 
 | category | symbol | name  | default | reducible | implemented |
 | -------- | ------ | ----- | ------- | --------- | ----------- |
@@ -94,6 +96,9 @@ symbols.
 
 NOTE
 implicit one-way boolean->numeric casting
+
+𝚒-expression forms
+---
 
 | form               | expr       | psuedo tensor notation |
 | ------------------ | ---------- | ---------------------- |
