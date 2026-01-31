@@ -15,13 +15,13 @@ tiling.
 ---
 
 𝚒-expressions are similar to einsum notation but without the implicit
-summation. Here is a matrix multiply:
+summation. Here is a matrix multiply implemented with 𝚒's Python front-end:
 
 ```python
 i("ik*kj~ijk") >> i("+ijk~ij")
 ```
 
-comprised of a "partial matrix product" expression chained into a "layer
+It is comprised of a "partial matrix product" expression chained into a "layer
 accumulate" expression.
 
 Breakdown of `ik*kj~ijk`:
@@ -44,8 +44,8 @@ for i in range(in0.shape[0]):
             out[i,j,k] = in0[i,k] * in1[k,j]
 ```
 
-`+ijk~ij` is a reduction over the `k` dimension which is indicated by `k`
-appearing to the left of the `~` but not to the right.
+The second expression, `+ijk~ij`, is a reduction over the `k` dimension,
+indicated by `k` appearing to the left of the `~` but not to the right.
 
 The "standard form" for 𝚒-expressions is binary: `i☐i~i`, but they become unary
 in two important ways. The first we have already encountered: reductions. Any
@@ -161,6 +161,7 @@ NOTES:
   - character indices present in the output and one of the inputs but absent from
     the other input are broadcasted, e.g., in the expression `ij+i~ij`, the `i` is
     broadcasted _over_ `j`.
+  - distinguish between core i and framework/front-end
 - present limitations of i
   - no sparsity support (including affine indexing)
   - no scatter/gather
