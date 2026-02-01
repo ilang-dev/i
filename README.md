@@ -1,6 +1,6 @@
 𝚒 is a peculiar deep learning framework in the making. The thing that makes 𝚒
 different from other frameworks is that it does not have pimitive tensor ops.
-Instead, it uses "index expressions" – a simple but powerful language for
+Instead, it uses "index expressions" — a simple but powerful language for
 applying scalar operations over multidimensional domains. Index expressions,
 or 𝚒-expressions, are the atomic computation units which are then combined
 into computation graphs using a small set of combinators.
@@ -98,11 +98,9 @@ logical ops have double-char symbols.
 ---
 
 Here are the various forms that 𝚒-expression can take including pointwise
-binary, pointwise unary, and reduction. Note that logical `not` appears only as
-pointwise unary since that is its only valid form. Similiarly, only operators
-which have well-defined reductions appear as reduction expressions.
-Additionally, several operators when used in pointwise unary form are
-effectively no-ops as indicated, but are included for completeness.
+binary, pointwise unary, and reduction. Some ops are not valid in all forms and
+are omitted. Other ops are valid but are effectively no-ops. These are
+indicated as such, but left in for completeness.
 
 | form              | expr       | psuedo tensor notation |
 | ----------------- | ---------- | ---------------------- |
@@ -152,17 +150,19 @@ effectively no-ops as indicated, but are included for completeness.
 combinators
 ---
 
-The following combinators allow for the combining of 𝚒-expressions into
-computation graphs. These graphs represent complete 𝚒 programs with leaves
-representing inputs, roots representing outputs, and interior nodes
-representing the intermediate results of the computation.
+𝚒 programs are represented as computation graphs, leaves being the inputs,
+roots being the outputs, and interior nodes being the intermediate results of
+the computation. Individual 𝚒-expression are treated as atomic computation
+graphs comprised of a single root and 1 or 2 leaves. The following combinators
+are the graph wiring tools that allow for the composition of 𝚒-expressions into
+arbitrarily complex computation graphs.
 
 `compose` wires the leaves of one graph to the roots of another. `chain` does
 the inverse, wiring the roots of one graph to the leaves of another. `fanout`
-merges the inputs of two graphs, intuitively performing two different programs
-on the same set of inptus. `pair` concatenates the roots and leaves of two
-graphs such that they together can be handled as a single graph. `swap` swaps
-the order of the first two roots of a single graph.
+merges the inputs of two graphs, intuitively performing two different
+computations on the same set of inptus. `pair` concatenates the roots and
+leaves of two graphs such that they together can be handled as a single graph.
+`swap` swaps the order of the first two roots of a single graph.
 
 All of the combinators are well-defined for mixed arity. For example, `fanout`
 merges inputs pairwise left-to-right and simply leaves any unpaired inputs
