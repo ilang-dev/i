@@ -52,29 +52,24 @@ for i in range(in0.shape[0]):
 The second expression, `+ijk~ij`, is a reduction over the `k` dimension,
 indicated by `k` appearing to the left of the `~` but not to the right.
 
-TODO: rewrite this
-
-The "standard form" for 𝚒-expressions is binary: `i☐i~i`, but they become unary
-in two important ways. The first we have already encountered: reductions. Any
-associative op with an identity can be used as a reduction. `☐ijk~ij` reduces
-over the `k` dimension, initializing the output to the identity of `☐`. The
-second way is that every op has a default value which is implicitly broadcasted
-on the left-hand-side. For example, `-` has default value `0`, so `-i~i` is
-implicit for `0-i~i` and behaves like negation.
+With the exception of `!!` (`not`), all 𝚒 ops can be written in pointwise
+binary form: `i☐i~i`. This includes `^` (`pow`) and `$` (`log`) where the
+left-hand-side is the base. All ops can also be written in pointwise unary
+form: `☐i~i`. These can seen as the binary form, but where the left-hand-side
+is taken to be the op's default value (given in the op table below). For
+example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
+associative and have an identity value can be used as reductions, e.g.,
+`+ij~i`.
 
 All reducible ops have default value equal to their identity. Non-reducible ops
 have a default value chosen to result in sane unary behavior. For example,
 `pow` and `log` have default value `e` so that `pow(base, x)` becomes `exp(x)`
 and `log(base, x)` becomes `ln(x)`.
 
-The only intrinsically unary op is `!!` (`not`).
-
 ops
 ---
 
-Here is the full list of ops. Numeric ops have single-char symbols. Boolean and
-logical ops have double-char symbols.
-
+Here is the full list of ops.
 
 | category | symbol | name  | default | reducible | implemented |
 | -------- | ------ | ----- | ------- | --------- | ----------- |
