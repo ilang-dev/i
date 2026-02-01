@@ -47,6 +47,8 @@ for i in range(in0.shape[0]):
 The second expression, `+ijk~ij`, is a reduction over the `k` dimension,
 indicated by `k` appearing to the left of the `~` but not to the right.
 
+TODO: rewrite this
+
 The "standard form" for 𝚒-expressions is binary: `i☐i~i`, but they become unary
 in two important ways. The first we have already encountered: reductions. Any
 associative op with an identity can be used as a reduction. `+ijk~ij` reduces
@@ -63,12 +65,12 @@ and `log(base, x)` becomes `ln(x)`.
 
 The only intrinsically unary op is `!!` (`not`).
 
-scheduling
----
-TODO
-
 ops
 ---
+
+Here is the full list of ops. Numeric ops have single-char symbols. Boolean and
+logical ops have double-char symbols.
+
 
 | category | symbol | name  | default | reducible | implemented |
 | -------- | ------ | ----- | ------- | --------- | ----------- |
@@ -91,62 +93,80 @@ ops
 |          | `^^`   | `xor` | 0       | ✓         |             |
 |          | `!!`   | `not` | -       |           |             |
 
-Numeric ops have single-char symbols. Boolean and logical ops have double-char
-symbols.
-
-NOTE
-implicit one-way boolean->numeric casting
-
 𝚒-expression forms
 ---
 
-| form               | expr       | psuedo tensor notation |
-| ------------------ | ---------- | ---------------------- |
-| pointwise binary   | `i+i~i`    | `X+Y`                  |
-|                    | `i*i~i`    | `X*Y`                  |
-|                    | `i-i~i`    | `X-Y`                  |
-|                    | `i/i~i`    | `X/Y`                  |
-|                    | `i>i~i`    | `max(X,Y)`             |
-|                    | `i<i~i`    | `min(X,Y)`             |
-|                    | `i^i~i`    | `pow(base,X)`          |
-|                    | `i$i~i`    | `log(base,X)`          |
-|                    | `i>>i~i`   | `X>Y`                  |
-|                    | `i>=i~i`   | `X>=Y`                 |
-|                    | `i<<i~i`   | `X<Y`                  |
-|                    | `i<=i~i`   | `X<=Y`                 |
-|                    | `i==i~i`   | `X==Y`                 |
-|                    | `i!=i~i`   | `X!=Y`                 |
-|                    | `i&&i~i`   | `X&Y`                  |
-|                    | `i\|\|i~i` | `X\|Y`                 |
-|                    | `i^^i~i`   | `X^Y`                  |
-| non-reducing unary | `+i~i`     | `X` (no-op)            |
-|                    | `*i~i`     | `X` (no-op)            |
-|                    | `-i~i`     | `-X`                   |
-|                    | `/i~i`     | `1/X`                  |
-|                    | `>i~i`     | `max(0,X)`             |
-|                    | `<i~i`     | `min(0,X)`             |
-|                    | `^i~i`     | `exp(X)`               |
-|                    | `$i~i`     | `log(X)`               |
-|                    | `>>i~i`    | `X>0`                  |
-|                    | `>=i~i`    | `X>=0`                 |
-|                    | `<<i~i`    | `X<0`                  |
-|                    | `<=i~i`    | `X<=0`                 |
-|                    | `==i~i`    | `X==0`                 |
-|                    | `!=i~i`    | `X!=0`                 |
-|                    | `&&i~i`    | `X&1` (no-op)          |
-|                    | `\|\|i~i`  | `X\|0` (no-op)         |
-|                    | `^^i~i`    | `X^0` (no-op)          |
-|                    | `!!i~i`    | `!X`                   |
-| reduction          | `+ij~i`    | `X.sum(dim=0)`         |
-|                    | `*ij~i`    | `X.prod(dim=0)`        |
-|                    | `>ij~i`    | `X.max(dim=0)`         |
-|                    | `<ij~i`    | `X.min(dim=0)`         |
-|                    | `&&ij~i`   | `X.all(dim=0)`         |
-|                    | `\|\|ij~i` | `X.any(dim=0)`         |
-|                    | `^^ij~i`   | `X.xor_reduce(dim=0)`  |
+Here are the various forms that 𝚒-expression can take including pointwise
+binary, pointwise unary, and reduction. Note that logical `not` appears only as
+pointwise unary since that is its only valid form. Similiarly, only operators
+which have well-defined reductions appear as reduction expressions.
+Additionally, several operators when used in pointwise unary form are
+effectively no-ops as indicated, but are included for completeness.
+
+| form              | expr       | psuedo tensor notation |
+| ----------------- | ---------- | ---------------------- |
+| pointwise binary  | `i+i~i`    | `X+Y`                  |
+|                   | `i*i~i`    | `X*Y`                  |
+|                   | `i-i~i`    | `X-Y`                  |
+|                   | `i/i~i`    | `X/Y`                  |
+|                   | `i>i~i`    | `max(X,Y)`             |
+|                   | `i<i~i`    | `min(X,Y)`             |
+|                   | `i^i~i`    | `pow(base,X)`          |
+|                   | `i$i~i`    | `log(base,X)`          |
+|                   | `i>>i~i`   | `X>Y`                  |
+|                   | `i>=i~i`   | `X>=Y`                 |
+|                   | `i<<i~i`   | `X<Y`                  |
+|                   | `i<=i~i`   | `X<=Y`                 |
+|                   | `i==i~i`   | `X==Y`                 |
+|                   | `i!=i~i`   | `X!=Y`                 |
+|                   | `i&&i~i`   | `X&Y`                  |
+|                   | `i\|\|i~i` | `X\|Y`                 |
+|                   | `i^^i~i`   | `X^Y`                  |
+| pointwise unary   | `+i~i`     | `X` (no-op)            |
+|                   | `*i~i`     | `X` (no-op)            |
+|                   | `-i~i`     | `-X`                   |
+|                   | `/i~i`     | `1/X`                  |
+|                   | `>i~i`     | `max(0,X)`             |
+|                   | `<i~i`     | `min(0,X)`             |
+|                   | `^i~i`     | `exp(X)`               |
+|                   | `$i~i`     | `log(X)`               |
+|                   | `>>i~i`    | `X>0`                  |
+|                   | `>=i~i`    | `X>=0`                 |
+|                   | `<<i~i`    | `X<0`                  |
+|                   | `<=i~i`    | `X<=0`                 |
+|                   | `==i~i`    | `X==0`                 |
+|                   | `!=i~i`    | `X!=0`                 |
+|                   | `&&i~i`    | `X&1` (no-op)          |
+|                   | `\|\|i~i`  | `X\|0` (no-op)         |
+|                   | `^^i~i`    | `X^0` (no-op)          |
+|                   | `!!i~i`    | `!X`                   |
+| reduction         | `+ij~i`    | `X.sum(dim=0)`         |
+|                   | `*ij~i`    | `X.prod(dim=0)`        |
+|                   | `>ij~i`    | `X.max(dim=0)`         |
+|                   | `<ij~i`    | `X.min(dim=0)`         |
+|                   | `&&ij~i`   | `X.all(dim=0)`         |
+|                   | `\|\|ij~i` | `X.any(dim=0)`         |
+|                   | `^^ij~i`   | `X.xor_reduce(dim=0)`  |
 
 combinators
 ---
+
+The following combinators allow for the combining of 𝚒-expressions into
+computation graphs. These graphs represent complete 𝚒 programs with leaves
+representing inputs, roots representing outputs, and interior nodes
+representing the intermediate results of the computation.
+
+`compose` wires the leaves of one graph to the roots of another. `chain` does
+the inverse, wiring the roots of one graph to the leaves of another. `fanout`
+merges the inputs of two graphs, intuitively performing two different programs
+on the same set of inptus. `pair` concatenates the roots and leaves of two
+graphs such that they together can be handled as a single graph. `swap` swaps
+the order of the first two roots of a single graph.
+
+All of the combinators are well-defined for mixed arity. For example, `fanout`
+merges inputs pairwise left-to-right and simply leaves any unpaired inputs
+unmerged. Similarly, a mismatch between leaves and roots in compose leaves
+the unpaired leaves or roots in the graph.
 
 | symbol | name      | implemented |
 | ------ | --------- | ----------- |
@@ -156,12 +176,31 @@ combinators
 | `\|`   | `pair`    | ✓           |
 | `~`    | `swap`    | ✓           |
 
-NOTES:
+Here is an example using `fanout` and `chain` to create a program to normalize
+over the rows of a 2D input.
+
+```python
+row_sum = i("+ij~i")
+row_div = i("ij/i~ij")
+id = i("ij~ij")
+row_normalize = (id & row_sum) >> row_div
+```
+
+scheduling
+---
+𝚒-expressions are declarative by default but can be extended with 𝚒's powerful
+scheduling primitives. These include:
+1) loop splitting
+2) loop reordering
+3) loop fusion
+
+NOTE
 - language notes
   - character indices present in the output and one of the inputs but absent from
     the other input are broadcasted, e.g., in the expression `ij+i~ij`, the `i` is
     broadcasted _over_ `j`.
   - distinguish between core i and framework/front-end
+  - implicit one-way boolean->numeric casting
 - present limitations of i
   - no sparsity support (including affine indexing)
   - no scatter/gather
