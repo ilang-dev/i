@@ -14,8 +14,12 @@ tiling.
 𝚒-expressions
 ---
 
-𝚒-expressions are similar to einsum notation but without the implicit
-summation. Here is a matrix multiply implemented with 𝚒's Python front-end:
+𝚒-expressions look similar to einsum notation but do not perform implicit
+summation. They apply a _single_ scalar operation over a multidimensional
+domain defined by single-character indices. This forms a simple tensor
+operation, either pointwise or reduction or reshape. These expressions are then
+compbined to form more complex operations. Here is a matrix multiply
+implemented with 𝚒's Python front-end:
 
 ```python
 i("ik*kj~ijk") >> i("+ijk~ij")
@@ -52,12 +56,11 @@ TODO: rewrite this
 
 The "standard form" for 𝚒-expressions is binary: `i☐i~i`, but they become unary
 in two important ways. The first we have already encountered: reductions. Any
-associative op with an identity can be used as a reduction. `+ijk~ij` reduces
-over the `k` dimension by initializing the output to the identity of `+` (`0`)
-and then accumulating along `k`. The second way is that every op has a default
-value which is implicitly broadcasted on the left-hand-side. For example, `-`
-has default value `0`, so `-i~i` is implicit for `0-i~i` and behaves like
-negation.
+associative op with an identity can be used as a reduction. `☐ijk~ij` reduces
+over the `k` dimension, initializing the output to the identity of `☐`. The
+second way is that every op has a default value which is implicitly broadcasted
+on the left-hand-side. For example, `-` has default value `0`, so `-i~i` is
+implicit for `0-i~i` and behaves like negation.
 
 All reducible ops have default value equal to their identity. Non-reducible ops
 have a default value chosen to result in sane unary behavior. For example,
