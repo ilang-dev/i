@@ -31,7 +31,8 @@ Breakdown of `ik*kj~ijk`:
   the 1 dimension of the left input corresponds to the same iteration domain as
   the 0 dimension of the right input, the familiar shape constraint of matrix
   multiplication.
-- `~` syntax separating inputs from outputs `ijk` indices of the output, 3
+- `~` syntax separating inputs from outputs
+- `ijk` indices of the output, 3
   chars => 3-dimensional, output shape inferable from input shapes
 - the iterative domain of this expression is given by `(i,j,k)`
 
@@ -190,9 +191,9 @@ scheduling
 ---
 𝚒-expressions are declarative by default but can be extended with 𝚒's powerful
 scheduling primitives. These include:
-1) loop splitting
-2) loop reordering
-3) loop fusion
+1. loop splitting
+2. loop reordering
+3. loop fusion
 
 NOTE
 - language notes
