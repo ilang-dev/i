@@ -213,12 +213,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_symbol(&mut self) -> Result<Symbol, ParseError> {
-        match self.next() {
-            Token::Symbol(s) => Ok(Symbol(s)),
-            _ => Err(ParseError::InvalidToken {
-                expected: "Symbol".to_string(),
-            }),
-        }
+        Ok(Symbol(match self.peek0() {
+            Token::Symbol(_) => match self.next() {
+                Token::Symbol(s) => s,
+                _ => unreachable!(),
+            },
+            _ => String::new(),
+        }))
     }
 
     fn peek0(&self) -> Token {
