@@ -1,5 +1,5 @@
 𝚒 is a peculiar deep learning framework in the making. The thing that makes 𝚒
-different from other frameworks is that it does not have pimitive tensor ops.
+different from other frameworks is that it does not have primitive tensor ops.
 Instead, it uses "index expressions" — a simple but powerful language for
 applying scalar operations over multidimensional domains. Index expressions,
 or 𝚒-expressions, are the atomic computation units which are then combined
@@ -8,7 +8,7 @@ into computation graphs using a small set of combinators.
 The motivation for this peculiar language is two-fold. First, there is a
 certain aesthetic appeal to creating a sufficiently expressive framework from a
 small set of general components. And second, this description of computation is
-particularly ammenable to important scheduling optimizations like fusion and
+particularly amenable to important scheduling optimizations like fusion and
 tiling.
 
 𝚒-expressions
@@ -18,7 +18,7 @@ tiling.
 summation. They apply a _single_ scalar operation over a multidimensional
 domain defined by single-character indices. This forms a simple tensor
 operation, either pointwise or reduction or reshape. These expressions are then
-compbined to form more complex operations. Here is a matrix multiply
+combined to form more complex operations. Here is a matrix multiply
 implemented with 𝚒's Python front-end:
 
 ```python
@@ -52,20 +52,6 @@ for i in range(in0.shape[0]):
 The second expression, `+ijk~ij`, is a reduction over the `k` dimension,
 indicated by `k` appearing to the left of the `~` but not to the right.
 
-With the exception of `!!` (`not`), all 𝚒 ops can be written in pointwise
-binary form: `i☐i~i`. This includes `^` (`pow`) and `$` (`log`) where the
-left-hand-side is the base. All ops can also be written in pointwise unary
-form: `☐i~i`. These can seen as the binary form, but where the left-hand-side
-is taken to be the op's default value (given in the op table below). For
-example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
-associative and have an identity value can be used as reductions, e.g.,
-`+ij~i`.
-
-All reducible ops have default value equal to their identity. Non-reducible ops
-have a default value chosen to result in sane unary behavior. For example,
-`pow` and `log` have default value `e` so that `pow(base, x)` becomes `exp(x)`
-and `log(base, x)` becomes `ln(x)`.
-
 ops
 ---
 
@@ -94,6 +80,20 @@ Here is the full list of ops.
 
 𝚒-expression forms
 ---
+
+With the exception of `!!` (`not`), all 𝚒 ops can be written in pointwise
+binary form: `i☐i~i`. This includes `^` (`pow`) and `$` (`log`) where the
+left-hand-side is the base. All ops can also be written in pointwise unary
+form: `☐i~i`. These can seen as the binary form, but where the left-hand-side
+is taken to be the op's default value (given in the op table below). For
+example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
+associative and have an identity value can be used as reductions, e.g.,
+`+ij~i`.
+
+All reducible ops have default value equal to their identity. Non-reducible ops
+have a default value chosen to result in sane unary behavior. For example,
+`pow` and `log` have default value `e` so that `pow(base, x)` becomes `exp(x)`
+and `log(base, x)` becomes `ln(x)`.
 
 Here are the various forms that 𝚒-expression can take including pointwise
 binary, pointwise unary, and reduction. Some ops are not valid in all forms and
@@ -158,7 +158,7 @@ arbitrarily complex computation graphs.
 `compose` wires the leaves of one graph to the roots of another. `chain` does
 the inverse, wiring the roots of one graph to the leaves of another. `fanout`
 merges the inputs of two graphs, intuitively performing two different
-computations on the same set of inptus. `pair` concatenates the roots and
+computations on the same set of inputs. `pair` concatenates the roots and
 leaves of two graphs such that they together can be handled as a single graph.
 `swap` swaps the order of the first two roots of a single graph.
 
