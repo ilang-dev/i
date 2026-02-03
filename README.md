@@ -85,7 +85,7 @@ With the exception of `!!` (`not`), all 𝚒 ops can be written in pointwise
 binary form: `i☐i~i`. This includes `^` (`pow`) and `$` (`log`) where the
 left-hand-side is the base. All ops can also be written in pointwise unary
 form: `☐i~i`. These can seen as the binary form, but where the left-hand-side
-is taken to be the op's default value (given in the op table below). For
+is taken to be the op's default value (given in the op table above). For
 example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
 associative and have an identity value can be used as reductions, e.g.,
 `+ij~i`.
