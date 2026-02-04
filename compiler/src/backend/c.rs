@@ -2,11 +2,10 @@ use std::fs;
 use std::io::Error;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::backend::{Backend, Build, Render};
 use crate::block::{Block, Expr, FunctionSignature, Program, Statement, Type};
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn unique_string() -> String {
     format!(
