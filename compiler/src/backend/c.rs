@@ -61,25 +61,45 @@ impl Render for CBackend {
 typedef struct {{
     const float* data;
     const size_t* shape;
-    size_t rank;
+    const size_t rank;
 }} Tensor;
 
 typedef struct {{
     float* data;
     const size_t* shape;
-    size_t rank;
+    const size_t rank;
 }} TensorMut;
 
-static inline TensorMut alloc_tensor(size_t rank, const size_t* shape, float v) {{
+typedef struct {{
+    const float* data;
+    const size_t* shape;
+    const size_t* layout;
+}} View;
+
+typedef struct {{
+    float* data;
+    const size_t* shape;
+    const size_t* layout;
+}} ViewMut;
+
+static inline ViewMut alloc_view_mut(float v, size_t ndims, const size_t* layout, const size_t* shape) {{
     size_t n = 1;
-    for (size_t i = 0; i < rank; ++i) n *= shape[i];
+    for (size_t i = 0; i < ndims; ++i) n *= layout[i];
     float* data = (float*)malloc(n * sizeof(float));
     for (size_t i = 0; i < n; ++i) data[i] = v;
-    return (TensorMut){{ .data = data, .shape = shape, .rank = rank }};
+    return (ViewMut){{ .data = data, .shape = shape, .layout = layout }};
 }}
 
-static inline const Tensor as_tensor(const TensorMut* t) {{
-  return (const Tensor){{ .data=t->data, .shape=t->shape, .rank=t->rank }};
+static inline const View as_view(const Tensor* t) {{
+  return (const View){{ .data = t->data, .shape = t->shape, .layout = t->shape }};
+}}
+
+static inline const ViewMut as_view_mut(const TensorMut* t) {{
+  return (const ViewMut){{ .data = t->data, .shape = t->shape, .layout = t->shape }};
+}}
+
+static inline const View view_mut_as_view(const ViewMut* t) {{
+  return (const View){{ .data=t->data, .shape=t->shape, .layout=t->layout }};
 }}
 
 {count}
@@ -111,6 +131,9 @@ impl CBackend {
         match t {
             Type::Int(_) => "size_t".to_string(),
             Type::Scalar(_) => "float".to_string(),
+            Type::View(mutable) => format!("{}View", if *mutable { "" } else { "const " }),
+            Type::ViewMut(_) => "ViewMut".to_string(),
+            Type::Array(type_) => Self::render_type(type_),
         }
     }
 
@@ -198,13 +221,24 @@ impl CBackend {
             Expr::Ident(s) => s.to_string(),
             Expr::Int(x) => format!("{}", x),
             Expr::Scalar(x) => Self::render_float_literal(*x),
+            Expr::Array(type_, exprs) => format!(
+                "{{{}}}",
+                exprs
+                    .iter()
+                    .map(|expr| Self::render_expr(expr))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Expr::Op { .. } => Self::render_op(expr),
             Expr::Indexed { expr, index } => {
                 format!("{}[{}]", Self::render_expr(expr), Self::render_expr(index))
             }
-            Expr::ShapeOf(expr) => format!("{}.shape", Self::render_expr(expr)),
             Expr::DataOf(expr) => format!("{}.data", Self::render_expr(expr)),
-            Expr::ReadOnly(expr) => format!("as_tensor(&{})", Self::render_expr(expr)),
+            Expr::ShapeOf(expr) => format!("{}.shape", Self::render_expr(expr)),
+            Expr::LayoutOf(expr) => format!("{}.layout", Self::render_expr(expr)),
+            Expr::View(expr) => format!("as_view(&{})", Self::render_expr(expr)),
+            Expr::ViewMut(expr) => format!("as_view_mut(&{})", Self::render_expr(expr)),
+            Expr::ReadOnly(expr) => format!("view_mut_as_view(&{})", Self::render_expr(expr)),
         }
     }
 
@@ -219,7 +253,7 @@ impl CBackend {
                 format!("void exec(const Tensor* inputs, TensorMut* outputs)")
             }
             FunctionSignature::Kernel(ident) => format!(
-                "void {}(const Tensor* inputs, TensorMut* outputs)",
+                "void {}(const View* inputs, ViewMut* outputs)",
                 Self::render_expr(ident)
             ),
         }
@@ -227,7 +261,7 @@ impl CBackend {
 
     fn render_ref_list(exprs: &Vec<Expr>, mutable: bool) -> String {
         format!(
-            "({}Tensor{} []){{{}}}",
+            "({}View{} []){{{}}}",
             if mutable { "" } else { "const " },
             if mutable { "Mut" } else { "" },
             exprs
@@ -250,20 +284,35 @@ impl CBackend {
             Statement::Alloc {
                 index,
                 initial_value,
+                layout,
                 shape,
-            } => format!(
-                "
-                    size_t shape{index}[] = {{ {} }};
-                    TensorMut s{index} = alloc_tensor({}, shape{index}, {});
-                ",
-                shape
+            } => {
+                let layout_init = layout
                     .iter()
                     .map(|dim| Self::render_expr(dim))
                     .collect::<Vec<_>>()
-                    .join(", "),
-                shape.len(),
-                Self::render_expr(initial_value),
-            ),
+                    .join(", ");
+                let shape_decl = match shape.is_empty() {
+                    true => format!("const size_t* shape{index} = NULL;"),
+                    false => {
+                        let shape_init = shape
+                            .iter()
+                            .map(|dim| Self::render_expr(dim))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("size_t shape{index}[] = {{ {shape_init} }};")
+                    }
+                };
+                format!(
+                    "
+                        size_t layout{index}[] = {{ {layout_init} }};
+                        {shape_decl}
+                        ViewMut s{index} = alloc_view_mut({}, {}, layout{index}, shape{index});
+                    ",
+                    Self::render_expr(initial_value),
+                    layout.len(),
+                )
+            }
             Statement::Declaration {
                 ident,
                 value,
@@ -271,8 +320,9 @@ impl CBackend {
             } => {
                 let ty = Self::render_type(type_);
                 format!(
-                    "{ty} {} = {};",
+                    "{ty} {}{} = {};",
                     Self::render_expr(ident),
+                    if let Type::Array(_) = type_ { "[]" } else { "" },
                     Self::render_expr(value)
                 )
             }

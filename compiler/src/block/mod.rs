@@ -3,6 +3,7 @@ pub enum Expr {
     Int(usize),
     Scalar(f32),
     Ident(String),
+    Array(Type, Vec<Expr>),
     Op {
         op: char,
         inputs: Vec<Expr>,
@@ -11,15 +12,21 @@ pub enum Expr {
         expr: Box<Expr>, // Should be of variant `Expr::Ident` or `Expr::Indexed`
         index: Box<Expr>,
     },
-    ShapeOf(Box<Expr>),
     DataOf(Box<Expr>),
-    ReadOnly(Box<Expr>), // for casting `TensorMut` to `Tensor`
+    ShapeOf(Box<Expr>),
+    LayoutOf(Box<Expr>),
+    View(Box<Expr>),     // for casting `Tensor` to `View`
+    ViewMut(Box<Expr>),  // for casting `TensorMut` to `ViewMut`
+    ReadOnly(Box<Expr>), // for casting `ViewMut` to `View`
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Int(bool),
     Scalar(bool),
+    View(bool),
+    ViewMut(bool),
+    Array(Box<Type>),
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +47,7 @@ pub enum Statement {
     Alloc {
         index: usize,
         initial_value: Box<Expr>, // must be of variant `Scalar`
+        layout: Vec<Expr>,
         shape: Vec<Expr>,
     },
     Declaration {

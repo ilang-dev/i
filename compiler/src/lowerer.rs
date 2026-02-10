@@ -124,6 +124,44 @@ pub fn lower(graph: &Graph) -> Program {
         .map(|shape_addr_list| shape_addr_list.iter().map(input_shape_expr).collect())
         .collect();
 
+    let inputs_view_casts = Statement::Declaration {
+        ident: Expr::Ident("_inputs".into()),
+        value: Expr::Array(
+            Type::View(false),
+            graph
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    Expr::View(Box::new(Expr::Indexed {
+                        expr: Box::new(Expr::Ident("inputs".into())),
+                        index: Box::new(Expr::Int(i)),
+                    }))
+                })
+                .collect(),
+        ),
+        type_: Type::Array(Box::new(Type::View(false))),
+    };
+
+    let outputs_viewmut_casts = Statement::Declaration {
+        ident: Expr::Ident("_outputs".into()),
+        value: Expr::Array(
+            Type::ViewMut(true),
+            graph
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    Expr::ViewMut(Box::new(Expr::Indexed {
+                        expr: Box::new(Expr::Ident("outputs".into())),
+                        index: Box::new(Expr::Int(i)),
+                    }))
+                })
+                .collect(),
+        ),
+        type_: Type::Array(Box::new(Type::ViewMut(false))),
+    };
+
     Program {
         count: count(graph.roots().len()),
         //ranks: ranks(lowereds.iter().map(|l| l.0).collect()),
@@ -138,7 +176,13 @@ pub fn lower(graph: &Graph) -> Program {
         library: library,
         exec: Statement::Function {
             signature: FunctionSignature::Exec,
-            body: exec_block,
+            body: Block {
+                statements: vec![
+                    vec![inputs_view_casts, outputs_viewmut_casts],
+                    exec_block.statements,
+                ]
+                .concat(),
+            },
         },
     }
 }
@@ -184,7 +228,7 @@ fn lower_node(
             .collect();
 
         let buffer_ident = Expr::Indexed {
-            expr: Box::new(Expr::Ident("inputs".into())),
+            expr: Box::new(Expr::Ident("_inputs".into())),
             index: Box::new(Expr::Int(leaf_ind)),
         };
 
@@ -239,7 +283,7 @@ fn lower_node(
     let buffer_ident = match root_ind {
         None => Expr::Ident(format!("s{topo_ind}")),
         Some(root_ind) => Expr::Indexed {
-            expr: Box::new(Expr::Ident("outputs".into())),
+            expr: Box::new(Expr::Ident("_outputs".into())),
             index: Box::new(Expr::Int(root_ind)),
         },
     };
@@ -290,6 +334,29 @@ fn lower_node(
 
     // create allocation
     if root_ind.is_none() {
+        let shape: Vec<Expr> = shape_addrs.iter().map(input_shape_expr).collect();
+        let layout = build_buffer_shape_exprs(
+            &physical_shape
+                .iter()
+                .map(|axis| Axis {
+                    addrs: axis
+                        .addrs
+                        .iter()
+                        .map(|addr| globalize_shape_addr(addr, &child_shape_addr_lists))
+                        .map(|addr| {
+                            shape_addr_preference
+                                .get(&addr)
+                                .copied()
+                                .expect("Could not canonicalize shape addr.")
+                        })
+                        .collect(),
+                    kind: axis.kind,
+                })
+                .collect(),
+            &split_factor_lists,
+            &child_shape_addr_lists,
+            &addr_to_split_factor_list,
+        );
         exec_block.statements.push(Statement::Alloc {
             index: *topo_ind,
             initial_value: Box::new(Expr::Scalar(match op {
@@ -298,28 +365,8 @@ fn lower_node(
                 '*' => 1.,
                 _ => 0.,
             })),
-            shape: build_buffer_shape_exprs(
-                &physical_shape
-                    .iter()
-                    .map(|axis| Axis {
-                        addrs: axis
-                            .addrs
-                            .iter()
-                            .map(|addr| globalize_shape_addr(addr, &child_shape_addr_lists))
-                            .map(|addr| {
-                                shape_addr_preference
-                                    .get(&addr)
-                                    .copied()
-                                    .expect("Could not canonicalize shape addr.")
-                            })
-                            .collect(),
-                        kind: axis.kind,
-                    })
-                    .collect(),
-                &split_factor_lists,
-                &child_shape_addr_lists,
-                &addr_to_split_factor_list,
-            ),
+            layout,
+            shape,
         });
     }
 
@@ -445,7 +492,7 @@ fn lower_node(
             };
             (0..child_physical_shape.len())
                 .map(|dim_ind| Expr::Indexed {
-                    expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                    expr: Box::new(Expr::LayoutOf(Box::new(Expr::Indexed {
                         expr: Box::new(Expr::Ident(arg_str.into())),
                         index: Box::new(Expr::Int(*offset)),
                     }))),
@@ -501,7 +548,7 @@ fn lower_node(
 
     let buffer_bounds: Vec<Expr> = (0..physical_shape.len())
         .map(|dim_ind| Expr::Indexed {
-            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::LayoutOf(Box::new(Expr::Indexed {
                 expr: Box::new(Expr::Ident("outputs".into())),
                 index: Box::new(Expr::Int(writeable_offset)),
             }))),
@@ -731,7 +778,7 @@ fn build_library_function(
             ArgType::Writeable => "outputs",
         };
         Expr::Indexed {
-            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+            expr: Box::new(Expr::LayoutOf(Box::new(Expr::Indexed {
                 expr: Box::new(Expr::Ident(ident.into())),
                 index: Box::new(Expr::Int(offset)),
             }))),
