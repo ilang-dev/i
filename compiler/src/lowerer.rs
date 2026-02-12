@@ -786,6 +786,8 @@ fn build_library_function(
         }
     }
 
+    let loop_bound_from_shape_addr = |addr: ShapeAddr| input_shape_expr(&addr);
+
     let axis_to_bound = |axis: &Axis| match axis_to_arg_info.get(&axis) {
         Some((arg, offset, dim_ind)) => Some(loop_bound_from_arg_info(arg, *offset, *dim_ind)),
         None => None,
@@ -798,30 +800,31 @@ fn build_library_function(
             kind: spec.axis.kind,
         });
 
-        bound.unwrap_or_else(|| {
-            match &spec.axis.kind {
-                Bound::Base => todo!(), // TODO look for split0 and reconstruct
-                Bound::Split { factor, ind } => match ind {
-                    0 => {
-                        let base_bound = axis_to_bound(&Axis {
-                            addrs: vec![spec.axis.addrs[0]],
-                            kind: Bound::Base,
-                        })
-                        .expect("Could not compute split or base bound.");
-                        create_split_bound_expr(base_bound, &spec.split_factors)
-                    }
-                    _ => Expr::Int(*factor),
-                },
-            }
+        bound.unwrap_or_else(|| match &spec.axis.kind {
+            Bound::Base => loop_bound_from_shape_addr(spec.axis.addrs[0]),
+            Bound::Split { factor, ind } => match ind {
+                0 => {
+                    let base_bound = axis_to_bound(&Axis {
+                        addrs: vec![spec.axis.addrs[0]],
+                        kind: Bound::Base,
+                    })
+                    .unwrap_or_else(|| loop_bound_from_shape_addr(spec.axis.addrs[0]));
+                    create_split_bound_expr(base_bound, &spec.split_factors)
+                }
+                _ => Expr::Int(*factor),
+            },
         })
     };
 
     let get_base_bound = |spec: &LoopSpec| match &spec.axis.kind {
         Bound::Base | Bound::Split { ind: 0, .. } => Some(get_bound(spec)),
-        Bound::Split { factor, ind } => axis_to_bound(&Axis {
-            kind: Bound::Base,
-            addrs: vec![spec.axis.addrs[0]],
-        }),
+        Bound::Split { .. } => Some(
+            axis_to_bound(&Axis {
+                kind: Bound::Base,
+                addrs: vec![spec.axis.addrs[0]],
+            })
+            .unwrap_or_else(|| loop_bound_from_shape_addr(spec.axis.addrs[0])),
+        ),
     };
 
     let make_empty_loop = |spec: &LoopSpec| {
