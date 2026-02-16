@@ -500,10 +500,29 @@ fn lower_node(
         ..loop_spec.clone()
     };
 
-    let loop_specs: Vec<LoopSpec> = loop_specs
-        .into_iter()
+    let globalized_loop_specs: Vec<LoopSpec> =
+        loop_specs.iter().map(globalize_loop_specs).collect();
+    let loop_specs: Vec<LoopSpec> = globalized_loop_specs
+        .iter()
         .filter(|spec| !prunable_axes.contains(&spec.axis))
-        .map(globalize_loop_specs)
+        .cloned()
+        .collect();
+
+    let pruned_prefix_counts: Vec<usize> = std::iter::once(0)
+        .chain(globalized_loop_specs.iter().scan(0, |count, spec| {
+            if prunable_axes.contains(&spec.axis) {
+                *count += 1;
+            }
+            Some(*count)
+        }))
+        .collect();
+
+    let adjusted_compute_levels: Vec<usize> = compute_levels
+        .iter()
+        .map(|compute_level| {
+            let level = (*compute_level).min(globalized_loop_specs.len());
+            level - pruned_prefix_counts[level]
+        })
         .collect();
 
     // TODO can we do this better?
@@ -637,7 +656,7 @@ fn lower_node(
         &args,
         &loop_specs,
         &child_fragments,
-        &compute_levels,
+        &adjusted_compute_levels,
         &op_statement,
     );
 
@@ -780,7 +799,7 @@ fn build_library_function(
     args: &Vec<(Arg, usize)>,
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
-    compute_levels: &Vec<usize>,
+    child_fragment_levels: &Vec<usize>,
     op_statement: &Statement,
 ) -> Block {
     // value: (arg, offset, dim_ind)
@@ -926,9 +945,11 @@ fn build_library_function(
         }
     };
 
+    let mut top_level_fragments: Vec<Statement> = Vec::new();
+
     // perform loop fusions
     let mut loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
-    for (child_ind, compute_level) in compute_levels.iter().enumerate() {
+    for (child_ind, compute_level) in child_fragment_levels.iter().enumerate() {
         if *compute_level > 0 {
             if let Statement::Loop { ref mut body, .. } = loops[*compute_level - 1] {
                 body.statements
@@ -936,6 +957,8 @@ fn build_library_function(
             } else {
                 panic!("Loop `Statement` not of variant `Loop`.")
             }
+        } else if !child_fragments[child_ind].statements.is_empty() {
+            top_level_fragments.extend(child_fragments[child_ind].statements.clone());
         }
     }
 
@@ -951,7 +974,7 @@ fn build_library_function(
             });
 
     Block {
-        statements: vec![loop_stack],
+        statements: [top_level_fragments, vec![loop_stack]].concat(),
     }
 }
 
