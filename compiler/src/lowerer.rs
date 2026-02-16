@@ -6,6 +6,7 @@ use crate::graph::{Axis, Bound, Graph, LoopSpec, Node, NodeBody, ShapeAddr};
 #[derive(Clone, Debug)]
 struct Arg {
     type_: ArgType,
+    shape_addrs: Vec<ShapeAddr>,
     physical_shape: Vec<Axis>,
     ident: Expr,
 }
@@ -384,54 +385,64 @@ fn lower_node(
     // the Arg and its offset in its corresponding arg list
     let child_args: Vec<(Arg, usize)> = compute_levels
         .iter()
+        .zip(child_shape_addr_lists.iter())
         .zip(child_physical_shapes.iter())
         .zip(child_buffer_idents.iter())
-        .map(|((compute_level, physical_shape), buffer_ident)| {
-            let physical_shape: Vec<Axis> = physical_shape
-                .iter()
-                .map(|Axis { addrs, kind }| Axis {
-                    addrs: addrs
-                        .iter()
-                        .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(*addr))
-                        .collect(),
-                    kind: *kind,
-                })
-                .collect();
+        .map(
+            |(((compute_level, shape_addrs), physical_shape), buffer_ident)| {
+                let shape_addrs: Vec<ShapeAddr> = shape_addrs
+                    .iter()
+                    .copied()
+                    .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(addr))
+                    .collect();
+                let physical_shape: Vec<Axis> = physical_shape
+                    .iter()
+                    .map(|Axis { addrs, kind }| Axis {
+                        addrs: addrs
+                            .iter()
+                            .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(*addr))
+                            .collect(),
+                        kind: *kind,
+                    })
+                    .collect();
 
-            match *compute_level {
-                // non-fusing
-                0 => {
-                    let offset = readonly_offset;
-                    readonly_offset += 1;
-                    (
-                        Arg {
-                            type_: ArgType::ReadOnly,
-                            physical_shape: physical_shape,
-                            ident: match buffer_ident {
-                                Expr::Ident(s) if s.starts_with('s') => {
-                                    Expr::ReadOnly(Box::new(buffer_ident.clone()))
-                                }
-                                _ => buffer_ident.clone(),
+                match *compute_level {
+                    // non-fusing
+                    0 => {
+                        let offset = readonly_offset;
+                        readonly_offset += 1;
+                        (
+                            Arg {
+                                type_: ArgType::ReadOnly,
+                                shape_addrs: shape_addrs.clone(),
+                                physical_shape: physical_shape,
+                                ident: match buffer_ident {
+                                    Expr::Ident(s) if s.starts_with('s') => {
+                                        Expr::ReadOnly(Box::new(buffer_ident.clone()))
+                                    }
+                                    _ => buffer_ident.clone(),
+                                },
                             },
-                        },
-                        offset,
-                    )
+                            offset,
+                        )
+                    }
+                    // fusing
+                    _ => {
+                        let offset = writeable_offset;
+                        writeable_offset += 1;
+                        (
+                            Arg {
+                                type_: ArgType::Writeable,
+                                shape_addrs: shape_addrs.clone(),
+                                physical_shape: physical_shape,
+                                ident: buffer_ident.clone(),
+                            },
+                            offset,
+                        )
+                    }
                 }
-                // fusing
-                _ => {
-                    let offset = writeable_offset;
-                    writeable_offset += 1;
-                    (
-                        Arg {
-                            type_: ArgType::Writeable,
-                            physical_shape: physical_shape,
-                            ident: buffer_ident.clone(),
-                        },
-                        offset,
-                    )
-                }
-            }
-        })
+            },
+        )
         .collect();
 
     // TODO prune loops and fold storage based on compute level
@@ -571,6 +582,7 @@ fn lower_node(
 
     let arg = Arg {
         type_: ArgType::Writeable,
+        shape_addrs: shape_addrs.clone(),
         physical_shape: physical_shape.clone(),
         ident: buffer_ident.clone(),
     };
@@ -772,6 +784,19 @@ fn build_library_function(
         })
         .collect();
 
+    // value: (arg, offset, semantic dim_ind)
+    let addr_to_shape_info: HashMap<ShapeAddr, (Arg, usize, usize)> = args
+        .iter()
+        .rev()
+        .flat_map(|(arg, offset)| {
+            arg.shape_addrs
+                .iter()
+                .copied()
+                .enumerate()
+                .map(move |(dim_ind, addr)| (addr, (arg.clone(), *offset, dim_ind)))
+        })
+        .collect();
+
     fn loop_bound_from_arg_info(arg: &Arg, offset: usize, dim_ind: usize) -> Expr {
         let ident = match arg.type_ {
             ArgType::ReadOnly => "inputs",
@@ -786,7 +811,24 @@ fn build_library_function(
         }
     }
 
-    let loop_bound_from_shape_addr = |addr: ShapeAddr| input_shape_expr(&addr);
+    fn loop_bound_from_shape_info(arg: &Arg, offset: usize, dim_ind: usize) -> Expr {
+        let ident = match arg.type_ {
+            ArgType::ReadOnly => "inputs",
+            ArgType::Writeable => "outputs",
+        };
+        Expr::Indexed {
+            expr: Box::new(Expr::ShapeOf(Box::new(Expr::Indexed {
+                expr: Box::new(Expr::Ident(ident.into())),
+                index: Box::new(Expr::Int(offset)),
+            }))),
+            index: Box::new(Expr::Int(dim_ind)),
+        }
+    }
+
+    let addr_to_shape_bound = |addr: ShapeAddr| match addr_to_shape_info.get(&addr) {
+        Some((arg, offset, dim_ind)) => Some(loop_bound_from_shape_info(arg, *offset, *dim_ind)),
+        None => None,
+    };
 
     let axis_to_bound = |axis: &Axis| match axis_to_arg_info.get(&axis) {
         Some((arg, offset, dim_ind)) => Some(loop_bound_from_arg_info(arg, *offset, *dim_ind)),
@@ -801,14 +843,18 @@ fn build_library_function(
         });
 
         bound.unwrap_or_else(|| match &spec.axis.kind {
-            Bound::Base => loop_bound_from_shape_addr(spec.axis.addrs[0]),
+            Bound::Base => addr_to_shape_bound(spec.axis.addrs[0])
+                .unwrap_or_else(|| input_shape_expr(&spec.axis.addrs[0])),
             Bound::Split { factor, ind } => match ind {
                 0 => {
                     let base_bound = axis_to_bound(&Axis {
                         addrs: vec![spec.axis.addrs[0]],
                         kind: Bound::Base,
                     })
-                    .unwrap_or_else(|| loop_bound_from_shape_addr(spec.axis.addrs[0]));
+                    .unwrap_or_else(|| {
+                        addr_to_shape_bound(spec.axis.addrs[0])
+                            .unwrap_or_else(|| input_shape_expr(&spec.axis.addrs[0]))
+                    });
                     create_split_bound_expr(base_bound, &spec.split_factors)
                 }
                 _ => Expr::Int(*factor),
@@ -816,15 +862,11 @@ fn build_library_function(
         })
     };
 
-    let get_base_bound = |spec: &LoopSpec| match &spec.axis.kind {
-        Bound::Base | Bound::Split { ind: 0, .. } => Some(get_bound(spec)),
-        Bound::Split { .. } => Some(
-            axis_to_bound(&Axis {
-                kind: Bound::Base,
-                addrs: vec![spec.axis.addrs[0]],
-            })
-            .unwrap_or_else(|| loop_bound_from_shape_addr(spec.axis.addrs[0])),
-        ),
+    let get_base_bound = |spec: &LoopSpec| {
+        Some(
+            addr_to_shape_bound(spec.axis.addrs[0])
+                .unwrap_or_else(|| input_shape_expr(&spec.axis.addrs[0])),
+        )
     };
 
     let make_empty_loop = |spec: &LoopSpec| {
