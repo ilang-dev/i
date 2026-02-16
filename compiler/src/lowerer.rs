@@ -312,20 +312,41 @@ fn lower_node(
         })
         .collect();
 
-    let physical_shape: Vec<Axis> = match root_ind.is_some() {
-        // roots always have semantic shape
-        true => shape_addr_lists
+    let semantic_physical_shape: Vec<Axis> = shape_addr_lists
+        .iter()
+        .map(|addrs| Axis {
+            addrs: addrs.clone(),
+            kind: Bound::Base,
+        })
+        .collect();
+
+    // semantic layout by default, fused dimensions allocated according to
+    // splits to facilitate storage folding
+    let physical_shape: Vec<Axis> = match root_ind.is_some() || prunable_axes.is_empty() {
+        true => semantic_physical_shape.clone(),
+        false => shape_addr_lists
             .iter()
-            .map(|addrs| Axis {
-                addrs: addrs.clone(),
-                kind: Bound::Base,
+            .flat_map(|addrs| {
+                let dim_axes: Vec<Axis> = physical_shape
+                    .iter()
+                    .filter(|axis| axis.addrs == *addrs)
+                    .cloned()
+                    .collect();
+
+                let has_fused_axis = dim_axes.iter().any(|axis| prunable_axes.contains(axis));
+
+                if has_fused_axis {
+                    dim_axes
+                        .into_iter()
+                        .filter(|axis| !prunable_axes.contains(axis))
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![Axis {
+                        addrs: addrs.clone(),
+                        kind: Bound::Base,
+                    }]
+                }
             })
-            .collect(),
-        // other interior node can be folded
-        false => physical_shape
-            .iter()
-            .filter(|axis| !prunable_axes.contains(&globalize_axis(axis, &child_shape_addr_lists)))
-            .cloned()
             .collect(),
     };
 
