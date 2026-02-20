@@ -149,7 +149,7 @@ pub fn lower(graph: &Graph) -> Program {
         value: Expr::Array(
             Type::ViewMut(true),
             graph
-                .inputs
+                .roots()
                 .iter()
                 .enumerate()
                 .map(|(i, x)| {
