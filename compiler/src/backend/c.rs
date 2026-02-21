@@ -287,11 +287,17 @@ impl CBackend {
                 layout,
                 shape,
             } => {
-                let layout_init = layout
-                    .iter()
-                    .map(|dim| Self::render_expr(dim))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let layout_decl = match layout.is_empty() {
+                    true => format!("const size_t* layout{index} = NULL;"),
+                    false => {
+                        let layout_init = layout
+                            .iter()
+                            .map(|dim| Self::render_expr(dim))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("size_t layout{index}[] = {{ {layout_init} }};")
+                    }
+                };
                 let shape_decl = match shape.is_empty() {
                     true => format!("const size_t* shape{index} = NULL;"),
                     false => {
@@ -305,7 +311,7 @@ impl CBackend {
                 };
                 format!(
                     "
-                        size_t layout{index}[] = {{ {layout_init} }};
+                        {layout_decl}
                         {shape_decl}
                         ViewMut s{index} = alloc_view_mut({}, {}, layout{index}, shape{index});
                     ",

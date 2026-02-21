@@ -201,13 +201,15 @@ fn lower_node(
     args: &mut Vec<(Arg, usize)>,
 ) -> (Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
     fn axis_eq_unordered(a: &Axis, b: &Axis) -> bool {
-        if a.kind != b.kind || a.addrs.len() != b.addrs.len() {
+        if a.kind != b.kind {
             return false;
         }
         let mut a_addrs = a.addrs.clone();
         let mut b_addrs = b.addrs.clone();
         a_addrs.sort_unstable_by_key(|addr| (addr.input_ind, addr.dim_ind));
         b_addrs.sort_unstable_by_key(|addr| (addr.input_ind, addr.dim_ind));
+        a_addrs.dedup_by_key(|addr| (addr.input_ind, addr.dim_ind));
+        b_addrs.dedup_by_key(|addr| (addr.input_ind, addr.dim_ind));
         a_addrs == b_addrs
     }
 
@@ -338,6 +340,16 @@ fn lower_node(
         })
         .collect();
 
+    let canonicalize_local_axis = |axis: &Axis| Axis {
+        addrs: axis
+            .addrs
+            .iter()
+            .map(|addr| child_shape_addr_lists[addr.input_ind][addr.dim_ind])
+            .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(addr))
+            .collect(),
+        kind: axis.kind,
+    };
+
     // semantic layout by default, fused dimensions allocated according to
     // splits to facilitate storage folding
     let physical_shape: Vec<Axis> = match root_ind.is_some() || prunable_axes.is_empty() {
@@ -353,12 +365,16 @@ fn lower_node(
 
                 let has_fused_axis = dim_axes
                     .iter()
-                    .any(|axis| contains_axis(&prunable_axes, axis));
+                    .map(canonicalize_local_axis)
+                    .any(|axis| contains_axis(&prunable_axes, &axis));
 
                 if has_fused_axis {
                     dim_axes
                         .into_iter()
-                        .filter(|axis| !contains_axis(&prunable_axes, axis))
+                        .filter(|axis| {
+                            let axis = canonicalize_local_axis(axis);
+                            !contains_axis(&prunable_axes, &axis)
+                        })
                         .collect::<Vec<_>>()
                 } else {
                     vec![Axis {
@@ -799,10 +815,7 @@ fn build_buffer_shape_exprs(
             }
         })
         .collect();
-    match exprs.is_empty() {
-        true => vec![Expr::Int(1)],
-        false => exprs,
-    }
+    exprs
 }
 
 fn input_shape_expr(addr: &ShapeAddr) -> Expr {
