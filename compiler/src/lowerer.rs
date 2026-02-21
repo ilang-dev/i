@@ -753,7 +753,7 @@ fn get_prunable_axes(
 
             (!addrs.is_empty()).then(|| Axis {
                 addrs,
-                kind: spec.bound,
+                kind: spec.axis.kind,
             })
         })
         .collect()
