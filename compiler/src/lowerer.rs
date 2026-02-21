@@ -307,6 +307,7 @@ fn lower_node(
             addrs: addrs
                 .iter()
                 .flat_map(|addr| shape_addr_lists[addr.dim_ind].clone())
+                .map(|addr| child_shape_addr_lists[addr.input_ind][addr.dim_ind])
                 .map(|addr| shape_addr_preference.get(&addr).copied().unwrap_or(addr))
                 .collect(),
             kind: *kind,
