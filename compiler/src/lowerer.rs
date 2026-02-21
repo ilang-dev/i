@@ -200,6 +200,22 @@ fn lower_node(
     prunable_axes: HashSet<Axis>,
     args: &mut Vec<(Arg, usize)>,
 ) -> (Vec<ShapeAddr>, Vec<Axis>, Expr, Block) {
+    fn axis_eq_unordered(a: &Axis, b: &Axis) -> bool {
+        if a.kind != b.kind || a.addrs.len() != b.addrs.len() {
+            return false;
+        }
+        let mut a_addrs = a.addrs.clone();
+        let mut b_addrs = b.addrs.clone();
+        a_addrs.sort_unstable_by_key(|addr| (addr.input_ind, addr.dim_ind));
+        b_addrs.sort_unstable_by_key(|addr| (addr.input_ind, addr.dim_ind));
+        a_addrs == b_addrs
+    }
+
+    fn contains_axis(set: &HashSet<Axis>, axis: &Axis) -> bool {
+        set.iter()
+            .any(|candidate| axis_eq_unordered(candidate, axis))
+    }
+
     let NodeBody::Interior {
         op,
         shape_addr_lists,
@@ -335,12 +351,14 @@ fn lower_node(
                     .cloned()
                     .collect();
 
-                let has_fused_axis = dim_axes.iter().any(|axis| prunable_axes.contains(axis));
+                let has_fused_axis = dim_axes
+                    .iter()
+                    .any(|axis| contains_axis(&prunable_axes, axis));
 
                 if has_fused_axis {
                     dim_axes
                         .into_iter()
-                        .filter(|axis| !prunable_axes.contains(axis))
+                        .filter(|axis| !contains_axis(&prunable_axes, axis))
                         .collect::<Vec<_>>()
                 } else {
                     vec![Axis {
@@ -506,13 +524,13 @@ fn lower_node(
         loop_specs.iter().map(globalize_loop_specs).collect();
     let loop_specs: Vec<LoopSpec> = globalized_loop_specs
         .iter()
-        .filter(|spec| !prunable_axes.contains(&spec.axis))
+        .filter(|spec| !contains_axis(&prunable_axes, &spec.axis))
         .cloned()
         .collect();
 
     let pruned_prefix_counts: Vec<usize> = std::iter::once(0)
         .chain(globalized_loop_specs.iter().scan(0, |count, spec| {
-            if prunable_axes.contains(&spec.axis) {
+            if contains_axis(&prunable_axes, &spec.axis) {
                 *count += 1;
             }
             Some(*count)
