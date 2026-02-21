@@ -295,7 +295,7 @@ impl CBackend {
                             .map(|dim| Self::render_expr(dim))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("size_t layout{index}[] = {{ {layout_init} }};")
+                        format!("const size_t layout{index}[] = {{ {layout_init} }};")
                     }
                 };
                 let shape_decl = match shape.is_empty() {
@@ -306,7 +306,7 @@ impl CBackend {
                             .map(|dim| Self::render_expr(dim))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("size_t shape{index}[] = {{ {shape_init} }};")
+                        format!("const size_t shape{index}[] = {{ {shape_init} }};")
                     }
                 };
                 format!(
