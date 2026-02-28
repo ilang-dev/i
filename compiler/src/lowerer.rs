@@ -828,6 +828,178 @@ fn input_shape_expr(addr: &ShapeAddr) -> Expr {
     }
 }
 
+fn expr_ident_name(expr: &Expr) -> Option<&str> {
+    if let Expr::Ident(name) = expr {
+        Some(name.as_str())
+    } else {
+        None
+    }
+}
+
+fn collect_bound_idents(block: &Block, out: &mut HashSet<String>) {
+    for statement in &block.statements {
+        match statement {
+            Statement::Declaration { ident, .. } => {
+                if let Some(name) = expr_ident_name(ident) {
+                    out.insert(name.to_string());
+                }
+            }
+            Statement::Loop { index, body, .. } => {
+                if let Some(name) = expr_ident_name(index) {
+                    out.insert(name.to_string());
+                }
+                collect_bound_idents(body, out);
+            }
+            Statement::Function { body, .. } => collect_bound_idents(body, out),
+            _ => (),
+        }
+    }
+}
+
+fn fresh_ident(base: &str, counter: &mut usize, used: &mut HashSet<String>) -> String {
+    loop {
+        let candidate = format!("{base}__{}", *counter);
+        *counter += 1;
+        if !used.contains(&candidate) {
+            used.insert(candidate.clone());
+            return candidate;
+        }
+    }
+}
+
+fn rename_expr(expr: &Expr, env: &HashMap<String, String>) -> Expr {
+    match expr {
+        Expr::Ident(name) => env
+            .get(name)
+            .map(|new_name| Expr::Ident(new_name.clone()))
+            .unwrap_or_else(|| expr.clone()),
+        Expr::Array(type_, exprs) => Expr::Array(
+            type_.clone(),
+            exprs.iter().map(|e| rename_expr(e, env)).collect(),
+        ),
+        Expr::Op { op, inputs } => Expr::Op {
+            op: *op,
+            inputs: inputs.iter().map(|e| rename_expr(e, env)).collect(),
+        },
+        Expr::Indexed { expr, index } => Expr::Indexed {
+            expr: Box::new(rename_expr(expr, env)),
+            index: Box::new(rename_expr(index, env)),
+        },
+        Expr::DataOf(expr) => Expr::DataOf(Box::new(rename_expr(expr, env))),
+        Expr::ShapeOf(expr) => Expr::ShapeOf(Box::new(rename_expr(expr, env))),
+        Expr::LayoutOf(expr) => Expr::LayoutOf(Box::new(rename_expr(expr, env))),
+        Expr::View(expr) => Expr::View(Box::new(rename_expr(expr, env))),
+        Expr::ViewMut(expr) => Expr::ViewMut(Box::new(rename_expr(expr, env))),
+        Expr::ReadOnly(expr) => Expr::ReadOnly(Box::new(rename_expr(expr, env))),
+        _ => expr.clone(),
+    }
+}
+
+fn rename_block_binders(
+    block: &Block,
+    inherited_env: &HashMap<String, String>,
+    used: &mut HashSet<String>,
+    counter: &mut usize,
+) -> Block {
+    let mut env = inherited_env.clone();
+    let mut statements = Vec::with_capacity(block.statements.len());
+
+    for statement in &block.statements {
+        let renamed = match statement {
+            Statement::Assignment { left, right } => Statement::Assignment {
+                left: rename_expr(left, &env),
+                right: rename_expr(right, &env),
+            },
+            Statement::Alloc {
+                index,
+                initial_value,
+                layout,
+                shape,
+            } => Statement::Alloc {
+                index: *index,
+                initial_value: Box::new(rename_expr(initial_value, &env)),
+                layout: layout.iter().map(|e| rename_expr(e, &env)).collect(),
+                shape: shape.iter().map(|e| rename_expr(e, &env)).collect(),
+            },
+            Statement::Declaration {
+                ident,
+                value,
+                type_,
+            } => {
+                let renamed_value = rename_expr(value, &env);
+                let renamed_ident = if let Expr::Ident(name) = ident {
+                    let new_name = if used.contains(name) {
+                        fresh_ident(name, counter, used)
+                    } else {
+                        used.insert(name.clone());
+                        name.clone()
+                    };
+                    env.insert(name.clone(), new_name.clone());
+                    Expr::Ident(new_name)
+                } else {
+                    rename_expr(ident, &env)
+                };
+                Statement::Declaration {
+                    ident: renamed_ident,
+                    value: renamed_value,
+                    type_: type_.clone(),
+                }
+            }
+            Statement::Skip { index, bound } => Statement::Skip {
+                index: rename_expr(index, &env),
+                bound: rename_expr(bound, &env),
+            },
+            Statement::Loop {
+                index,
+                bound,
+                body,
+                parallel,
+            } => {
+                let renamed_bound = rename_expr(bound, &env);
+                let mut body_env = env.clone();
+                let renamed_index = if let Expr::Ident(name) = index {
+                    let new_name = if used.contains(name) {
+                        fresh_ident(name, counter, used)
+                    } else {
+                        used.insert(name.clone());
+                        name.clone()
+                    };
+                    body_env.insert(name.clone(), new_name.clone());
+                    Expr::Ident(new_name)
+                } else {
+                    rename_expr(index, &env)
+                };
+                let renamed_body = rename_block_binders(body, &body_env, used, counter);
+                Statement::Loop {
+                    index: renamed_index,
+                    bound: renamed_bound,
+                    body: renamed_body,
+                    parallel: *parallel,
+                }
+            }
+            Statement::Return { value } => Statement::Return {
+                value: rename_expr(value, &env),
+            },
+            Statement::Function { signature, body } => Statement::Function {
+                signature: signature.clone(),
+                body: rename_block_binders(body, &HashMap::new(), used, counter),
+            },
+            Statement::Call {
+                ident,
+                in_args,
+                out_args,
+            } => Statement::Call {
+                ident: rename_expr(ident, &env),
+                in_args: in_args.iter().map(|e| rename_expr(e, &env)).collect(),
+                out_args: out_args.iter().map(|e| rename_expr(e, &env)).collect(),
+            },
+        };
+        statements.push(renamed);
+    }
+
+    Block { statements }
+}
+
 fn build_library_function(
     args: &Vec<(Arg, usize)>,
     loop_specs: &Vec<LoopSpec>,
@@ -984,9 +1156,27 @@ fn build_library_function(
     let mut loops: Vec<Statement> = loop_specs.iter().map(make_empty_loop).collect();
     for (child_ind, compute_level) in child_fragment_levels.iter().enumerate() {
         if *compute_level > 0 {
+            let mut reserved: HashSet<String> = loops
+                .iter()
+                .take(*compute_level)
+                .filter_map(|statement| {
+                    if let Statement::Loop { index, .. } = statement {
+                        expr_ident_name(index).map(|name| name.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if let Statement::Loop { ref mut body, .. } = loops[*compute_level - 1] {
-                body.statements
-                    .extend(child_fragments[child_ind].statements.clone());
+                collect_bound_idents(body, &mut reserved);
+                let mut counter = 0;
+                let renamed_fragment = rename_block_binders(
+                    &child_fragments[child_ind],
+                    &HashMap::new(),
+                    &mut reserved,
+                    &mut counter,
+                );
+                body.statements.extend(renamed_fragment.statements);
             } else {
                 panic!("Loop `Statement` not of variant `Loop`.")
             }
