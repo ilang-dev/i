@@ -277,6 +277,13 @@ fn lower_node(
         .zip(compute_levels.iter())
         .enumerate()
         .map(|(child_ind, ((node, _), &compute_level))| {
+            let child_prunable_axes = match &node.body {
+                NodeBody::Leaf => HashSet::new(),
+                NodeBody::Interior {
+                    loop_specs: child_loop_specs,
+                    ..
+                } => get_prunable_axes(&loop_specs, compute_level, child_ind, child_loop_specs),
+            };
             lower_node(
                 &node,
                 None,
@@ -285,7 +292,7 @@ fn lower_node(
                 exec_block,
                 node_to_leaf_ind,
                 shape_addr_preference,
-                get_prunable_axes(&loop_specs, compute_level, child_ind),
+                child_prunable_axes,
                 args,
             )
         })
@@ -786,8 +793,9 @@ fn get_prunable_axes(
     loop_specs: &Vec<LoopSpec>,
     compute_level: usize,
     child_ind: usize,
+    child_loop_specs: &Vec<LoopSpec>,
 ) -> HashSet<Axis> {
-    loop_specs
+    let parent_axes: Vec<Axis> = loop_specs
         .iter()
         .take(compute_level)
         .filter_map(|spec| {
@@ -804,7 +812,24 @@ fn get_prunable_axes(
                 kind: spec.axis.kind,
             })
         })
-        .collect()
+        .collect();
+
+    let mut prunable_axes = HashSet::new();
+    for (child_spec, parent_axis) in child_loop_specs.iter().zip(parent_axes.iter()) {
+        let Some(output_dim) = child_spec.output_dim else {
+            break;
+        };
+        let matches = child_spec.axis.kind == parent_axis.kind
+            && parent_axis
+                .addrs
+                .iter()
+                .any(|addr| addr.dim_ind == output_dim);
+        if !matches {
+            break;
+        }
+        prunable_axes.insert(parent_axis.clone());
+    }
+    prunable_axes
 }
 
 /// `Expr`s for the dims of the buffer accounting for splitting
