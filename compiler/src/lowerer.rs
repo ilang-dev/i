@@ -680,12 +680,25 @@ fn lower_node(
     }
 
     let op_statement = Statement::Assignment {
-        left: access_expr,
+        left: access_expr.clone(),
         right: Expr::Op {
             op: *op,
             inputs: child_access_exprs,
         },
     };
+
+    let init_statement = loop_specs
+        .iter()
+        .any(|spec| spec.output_dim.is_none())
+        .then(|| Statement::Assignment {
+            left: access_expr.clone(),
+            right: Expr::Scalar(match op {
+                '>' => f32::NEG_INFINITY,
+                '<' => f32::INFINITY,
+                '*' => 1.,
+                _ => 0.,
+            }),
+        });
 
     // create library function
     let function_fragment = build_library_function(
@@ -693,6 +706,7 @@ fn lower_node(
         &loop_specs,
         &child_fragments,
         &adjusted_compute_levels,
+        init_statement.as_ref(),
         &op_statement,
     );
 
@@ -844,6 +858,7 @@ fn collect_bound_idents(block: &Block, out: &mut HashSet<String>) {
                     out.insert(name.to_string());
                 }
             }
+            Statement::IfZero { body, .. } => collect_bound_idents(body, out),
             Statement::Loop { index, body, .. } => {
                 if let Some(name) = expr_ident_name(index) {
                     out.insert(name.to_string());
@@ -909,6 +924,10 @@ fn rename_block_binders(
             Statement::Assignment { left, right } => Statement::Assignment {
                 left: rename_expr(left, &env),
                 right: rename_expr(right, &env),
+            },
+            Statement::IfZero { indices, body } => Statement::IfZero {
+                indices: indices.iter().map(|e| rename_expr(e, &env)).collect(),
+                body: rename_block_binders(body, &env, used, counter),
             },
             Statement::Alloc {
                 index,
@@ -1005,6 +1024,7 @@ fn build_library_function(
     loop_specs: &Vec<LoopSpec>,
     child_fragments: &Vec<Block>,
     child_fragment_levels: &Vec<usize>,
+    init_statement: Option<&Statement>,
     op_statement: &Statement,
 ) -> Block {
     // value: (arg, offset, dim_ind)
@@ -1182,6 +1202,47 @@ fn build_library_function(
             }
         } else if !child_fragments[child_ind].statements.is_empty() {
             top_level_fragments.extend(child_fragments[child_ind].statements.clone());
+        }
+    }
+
+    if let Some(init_statement) = init_statement {
+        let init_level = loop_specs
+            .iter()
+            .rposition(|spec| spec.output_dim.is_some())
+            .map(|ind| ind + 1)
+            .unwrap_or(0);
+        let outer_reduction_indices: Vec<Expr> = loop_specs
+            .iter()
+            .take(init_level)
+            .filter(|spec| spec.output_dim.is_none())
+            .map(|spec| {
+                let addr = spec.axis.addrs[0];
+                let base_index_str = format!("i_{}_{}", addr.input_ind, addr.dim_ind);
+                Expr::Ident(match spec.axis.kind {
+                    Bound::Base => base_index_str,
+                    Bound::Split { ind, .. } => format!("{base_index_str}_{ind}"),
+                })
+            })
+            .collect();
+        let init_statement = if outer_reduction_indices.is_empty() {
+            init_statement.clone()
+        } else {
+            Statement::IfZero {
+                indices: outer_reduction_indices,
+                body: Block {
+                    statements: vec![init_statement.clone()],
+                },
+            }
+        };
+
+        if init_level > 0 {
+            if let Statement::Loop { ref mut body, .. } = loops[init_level - 1] {
+                body.statements.push(init_statement);
+            } else {
+                panic!("Loop `Statement` not of variant `Loop`.")
+            }
+        } else {
+            top_level_fragments.push(init_statement);
         }
     }
 

@@ -44,6 +44,10 @@ pub enum Statement {
         left: Expr, // Should LValue become it's own enum?
         right: Expr,
     },
+    IfZero {
+        indices: Vec<Expr>,
+        body: Block,
+    },
     Alloc {
         index: usize,
         initial_value: Box<Expr>, // must be of variant `Scalar`

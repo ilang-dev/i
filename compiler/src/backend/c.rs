@@ -281,6 +281,14 @@ impl CBackend {
                     Self::render_expr(right)
                 )
             }
+            Statement::IfZero { indices, body } => {
+                let condition = indices
+                    .iter()
+                    .map(|index| format!("({}) == (0)", Self::render_expr(index)))
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                format!("if ({condition}) {{\n{}\n}}", Self::render_block(body))
+            }
             Statement::Alloc {
                 index,
                 initial_value,
