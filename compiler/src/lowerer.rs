@@ -1449,3 +1449,117 @@ fn create_affine_index(indices: &Vec<Expr>, bounds: &Vec<Expr>) -> Expr {
     }
     sum_expr.unwrap_or(Expr::Int(0)) // Return 0 if no indices are provided
 }
+
+#[cfg(test)]
+mod tests {
+    use super::lower;
+    use crate::{
+        backend::{c::CBackend, Render},
+        graph::Graph,
+        parser::Parser,
+    };
+
+    fn i(src: &str) -> Graph {
+        let expr = Parser::new(src).unwrap().parse().unwrap();
+        Graph::from_expr(&expr)
+    }
+
+    fn render_lowered(src: &str) -> String {
+        render_lowered_graph(&i(src))
+    }
+
+    fn render_lowered_graph(graph: &Graph) -> String {
+        CBackend::render(&lower(graph))
+    }
+
+    fn assert_order(haystack: &str, first: &str, second: &str) {
+        let first_pos = haystack
+            .find(first)
+            .unwrap_or_else(|| panic!("missing first pattern: {first}"));
+        let second_pos = haystack
+            .find(second)
+            .unwrap_or_else(|| panic!("missing second pattern: {second}"));
+        assert!(
+            first_pos < second_pos,
+            "expected `{first}` before `{second}`"
+        );
+    }
+
+    #[test]
+    fn non_reduction_does_not_emit_reduction_init() {
+        let rendered = render_lowered("ij~ij");
+        assert!(!rendered.contains("= 0.0f;"));
+        assert!(!rendered.contains("== (0)) {"));
+    }
+
+    #[test]
+    fn reduction_init_is_unconditional_when_output_loops_are_outermost() {
+        let rendered = render_lowered("+ijk~ij|i:2,k:2|iji'kk'");
+        let init = "outputs[0].data[((i_0_0 * outputs[0].layout[1]) + i_0_1)] = 0.0f;";
+        let first_reduction_loop = "for (size_t i_0_2_0 = 0;";
+
+        assert!(rendered.contains(init));
+        assert!(!rendered.contains("if ((i_0_2_0) == (0)) {"));
+        assert_order(&rendered, init, first_reduction_loop);
+    }
+
+    #[test]
+    fn reduction_init_is_guarded_when_outer_reduction_loops_exist() {
+        let rendered = render_lowered("+ijk~ij|i:2,k:2|ikji'k'");
+        let guard = "if ((i_0_2_0) == (0)) {";
+        let init = "outputs[0].data[((i_0_0 * outputs[0].layout[1]) + i_0_1)] = 0.0f;";
+        let inner_reduction_loop = "for (size_t i_0_2_1 = 0;";
+
+        assert!(rendered.contains(guard));
+        assert!(rendered.contains(init));
+        assert_order(&rendered, guard, inner_reduction_loop);
+        assert_order(&rendered, init, inner_reduction_loop);
+    }
+
+    #[test]
+    fn multi_axis_reduction_init_guards_on_all_outer_reduction_axes() {
+        let rendered = render_lowered("+ijk~i|i:2,j:2,k:2|jkii'j'k'");
+        let guard = "if ((i_0_1_0) == (0) && (i_0_2_0) == (0)) {";
+        let inner_reduction_loop = "for (size_t i_0_1_1 = 0;";
+        let init = "outputs[0].data[i_0_0] = 0.0f;";
+
+        assert!(rendered.contains(guard));
+        assert!(rendered.contains(init));
+        assert_order(&rendered, guard, inner_reduction_loop);
+        assert_order(&rendered, init, inner_reduction_loop);
+    }
+
+    #[test]
+    fn output_innermost_reduction_init_guards_on_every_outer_reduction_loop() {
+        let rendered = render_lowered("+ijk~i|i:2,j:2,k:2|jkj'k'ii'");
+        let guard =
+            "if ((i_0_1_0) == (0) && (i_0_2_0) == (0) && (i_0_1_1) == (0) && (i_0_2_1) == (0)) {";
+        let init = "outputs[0].data[i_0_0] = 0.0f;";
+        let update =
+            "outputs[0].data[i_0_0] = (outputs[0].data[i_0_0] + inputs[0].data[(((i_0_0 * (inputs[0].layout[1] * inputs[0].layout[2])) + (i_0_1 * inputs[0].layout[2])) + i_0_2)]);";
+
+        assert!(rendered.contains(guard));
+        assert!(rendered.contains(init));
+        assert!(rendered.contains(update));
+        assert_order(&rendered, guard, init);
+        assert_order(&rendered, init, update);
+    }
+
+    #[test]
+    fn fused_child_fragment_is_inserted_before_parent_init_at_same_level() {
+        let rendered = render_lowered_graph(&i("!ij~ij").chain(&i("+ij~i||ji(0)")));
+        let child_fragment =
+            "> 0.0f ? (inputs[0].data[((i_0_0 * inputs[0].layout[1]) + i_0_1)]) : 0.0f";
+        let guard = "if ((i_0_1) == (0)) {";
+        let init = "outputs[1].data[i_0_0] = 0.0f;";
+        let update = "outputs[1].data[i_0_0] = (outputs[1].data[i_0_0] + outputs[0].data[0]);";
+
+        assert!(rendered.contains(child_fragment));
+        assert!(rendered.contains(guard));
+        assert!(rendered.contains(init));
+        assert!(rendered.contains(update));
+        assert_order(&rendered, child_fragment, guard);
+        assert_order(&rendered, guard, init);
+        assert_order(&rendered, init, update);
+    }
+}
