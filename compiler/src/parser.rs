@@ -122,40 +122,28 @@ impl<'a> Parser<'a> {
         let mut compute_level = 0usize;
 
         while let Some(c) = chars.next() {
-            if c.is_alphabetic() {
-                let mut apostrophes = 0usize;
-                while matches!(chars.peek(), Some('\'')) {
-                    chars.next();
-                    apostrophes += 1;
-                }
-                loop_order.push((c, apostrophes));
+            if !c.is_alphabetic() {
+                return Err(ParseError::InvalidToken {
+                    expected: "Alphabetic loop index".to_string(),
+                });
             }
 
-            if matches!(chars.peek(), Some('(')) {
+            let mut apostrophes = 0usize;
+            while matches!(chars.peek(), Some('\'')) {
                 chars.next();
-                loop {
-                    match chars.peek().copied() {
-                        Some(')') => {
-                            chars.next();
-                            break;
-                        }
-                        Some(',') => {
-                            chars.next();
-                        }
-                        Some(d) if d.is_ascii_digit() => {
-                            let ind = chars.next().unwrap().to_digit(10).unwrap() as usize;
-                            if compute_levels.len() <= ind {
-                                compute_levels.resize(ind + 1, 0);
-                            }
-                            compute_levels[ind] = compute_level + 1;
-                        }
-                        _ => {
-                            return Err(ParseError::InvalidToken {
-                                expected: "Digit, comma, or ')'".to_string(),
-                            })
-                        }
-                    }
+                apostrophes += 1;
+            }
+            loop_order.push((c, apostrophes));
+
+            while let Some(d) = chars.peek().copied() {
+                if !d.is_ascii_digit() {
+                    break;
                 }
+                let ind = chars.next().unwrap().to_digit(10).unwrap() as usize;
+                if compute_levels.len() <= ind {
+                    compute_levels.resize(ind + 1, 0);
+                }
+                compute_levels[ind] = compute_level + 1;
             }
 
             compute_level += 1;
