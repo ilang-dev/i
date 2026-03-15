@@ -1,11 +1,6 @@
 use super::common::{ExprId, LoopVar, Op, Pattern, Split};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Program {
-    pub root: Component,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
     Expr(Expr),
     Compose(Box<Component>, Box<Component>),
