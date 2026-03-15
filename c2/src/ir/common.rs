@@ -14,25 +14,54 @@ pub enum Extent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Shape(pub Vec<Extent>);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Scalar {
+    Float,
+    Int,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TensorType {
+    pub scalar: Scalar,
+    pub shape: Shape,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Pattern(pub Vec<Axis>);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Split {
+    pub axis: Axis,
+    pub factors: Vec<Extent>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoopVar {
+    pub axis: Axis,
+    pub part: usize,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Op {
     NoOp,
-    Exp,
-    Log,
-    Sqrt,
-    Abs,
-    Relu,
-    Neg,
-    Recip,
-    Mul,
     Add,
-    Max,
-    Min,
+    Mul,
     Div,
     Sub,
+    Max,
+    Min,
+    Pow,
+    Log,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    Eq,
+    Ne,
+    And,
+    Or,
+    Xor,
+    Not,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

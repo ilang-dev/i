@@ -1,21 +1,25 @@
-use super::common::{BufferId, KernelId, Shape};
+use super::common::{BufferId, KernelId, TensorType};
 use super::kernel_loop::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
-    pub buffers: Vec<Buffer>,
+    pub inputs: Vec<TensorType>,
+    pub outputs: Vec<TensorType>,
     pub kernels: Vec<Kernel>,
-    pub entry: Vec<Step>,
+    pub entry: Entry,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Buffer {
-    pub shape: Shape,
+pub struct Entry {
+    pub steps: Vec<Step>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
-    Alloc(BufferId),
+    Alloc {
+        buffer: BufferId,
+        ty: TensorType,
+    },
     Call {
         kernel: KernelId,
         args: Vec<BufferId>,

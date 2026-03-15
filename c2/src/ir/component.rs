@@ -1,8 +1,8 @@
-use super::common::{Extent, Op, Pattern};
+use super::common::{LoopVar, Op, Pattern, Split};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
-    pub outputs: Vec<Component>,
+    pub root: Component,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,24 +26,6 @@ pub struct Expr {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Schedule {
     pub splits: Vec<Split>,
-    pub order: Vec<Loop>,
-    pub compute_at: Vec<ComputeAt>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Split {
-    pub axis: char,
-    pub factors: Vec<Extent>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Loop {
-    pub axis: char,
-    pub part: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComputeAt {
-    pub input: usize,
-    pub at: Option<Loop>,
+    pub order: Vec<LoopVar>,
+    pub compute_at: Vec<Option<LoopVar>>,
 }
