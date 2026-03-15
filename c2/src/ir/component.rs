@@ -1,4 +1,4 @@
-use super::common::{LoopVar, Op, Pattern, Split};
+use super::common::{ExprId, LoopVar, Op, Pattern, Split};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
@@ -17,6 +17,7 @@ pub enum Component {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expr {
+    pub id: ExprId,
     pub op: Op,
     pub inputs: Vec<Pattern>,
     pub output: Pattern,

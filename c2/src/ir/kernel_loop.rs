@@ -1,4 +1,4 @@
-use super::common::{BufferId, LinearExpr, LoopId, Op, TensorType};
+use super::common::{BufferId, LoopId, Op, StageId, TensorType};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Kernel {
@@ -46,6 +46,7 @@ pub struct Loop {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Action {
+    pub stage: StageId,
     pub kind: ActionKind,
     pub op: Op,
     pub inputs: Vec<Use>,
@@ -63,4 +64,16 @@ pub enum ActionKind {
 pub struct Use {
     pub buffer: BufferId,
     pub index: Vec<LinearExpr>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LinearExpr {
+    pub offset: usize,
+    pub terms: Vec<Term>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Term {
+    pub loop_id: LoopId,
+    pub scale: usize,
 }

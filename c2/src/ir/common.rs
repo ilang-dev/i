@@ -1,4 +1,5 @@
 pub type Axis = char;
+pub type ExprId = usize;
 pub type ValueId = usize;
 pub type StageId = usize;
 pub type KernelId = usize;
@@ -43,7 +44,6 @@ pub struct LoopVar {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Op {
-    NoOp,
     Add,
     Mul,
     Div,
@@ -62,16 +62,4 @@ pub enum Op {
     Or,
     Xor,
     Not,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct LinearExpr {
-    pub offset: usize,
-    pub terms: Vec<Term>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Term {
-    pub loop_id: LoopId,
-    pub scale: usize,
 }
