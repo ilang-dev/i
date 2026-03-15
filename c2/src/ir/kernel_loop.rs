@@ -1,18 +1,15 @@
-use super::common::{BufferId, IndexExpr, KernelId, LoopId, StageId, TensorType};
-use super::component::Operator;
+use super::common::{BufferId, KernelId, LinearExpr, LoopId, Op, StageId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Kernel {
     pub id: KernelId,
     pub params: Vec<BufferId>,
     pub buffers: Vec<Buffer>,
-    pub body: Region,
+    pub body: Block,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Buffer {
-    pub id: BufferId,
-    pub ty: TensorType,
     pub kind: BufferKind,
 }
 
@@ -24,48 +21,45 @@ pub enum BufferKind {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Region {
+pub struct Block {
     pub steps: Vec<Step>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
-    Alloc(Alloc),
+    Alloc {
+        buffer: BufferId,
+        shape: Vec<LinearExpr>,
+    },
     Loop(Loop),
-    Execute(StageAction),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Alloc {
-    pub buffer: BufferId,
-    pub shape: Vec<IndexExpr>,
+    Stage(Stage),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Loop {
     pub id: LoopId,
-    pub extent: IndexExpr,
-    pub body: Region,
+    pub extent: LinearExpr,
+    pub body: Block,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StageAction {
+pub struct Stage {
     pub stage: StageId,
-    pub kind: ActionKind,
-    pub op: Operator,
-    pub inputs: Vec<BufferUse>,
-    pub output: BufferUse,
+    pub kind: StageKind,
+    pub op: Op,
+    pub inputs: Vec<Use>,
+    pub output: Use,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActionKind {
+pub enum StageKind {
     Compute,
     Init,
     Update,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BufferUse {
+pub struct Use {
     pub buffer: BufferId,
-    pub access: Vec<IndexExpr>,
+    pub index: Vec<LinearExpr>,
 }

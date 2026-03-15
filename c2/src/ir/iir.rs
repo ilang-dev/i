@@ -1,29 +1,24 @@
-use super::common::{BufferId, KernelId};
-use super::kernel_loop::{Alloc, Buffer, Kernel};
+use super::common::{BufferId, KernelId, Shape};
+use super::kernel_loop::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
     pub buffers: Vec<Buffer>,
     pub kernels: Vec<Kernel>,
-    pub entry: Entry,
+    pub entry: Vec<Step>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Entry {
-    pub inputs: Vec<BufferId>,
-    pub outputs: Vec<BufferId>,
-    pub steps: Vec<Step>,
+pub struct Buffer {
+    pub shape: Shape,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
-    Alloc(Alloc),
-    Call(Call),
+    Alloc(BufferId),
+    Call {
+        kernel: KernelId,
+        args: Vec<BufferId>,
+    },
     Free(BufferId),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Call {
-    pub kernel: KernelId,
-    pub args: Vec<BufferId>,
 }

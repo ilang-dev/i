@@ -1,4 +1,4 @@
-use super::common::{Extent, Symbol};
+use super::common::{Extent, Op, Pattern};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
@@ -8,77 +8,42 @@ pub struct Program {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
     Expr(Expr),
-    Compose {
-        left: Box<Component>,
-        right: Box<Component>,
-    },
-    Chain {
-        left: Box<Component>,
-        right: Box<Component>,
-    },
-    Fanout {
-        left: Box<Component>,
-        right: Box<Component>,
-    },
-    Pair {
-        left: Box<Component>,
-        right: Box<Component>,
-    },
+    Compose(Box<Component>, Box<Component>),
+    Chain(Box<Component>, Box<Component>),
+    Fanout(Box<Component>, Box<Component>),
+    Pair(Box<Component>, Box<Component>),
     Swap(Box<Component>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expr {
-    pub op: Operator,
+    pub op: Op,
     pub inputs: Vec<Pattern>,
     pub output: Pattern,
-    pub schedule: ScheduleSpec,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Pattern {
-    pub axes: Vec<Symbol>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Operator {
-    NoOp,
-    Exp,
-    Log,
-    Sqrt,
-    Abs,
-    Relu,
-    Neg,
-    Recip,
-    Mul,
-    Add,
-    Max,
-    Min,
-    Div,
-    Sub,
+    pub schedule: Schedule,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ScheduleSpec {
-    pub splits: Vec<SplitSpec>,
-    pub order: Vec<LoopVar>,
-    pub compute_at: Vec<ComputeAtSpec>,
+pub struct Schedule {
+    pub splits: Vec<Split>,
+    pub order: Vec<Loop>,
+    pub compute_at: Vec<ComputeAt>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SplitSpec {
-    pub axis: Symbol,
+pub struct Split {
+    pub axis: char,
     pub factors: Vec<Extent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LoopVar {
-    pub axis: Symbol,
-    pub part: u16,
+pub struct Loop {
+    pub axis: char,
+    pub part: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComputeAtSpec {
+pub struct ComputeAt {
     pub input: usize,
-    pub at: Option<LoopVar>,
+    pub at: Option<Loop>,
 }

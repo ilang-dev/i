@@ -1,44 +1,35 @@
-use super::common::{AffineMap, Axis, AxisId, StageId, TensorType, ValueId};
-use super::component::Operator;
+use super::common::{Extent, Op, Pattern, Shape, ValueId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Graph {
-    pub inputs: Vec<Value>,
+    pub values: Vec<Value>,
+    pub inputs: Vec<ValueId>,
     pub stages: Vec<Stage>,
     pub outputs: Vec<ValueId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Value {
-    pub id: ValueId,
-    pub ty: TensorType,
-    pub kind: ValueKind,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ValueKind {
-    Input { index: usize },
-    StageResult { stage: StageId },
+    pub shape: Shape,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stage {
-    pub id: StageId,
-    pub op: Operator,
+    pub op: Op,
     pub inputs: Vec<Use>,
     pub output: ValueId,
-    pub domain: Domain,
-    pub output_map: AffineMap,
-    pub reduction: Vec<AxisId>,
+    pub axes: Vec<Axis>,
+    pub output_pattern: Pattern,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Use {
     pub value: ValueId,
-    pub access: AffineMap,
+    pub pattern: Pattern,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Domain {
-    pub axes: Vec<Axis>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Axis {
+    pub name: char,
+    pub extent: Extent,
 }
