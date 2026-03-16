@@ -1,21 +1,11 @@
-use super::common::{BufferId, LoopId, Op, StageId, TensorType};
+use super::common::{LoopId, Op, StageId};
+
+pub type ReadSlot = usize;
+pub type WriteSlot = usize;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Kernel {
-    pub params: Vec<Param>,
     pub body: Block,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Param {
-    pub kind: ParamKind,
-    pub ty: TensorType,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ParamKind {
-    Input,
-    Output,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -25,16 +15,8 @@ pub struct Block {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
-    Alloc(Alloc),
     Loop(Loop),
-    Stage(Action),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Alloc {
-    pub buffer: BufferId,
-    pub ty: TensorType,
-    pub shape: Vec<LinearExpr>,
+    Action(Action),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,8 +31,8 @@ pub struct Action {
     pub stage: StageId,
     pub kind: ActionKind,
     pub op: Op,
-    pub inputs: Vec<Use>,
-    pub output: Use,
+    pub inputs: Vec<Access>,
+    pub output: Access,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,9 +43,15 @@ pub enum ActionKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Use {
-    pub buffer: BufferId,
+pub struct Access {
+    pub buffer: Buffer,
     pub index: Vec<LinearExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Buffer {
+    Read(ReadSlot),
+    Write(WriteSlot),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

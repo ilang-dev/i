@@ -1,5 +1,5 @@
 use super::common::{BufferId, KernelId, TensorType};
-use super::kernel_loop::Kernel;
+use super::loop_ir::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
@@ -22,7 +22,8 @@ pub enum Step {
     },
     Call {
         kernel: KernelId,
-        args: Vec<BufferId>,
+        reads: Vec<BufferId>,
+        writes: Vec<BufferId>,
     },
     Free(BufferId),
 }
