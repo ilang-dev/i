@@ -1,4 +1,4 @@
-use super::common::{ExprId, Extent, Op, Pattern, TensorType, ValueId};
+use super::common::{ExprId, Extent, Op, TensorType, ValueId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Graph {
@@ -13,17 +13,19 @@ pub struct Stage {
     pub op: Op,
     pub inputs: Vec<Use>,
     pub axes: Vec<Axis>,
-    pub output: Pattern,
+    pub output: Index,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Use {
     pub value: ValueId,
-    pub pattern: Pattern,
+    pub index: Index,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Axis {
-    pub name: char,
     pub extent: Extent,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Index(pub Vec<usize>);

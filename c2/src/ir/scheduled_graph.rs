@@ -1,4 +1,4 @@
-use super::common::{LoopVar, Split, StageId};
+use super::common::{AxisRef, Split, StageId};
 use super::semantic_graph;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,7 +11,7 @@ pub struct Graph {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StageSchedule {
     pub splits: Vec<Split>,
-    pub order: Vec<LoopVar>,
+    pub order: Vec<AxisRef>,
     pub compute_at: Site,
     pub store_at: Option<Site>,
 }
@@ -19,5 +19,5 @@ pub struct StageSchedule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Site {
     Root,
-    At(StageId, LoopVar),
+    At(StageId, AxisRef),
 }

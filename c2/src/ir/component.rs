@@ -1,4 +1,4 @@
-use super::common::{ExprId, LoopVar, Op, Pattern, Split};
+use super::common::{AxisRef, ExprId, Op, Pattern, Split};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
@@ -22,6 +22,6 @@ pub struct Expr {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Schedule {
     pub splits: Vec<Split>,
-    pub order: Vec<LoopVar>,
-    pub compute_at: Vec<Option<LoopVar>>,
+    pub order: Vec<AxisRef>,
+    pub compute_at: Vec<Option<AxisRef>>,
 }

@@ -37,7 +37,7 @@ pub struct Split {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LoopVar {
+pub struct AxisRef {
     pub axis: Axis,
     pub part: usize,
 }
