@@ -1,150 +1,194 @@
 # IR Levels
 
-The compiler pipeline should be organized into five real levels, with one hard
-rule: each level should answer one new class of questions and forbid itself
-from answering the next one early.
+The compiler pipeline should be organized into five real levels. Each level
+should answer one new class of questions and refuse to answer the next one
+early.
 
-The main design principle is this: do not let the first real graph IR mix
-algorithm semantics with schedule semantics. "What is computed" and "when/where
-it is computed" should remain separate until the compiler is forced to join
-them.
+The main design rule is:
+
+- semantic meaning and schedule meaning must remain separate until the compiler
+  is forced to join them
+
+That gives the following stack:
+
+- `source`
+- `component`
+- `semantic graph`
+- `scheduled graph`
+- `loop IR`
+- `iIR`
 
 ## 1. Component IR
 
 This is the parsed user program in its native form: `i` expressions plus
-combinators. Nodes are still expression instances and combinator applications.
-This level preserves source structure.
+combinators. It is still source-shaped.
+
+Contents:
+- `Component`
+- source `Expr`
+- source patterns
+- source schedule syntax
 
 Strong invariants:
 - The program is syntactically valid.
 - Combinator arities are resolved.
 - User-written schedule syntax is parsed, but not yet trusted.
-- No graph rewrites have happened yet.
-- Source names and source order are preserved for diagnostics.
+- Source structure is preserved.
+- Each source `i` expression has a stable identity.
 
-This level is mostly front-end machinery. It should not be an optimization
-level.
+This level is front-end structure, not semantics yet.
 
 ## 2. Semantic Graph IR
 
-This is the first serious IR. Combinators are gone. What remains is a pure DAG
-of semantic stages. Each stage says: inputs, output value, iteration domain,
-access/indexing maps, reduction axes if any, and result type/shape.
+This is the first serious IR. Combinators are gone. What remains is a pure
+dataflow graph of semantic stages.
+
+Each stage corresponds to exactly one source `i` expression.
+
+Each stage says:
+- which source expression it came from
+- which op it performs
+- which values it reads
+- what its local iteration axes are
+- how each input is indexed by those axes
+- how its output is indexed by those axes
+
+Important point:
+- this level is no longer written in source-pattern syntax
+- indexing is explicit and stage-local
+- axis chars do not survive as semantic indexing structure
 
 Strong invariants:
-- The graph is purely declarative: no loop order, no fusion, no placement.
-- Every stage has explicit domain semantics.
+- The graph is purely declarative: no split, no reorder, no fusion, no
+  placement.
+- Every stage has explicit local iteration axes.
 - Every use-def edge is explicit.
-- Broadcasting and reduction behavior are explicit, not implicit in string
-  syntax.
-- Shape, rank, and type are consistent.
+- Every input access and output access is explicit.
+- Reduction axes are derivable as stage axes that do not appear in the output
+  index.
+- Result type is derivable from the op.
 - Equivalent source programs with different combinator spellings lower to the
-  same or nearly the same form.
+  same semantic graph.
 
-This is where the math lives. If one IR deserves the strongest protection, it
-is this one.
+This is the protected mathematical core of the compiler.
 
 ## 3. Scheduled Graph IR
 
-This is still a graph of semantic stages, but now schedule decisions are
-attached to stages and stage relationships. This is where split, reorder,
-compute-at, fusion, and storage-folding intent live.
-
-Strong invariants:
-- Semantic meaning is unchanged from Semantic Graph IR.
-- Every schedule directive refers to canonical stage ids and canonical axes.
-- Schedule legality is already checked.
-- Fusion is represented as a relation or grouping over stages, not yet as
-  emitted loops.
-- Storage intent is explicit, but concrete buffers do not yet need final
-  identities.
-
-This level should remain declarative. It answers "what execution structure is
-intended?" but not yet "what exact imperative program gets emitted?"
-
-## 4. Kernel Loop IR
-
-This is where the representation stops being graph-first and becomes a
-tree/region model. A kernel body is not naturally a graph. It is a nested loop
-tree with stage actions inside regions.
-
-This is the right home for the previously fuzzy "loop level". It should be a
-loop tree, not a flat graph.
+This is still a whole-program graph of semantic stages, but now the schedule is
+attached in canonical form.
 
 Contents:
-- Explicit loop nests.
-- Explicit stage placement.
-- Explicit init/update actions for reductions.
-- Explicit allocations and buffer views.
-- Exact lifetimes and storage regions.
-- Exact read/write order inside a kernel.
+- the semantic graph
+- one schedule per stage
+- fusion groups
+
+Each stage schedule says:
+- how its axes are split
+- in what order those split axes appear
+- where it computes
+- where it stores, if materialized
 
 Strong invariants:
-- Each kernel is a closed scheduled subgraph.
-- Every stage instance has a unique placement in the loop tree.
-- Every reduction has explicit init and update actions.
-- Every temporary has a concrete allocation site and lifetime region.
-- Every read is dominated by the writes it depends on.
+- Semantic meaning is unchanged from semantic graph IR.
+- Schedule legality has already been checked.
+- Schedule refers to canonical stage identities.
+- Fusion is represented as a grouping over stages, not yet as emitted loops.
+- This is still declarative. It says what execution structure is intended, not
+  yet the exact imperative body.
+
+There is no separate public "resolved" IR. The step from component schedule
+syntax to canonical schedule attachment is part of constructing scheduled graph
+IR.
+
+## 4. Loop IR
+
+This is where the representation stops being graph-first and becomes a
+structured executable body.
+
+Loop IR does not represent a whole program. It represents one kernel body.
+
+Contents:
+- nested loops
+- stage actions
+- explicit read/write accesses
+- explicit loop-index expressions
+
+A loop-IR kernel sees only:
+- read-only slots
+- writable slots
+
+It does not know whether a writable slot is a final output or a temporary.
+That distinction belongs to whole-program orchestration, not to the kernel
+body.
+
+Strong invariants:
+- Each loop-IR kernel corresponds to one scheduled kernel body.
+- Every semantic stage instance has a unique placement in the loop tree.
+- Every reduction has explicit `init` and `update` actions.
+- Read and write order is explicit.
 - No unresolved fusion or compute-at questions remain.
+- Buffer accesses are explicit in loop space.
 
-This is the first level where allocation truly belongs, because allocation is a
-lifetime question, and lifetime only becomes unambiguous once placement is
-fixed.
+This is the level of imperative execution, not of program ownership.
 
-## 5. iIR Program
+## 5. iIR
 
-This is the whole program IR, ready for backend rendering. It contains kernel
-definitions plus the host or executive logic that allocates top-level buffers,
-launches or calls kernels, and sequences them.
+This is the whole exported program, ready for backend rendering.
+
+It contains:
+- shape data for `count`, `ranks`, and `shapes`
+- a kernel library, where each kernel body is written in loop IR
+- one `exec` procedure that allocates temporaries, binds buffers to kernel
+  slots, calls kernels, and frees temporaries
+
+This is the first level that fully represents the public generated program
+again.
 
 Strong invariants:
-- The program is fully explicit and executable.
 - Kernel boundaries are fixed.
 - Call sites are fixed.
-- Buffer ABI, argument order, and result plumbing are fixed.
+- Temporary allocation and lifetime are explicit.
+- `count`, `ranks`, and `shapes` are derivable from explicit shape data.
+- `exec` sequencing is explicit.
 - Backends should mostly render, not reason.
 
-Kernel IR and iIR are close, but they should still remain conceptually
-distinct. Kernel IR is one executable kernel body. iIR is the complete program
-made of kernels plus orchestration.
+Important point:
+- shape inference belongs to the semantic side of the compiler
+- schedule does not affect `count`, `ranks`, or `shapes`
+- value execution and shape execution meet again only in `iIR`
 
-## Direct Answers to Open Questions
+## Level Boundaries
 
-The current "graph level" should not include schedule. It should be split into:
-- Semantic Graph IR
-- Scheduled Graph IR
+The right mental model is:
 
-The current "loop level" should not have the same structure as the graph. It
-should be a structured loop tree with regions or statements. Execution is
-nested and ordered; graphs are better for semantics and dependence, not final
-execution structure.
+- `component` represents the source-shaped program
+- `semantic graph` represents the full pure meaning of the program
+- `scheduled graph` represents the full scheduled meaning of the program
+- `loop IR` represents one extracted executable kernel body
+- `iIR` represents the full generated program again
 
-Tensor indexing does not need its own whole level yet. It should remain part of
-semantic stage definitions as access maps. A separate indexing IR only becomes
-worthwhile later if the language grows real affine transforms, gather/scatter,
-layout transforms, or symbolic simplification that deserves dedicated passes.
-
-Allocations belong at Kernel Loop IR, not earlier.
+So not every level has to be a single monolithic whole-program object of the
+same kind. It is normal for a middle level to be a per-kernel body language,
+as long as a later level wraps those bodies back into a whole program.
 
 ## Reduction Philosophy
 
 Reductions should be treated as:
-- One semantic stage in Semantic Graph IR.
-- One scheduled stage in Scheduled Graph IR.
-- Two imperative actions (`init` and `update`) in Kernel Loop IR.
+- one semantic stage in semantic graph IR
+- one scheduled stage in scheduled graph IR
+- two imperative actions (`init` and `update`) in loop IR
 
-That keeps the mathematics clean while making execution unambiguous.
+That keeps the math clean while making execution unambiguous.
 
 ## Minimality Test
 
 A level is justified only if it freezes a new category of decisions:
+
 - Component IR: source structure
 - Semantic Graph IR: mathematical meaning
-- Scheduled Graph IR: legal schedule intent
-- Kernel Loop IR: imperative execution and lifetime
-- iIR Program: whole-program orchestration and backend-ready form
+- Scheduled Graph IR: legal schedule attachment
+- Loop IR: imperative kernel-body execution
+- iIR: whole-program orchestration and exported shape/value interface
 
 If a level cannot be defined by a new frozen decision class, it probably should
 not exist.
-
-This is the current recommended minimal solid stack.
