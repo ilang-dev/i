@@ -1,16 +1,33 @@
-use super::common::{BufferId, KernelId, TensorType};
+use super::common::{BufferId, KernelId, Scalar, TensorType};
 use super::loop_ir::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
-    pub inputs: Vec<TensorType>,
-    pub outputs: Vec<TensorType>,
+    pub shapes: ShapeData,
     pub kernels: Vec<Kernel>,
-    pub entry: Entry,
+    pub exec: Exec,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Entry {
+pub struct ShapeData {
+    pub inputs: Vec<TensorType>,
+    pub outputs: Vec<OutputTensor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputTensor {
+    pub scalar: Scalar,
+    pub shape: Vec<DimExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DimExpr {
+    Const(usize),
+    InputDim { input: usize, dim: usize },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Exec {
     pub steps: Vec<Step>,
 }
 
