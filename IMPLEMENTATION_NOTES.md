@@ -22,10 +22,21 @@ There are also internal helper data structures that are worth having but should
 not become public IR levels. The most important one is a kernel/execution plan
 used to bridge `scheduled_graph` to `loop_ir` and `iir`.
 
+One important frontend quirk:
+
+- combinators are not part of the core `i` expression language
+- the parser should parse one `i` expression
+- graph construction by `compose`, `chain`, `fanout`, `pair`, and `swap`
+  should be implemented by the compiler in a separate `component` module
+- frontends such as Rust or Python should call into that compiler-owned
+  component-building API
+
 ## Global Rules
 
 - Do not change the IR types casually. If a pass seems blocked on an IR issue,
   write down the minimal proposed IR change and why it is necessary.
+- Keep `c2/src/ir` clean. IR modules should define types and only the minimal
+  semantics intrinsic to those types, not construction/manipulation logic.
 - Treat `README.md` as the source of truth for operator semantics.
 - Treat `ABI.md` as the source of truth for the exported C interface.
 - Keep all passes deterministic. Stable ordering matters.
@@ -40,6 +51,8 @@ used to bridge `scheduled_graph` to `loop_ir` and `iir`.
 This is only a suggestion, but it gives the agents a consistent target:
 
 - `c2/src/front/parser.rs`
+- `c2/src/component/mod.rs`
+- `c2/src/component/build.rs`
 - `c2/src/check/component.rs`
 - `c2/src/lower/component_to_semantic.rs`
 - `c2/src/lower/semantic_to_shapes.rs`
@@ -56,23 +69,24 @@ This is only a suggestion, but it gives the agents a consistent target:
 Recommended pass order:
 
 1. `source -> component`
-2. `component` validation
-3. `component -> semantic_graph`
-4. `semantic_graph -> iir::ShapeData`
-5. `component + semantic_graph -> scheduled_graph`
-6. `scheduled_graph` validation
-7. `scheduled_graph -> internal kernel/exec plan`
-8. `kernel plan -> loop_ir::Kernel`
-9. `shape data + kernel plan + loop kernels -> iir::Program`
-10. `iir -> C`
-11. end-to-end pipeline + oracle tests
+2. component graph construction
+3. `component` validation
+4. `component -> semantic_graph`
+5. `semantic_graph -> iir::ShapeData`
+6. `component + semantic_graph -> scheduled_graph`
+7. `scheduled_graph` validation
+8. `scheduled_graph -> internal kernel/exec plan`
+9. `kernel plan -> loop_ir::Kernel`
+10. `shape data + kernel plan + loop kernels -> iir::Program`
+11. `iir -> C`
+12. end-to-end pipeline + oracle tests
 
 Parallelism:
 
-- 4 and 5 can proceed after 3.
-- 8 and 9 can be worked on in parallel once 7 is stable enough.
-- 10 can start once 9 is stable.
-- 11 should start early with scaffolding, then keep expanding.
+- 5 and 6 can proceed after 4.
+- 9 and 10 can be worked on in parallel once 8 is stable enough.
+- 11 can start once 10 is stable.
+- 12 should start early with scaffolding, then keep expanding.
 
 ## Internal Planning Data
 
@@ -120,39 +134,53 @@ struct CallPlan {
 Do not treat these exact names as fixed. The point is that kernel planning is a
 real implementation concern, but it is not itself a public IR level.
 
-## Pass 1: Parse Source to Component
+## Validation Placement
+
+Keep validation outside the individual IR and builder modules.
+
+Recommended rule:
+
+- `c2/src/ir/*` defines types only
+- `c2/src/component/*` defines component construction/manipulation semantics
+- `c2/src/check/*` defines validation passes
+- `c2/src/lower/*` defines lowering passes
+
+This keeps the IR directory clean and lets checks evolve without polluting the
+foundational type definitions.
+
+The existing `c2/src/check/component.rs` is consistent with this rule and
+should remain the home of component validation rather than moving validation
+into `component.rs` or `ir/component.rs`.
+
+## Pass 1: Parse Source to Expression
 
 Input -> Output:
 
-- `&str -> component::Component`
+- `&str -> component::Expr`
 
 Responsibilities:
 
-- Tokenize source syntax.
-- Parse `i` expressions and combinators.
-- Parse schedule syntax.
-- Assign `ExprId` in stable left-to-right source order of `i` expressions.
-- Preserve source-shaped structure exactly.
+- Tokenize one `i` expression string.
+- Parse operator, input patterns, output pattern, and schedule syntax.
+- Do not parse combinators here.
+- Preserve the source expression exactly.
 
 ### Test Prompt
 
 ```text
 Read README.md, IR_LEVELS.md, and c2/src/ir/{common,component}.rs.
 
-Build a comprehensive parser test suite for source -> component. Cover:
+Build a comprehensive parser test suite for source expression -> component::Expr.
+Cover:
 - every operator spelling listed in README.md
 - pointwise binary, pointwise unary, and reduction forms
-- combinators: compose, chain, fanout, pair, swap
-- precedence and associativity rules
-- parentheses and nesting
 - schedule syntax: splits, order, compute-at
-- multi-expression programs composed with combinators
 - malformed syntax with clear expected failures
+- realistic expressions such as row-sum, row-divide, and partial matrix product
 
-Add strong assertions on the exact component tree shape and on ExprId
-assignment order. Keep tests table-driven where possible. Add a few larger
-integration-shaped parse tests that resemble realistic programs such as row
-normalization and partial matrix product.
+Add strong assertions on exact parsed op/pattern/schedule structure. Since
+combinators are not part of the source expression grammar, do not include
+compose/chain/fanout/pair/swap in parser tests.
 
 Do not implement the parser in this task unless a tiny helper is required to
 make the tests compile.
@@ -161,24 +189,92 @@ make the tests compile.
 ### Implementation Prompt
 
 ```text
-Implement source -> component parsing in a small, deterministic frontend
-module. Read README.md for the language surface and c2/src/ir/component.rs for
-the target IR.
+Implement source expression -> component::Expr parsing in a small,
+deterministic frontend module. Read README.md for the language surface and
+c2/src/ir/component.rs for the target type.
 
 Requirements:
-- return component::Component
-- assign ExprId in stable left-to-right source order of source i-expressions
-- preserve combinator structure exactly
+- parse exactly one i-expression
+- return component::Expr
 - parse schedule syntax into component::Schedule without trying to resolve it
   semantically yet
 - produce useful syntax errors
+- do not implement combinator parsing
 
 Keep the parser small and explicit. Avoid backtracking-heavy designs if a
 simple recursive-descent parser is enough. Do not validate deep semantics here;
 that belongs in later passes.
 ```
 
-## Pass 2: Validate Component
+## Pass 2: Build Component Graphs
+
+Input -> Output:
+
+- `component::Expr -> component::Component`
+- `(Component, Component) -> Component` for graph combinators
+
+Responsibilities:
+
+- Provide the canonical compiler-owned API for building component graphs.
+- Lift parsed expressions into `Component::Expr`.
+- Implement `compose`, `chain`, `fanout`, `pair`, and `swap`.
+- Keep graph-construction semantics out of frontends.
+- Assign or normalize `ExprId` in a deterministic way consistent with later
+  lowering.
+
+Note:
+
+- this is the layer frontends should call
+- Python or Rust bindings should not reimplement combinator semantics
+- if stable `ExprId` assignment is awkward during piecemeal graph construction,
+  it is acceptable for this module to provide an explicit renumbering/finalize
+  step before lowering
+
+### Test Prompt
+
+```text
+Read c2/src/ir/component.rs and write a comprehensive test suite for the
+compiler-owned component graph construction API.
+
+Cover:
+- lifting one Expr into Component::Expr
+- compose wiring behavior
+- chain wiring behavior
+- fanout input merging behavior
+- pair output concatenation behavior
+- swap behavior
+- mixed-arity combinator cases
+- nested combinator expressions
+- deterministic ExprId behavior or deterministic renumber/finalize behavior,
+  whichever design the implementation adopts
+
+These tests should lock in the compiler's combinator semantics so that all
+frontends can rely on one canonical implementation.
+```
+
+### Implementation Prompt
+
+```text
+Implement the compiler-owned component graph construction module. Keep it out
+of c2/src/ir; the IR should remain type-only.
+
+Recommended home:
+- c2/src/component/mod.rs
+- c2/src/component/build.rs
+
+Requirements:
+- provide functions or methods for lifting Expr into Component
+- implement compose, chain, fanout, pair, and swap
+- make the semantics deterministic and canonical
+- keep frontends thin: they should call this module rather than duplicating
+  combinator logic
+- handle ExprId assignment or explicit renumbering/finalization in a way that
+  is stable and works with later lowering
+
+Keep the implementation simple and explicit. This module is foundational.
+```
+
+## Pass 3: Validate Component
 
 Input -> Output:
 
@@ -225,7 +321,7 @@ Keep the validator deterministic and give precise error messages. Do not
 resolve schedule onto stages here.
 ```
 
-## Pass 3: Lower Component to Semantic Graph
+## Pass 4: Lower Component to Semantic Graph
 
 Input -> Output:
 
@@ -295,7 +391,7 @@ Use small helper functions for:
 Keep the resulting graph pure: no schedule information belongs here.
 ```
 
-## Pass 4: Lower Semantic Graph to Shape Data
+## Pass 5: Lower Semantic Graph to Shape Data
 
 Input -> Output:
 
@@ -346,7 +442,7 @@ extents back to concrete input dimensions, implement that as a private helper.
 Do not add a new public IR level for shape inference.
 ```
 
-## Pass 5: Resolve Schedule into Scheduled Graph
+## Pass 6: Resolve Schedule into Scheduled Graph
 
 Input -> Output:
 
@@ -410,7 +506,7 @@ Keep this pass pure and deterministic. The output is still a declarative
 scheduled graph, not an executable loop tree.
 ```
 
-## Pass 6: Validate Scheduled Graph
+## Pass 7: Validate Scheduled Graph
 
 Input -> Output:
 
@@ -453,7 +549,7 @@ This pass should be strict. Loop lowering should not have to guess what a bad
 scheduled graph means.
 ```
 
-## Pass 7: Build Internal Kernel and Exec Plans
+## Pass 8: Build Internal Kernel and Exec Plans
 
 Input -> Output:
 
@@ -512,7 +608,7 @@ Keep these planning types private. They are implementation glue, not new public
 IR levels.
 ```
 
-## Pass 8: Lower Kernel Plans to Loop IR
+## Pass 9: Lower Kernel Plans to Loop IR
 
 Input -> Output:
 
@@ -562,7 +658,7 @@ something feels like whole-program ownership, it belongs in iIR planning, not
 here.
 ```
 
-## Pass 9: Assemble iIR
+## Pass 10: Assemble iIR
 
 Input -> Output:
 
@@ -608,7 +704,7 @@ Keep iIR simple. It should be almost entirely explicit orchestration and shape
 metadata.
 ```
 
-## Pass 10: Render iIR to C
+## Pass 11: Render iIR to C
 
 Input -> Output:
 
@@ -659,7 +755,7 @@ Keep the backend mostly mechanical. The hard reasoning should already be done
 above iIR.
 ```
 
-## Pass 11: End-to-End Pipeline and Oracle Tests
+## Pass 12: End-to-End Pipeline and Oracle Tests
 
 Input -> Output:
 
