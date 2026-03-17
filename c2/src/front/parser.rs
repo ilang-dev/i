@@ -1,10 +1,15 @@
 use std::fmt;
 
+use crate::component;
 use crate::ir::common::{AxisRef, Extent, Op, Pattern, Split};
 use crate::ir::component::{Component, Expr, Schedule};
 
+pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
+    Parser::new(src).parse_top_level_expr()
+}
+
 pub fn parse_component(src: &str) -> Result<Component, ParseError> {
-    Parser::new(src).parse_component()
+    parse_expr(src).map(component::expr)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,22 +45,22 @@ impl<'a> Parser<'a> {
         Self { src, pos: 0 }
     }
 
-    fn parse_component(mut self) -> Result<Component, ParseError> {
+    fn parse_top_level_expr(mut self) -> Result<Expr, ParseError> {
         self.skip_ws();
         if self.is_eof() {
             return Err(self.error("expected i-expression"));
         }
 
-        let expr = self.parse_expr()?;
+        let expr = self.parse_inner_expr()?;
         self.skip_ws();
         if !self.is_eof() {
             return Err(self.error("unexpected trailing input"));
         }
 
-        Ok(Component::Expr(expr))
+        Ok(expr)
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_inner_expr(&mut self) -> Result<Expr, ParseError> {
         let (op, inputs) = if let Some(op) = self.parse_op_token() {
             let input = self.parse_pattern(false)?;
             (op, vec![input])
@@ -304,10 +309,13 @@ mod tests {
     use crate::ir::component::{Component, Expr, Schedule};
 
     fn parse(src: &str) -> Expr {
-        match parse_component(src).unwrap() {
-            Component::Expr(expr) => expr,
-            _ => unreachable!(),
-        }
+        parse_expr(src).unwrap()
+    }
+
+    #[test]
+    fn parse_component_lifts_expr() {
+        let component = parse_component("+ij~ij").unwrap();
+        assert!(matches!(component, Component::Expr(_)));
     }
 
     #[test]
