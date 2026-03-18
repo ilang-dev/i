@@ -4,6 +4,7 @@
 - The local form of `ExtentSource` answers the source of an axis extent within one atomic `i` expression.
 - The global form of `ExtentSource` answers the source of an axis extent within a full `i` component graph.
 - The local form should be resolved when lowering source/component structure into semantic graph structure.
+- Local `ExtentSource` canonicalization is deterministic: for a stage axis that appears in multiple input patterns, choose the first matching input in expression input order, then the first matching dimension within that input pattern.
 - The global form is what shape-data lowering needs for emitted output shape assignments such as `shapes[i][j] = inputs[n].shape[m]`.
 - A semantic stage axis should carry resolved local extent provenance explicitly rather than requiring later recovery by chasing `Use.value` edges.
 - The global output-shape representation must be able to identify, for each output dimension, the source input tensor index and source input dimension index.
