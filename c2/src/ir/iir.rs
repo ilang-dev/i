@@ -10,7 +10,6 @@ pub struct Program {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShapeData {
-    pub inputs: Vec<TensorType>,
     pub outputs: Vec<OutputTensor>,
 }
 
