@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::common::{ExprId, Extent, Pattern, Scalar, Shape, TensorType, ValueId};
 use crate::ir::component::{Component, Expr};
-use crate::ir::semantic_graph::{Axis, Graph, Index, Stage, Use};
+use crate::ir::semantic_graph::{Axis, Graph, Index, LocalExtentSource, Stage, Use};
 
 pub fn lower_component_to_semantic(component: &Component) -> Graph {
     let mut next_input_key = 0usize;
@@ -228,11 +228,11 @@ fn build_graph(fragment: Fragment) -> Graph {
         stage_values.insert(*expr, fragment.inputs.len() + offset);
     }
 
-    let mut stage_output_extents = BTreeMap::new();
     let stages = stage_order
         .iter()
         .map(|expr| {
             let node = &fragment.stages[expr];
+            let value = stage_values[expr];
             let axis_order = collect_stage_axes(&node.expr);
             let axis_positions = axis_order
                 .iter()
@@ -242,7 +242,7 @@ fn build_graph(fragment: Fragment) -> Graph {
 
             let axis_extents = axis_order
                 .iter()
-                .map(|axis| resolve_axis_extent(*axis, node, &input_extents, &stage_output_extents))
+                .map(|axis| resolve_local_axis_extent(*axis, &node.expr))
                 .collect::<Vec<_>>();
 
             let inputs = node
@@ -256,14 +256,9 @@ fn build_graph(fragment: Fragment) -> Graph {
                 .collect::<Vec<_>>();
 
             let output = pattern_to_index(&node.expr.output, &axis_positions);
-            let result_extents = output
-                .0
-                .iter()
-                .map(|axis| axis_extents[*axis].clone())
-                .collect::<Vec<_>>();
-            stage_output_extents.insert(node.expr.id, result_extents);
 
             Stage {
+                value,
                 expr: node.expr.id,
                 op: node.expr.op,
                 inputs,
@@ -364,42 +359,24 @@ fn collect_stage_axes(expr: &Expr) -> Vec<char> {
     axes
 }
 
-fn resolve_axis_extent(
-    axis: char,
-    node: &StageNode,
-    input_extents: &BTreeMap<InputKey, Vec<Extent>>,
-    stage_output_extents: &BTreeMap<ExprId, Vec<Extent>>,
-) -> Extent {
-    for (input_index, pattern) in node.expr.inputs.iter().enumerate() {
+fn resolve_local_axis_extent(axis: char, expr: &Expr) -> LocalExtentSource {
+    for (input_index, pattern) in expr.inputs.iter().enumerate() {
         for (dim, pattern_axis) in pattern.0.iter().enumerate() {
             if *pattern_axis != axis {
                 continue;
             }
 
-            return resolve_source_extents(
-                &node.inputs[input_index],
-                input_extents,
-                stage_output_extents,
-            )[dim]
-                .clone();
+            return LocalExtentSource::InputDim {
+                input: input_index,
+                dim,
+            };
         }
     }
 
     panic!(
         "axis `{axis}` must appear in one of expr {} input patterns",
-        node.expr.id
+        expr.id
     );
-}
-
-fn resolve_source_extents<'a>(
-    source: &Source,
-    input_extents: &'a BTreeMap<InputKey, Vec<Extent>>,
-    stage_output_extents: &'a BTreeMap<ExprId, Vec<Extent>>,
-) -> &'a [Extent] {
-    match source {
-        Source::Input(input) => input_extents[input].as_slice(),
-        Source::Stage(expr) => stage_output_extents[expr].as_slice(),
-    }
 }
 
 fn pattern_to_index(pattern: &Pattern, axis_positions: &BTreeMap<char, usize>) -> Index {
@@ -429,7 +406,7 @@ mod tests {
     use crate::component;
     use crate::ir::common::{Extent, Op, Pattern, Scalar, Shape, TensorType};
     use crate::ir::component::{Expr, Schedule};
-    use crate::ir::semantic_graph::{Axis, Graph, Index, Stage, Use};
+    use crate::ir::semantic_graph::{Axis, Graph, Index, LocalExtentSource, Stage, Use};
 
     #[test]
     fn lowers_pointwise_broadcast_to_explicit_indices() {
@@ -445,6 +422,7 @@ mod tests {
             Graph {
                 inputs: vec![float_input(0, 2), float_input(1, 1)],
                 stages: vec![Stage {
+                    value: 2,
                     expr: 7,
                     op: Op::Add,
                     inputs: vec![
@@ -457,7 +435,7 @@ mod tests {
                             index: Index(vec![0]),
                         },
                     ],
-                    axes: vec![axis(param("input0_dim0")), axis(param("input0_dim1"))],
+                    axes: vec![axis(local_input_dim(0, 0)), axis(local_input_dim(0, 1))],
                     output: Index(vec![0, 1]),
                 }],
                 outputs: vec![2],
@@ -475,6 +453,7 @@ mod tests {
             Graph {
                 inputs: vec![float_input(0, 3)],
                 stages: vec![Stage {
+                    value: 1,
                     expr: 11,
                     op: Op::Add,
                     inputs: vec![Use {
@@ -482,9 +461,9 @@ mod tests {
                         index: Index(vec![0, 1, 2]),
                     }],
                     axes: vec![
-                        axis(param("input0_dim0")),
-                        axis(param("input0_dim1")),
-                        axis(param("input0_dim2")),
+                        axis(local_input_dim(0, 0)),
+                        axis(local_input_dim(0, 1)),
+                        axis(local_input_dim(0, 2)),
                     ],
                     output: Index(vec![0, 1]),
                 }],
@@ -507,6 +486,7 @@ mod tests {
             Graph {
                 inputs: vec![float_input(0, 2), float_input(1, 2)],
                 stages: vec![Stage {
+                    value: 2,
                     expr: 5,
                     op: Op::Mul,
                     inputs: vec![
@@ -520,9 +500,9 @@ mod tests {
                         },
                     ],
                     axes: vec![
-                        axis(param("input0_dim0")),
-                        axis(param("input1_dim1")),
-                        axis(param("input0_dim1")),
+                        axis(local_input_dim(0, 0)),
+                        axis(local_input_dim(1, 1)),
+                        axis(local_input_dim(0, 1)),
                     ],
                     output: Index(vec![0, 1, 2]),
                 }],
@@ -649,7 +629,11 @@ mod tests {
         }
     }
 
-    fn axis(extent: Extent) -> Axis {
+    fn local_input_dim(input: usize, dim: usize) -> LocalExtentSource {
+        LocalExtentSource::InputDim { input, dim }
+    }
+
+    fn axis(extent: LocalExtentSource) -> Axis {
         Axis { extent }
     }
 

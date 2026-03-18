@@ -1,4 +1,4 @@
-use super::common::{ExprId, Extent, Op, TensorType, ValueId};
+use super::common::{ExprId, Op, TensorType, ValueId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Graph {
@@ -9,6 +9,7 @@ pub struct Graph {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stage {
+    pub value: ValueId,
     pub expr: ExprId,
     pub op: Op,
     pub inputs: Vec<Use>,
@@ -24,8 +25,14 @@ pub struct Use {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Axis {
-    pub extent: Extent,
+    pub extent: LocalExtentSource,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Index(pub Vec<usize>);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalExtentSource {
+    Const(usize),
+    InputDim { input: usize, dim: usize },
+}

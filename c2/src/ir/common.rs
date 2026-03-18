@@ -13,6 +13,12 @@ pub enum Extent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExtentSource {
+    Const(usize),
+    InputDim { input: usize, dim: usize },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Shape(pub Vec<Extent>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,0 +1,13 @@
+- Semantic graph axis extents must not use `Extent::Param(String)`. Stringly-typed symbolic extents are not part of the core IR contract.
+- The canonical semantic concept is `ExtentSource`.
+- `ExtentSource` names where an axis extent comes from. It has two distinct forms in the compiler design and they must not be conflated.
+- The local form of `ExtentSource` answers the source of an axis extent within one atomic `i` expression.
+- The global form of `ExtentSource` answers the source of an axis extent within a full `i` component graph.
+- The local form should be resolved when lowering source/component structure into semantic graph structure.
+- The global form is what shape-data lowering needs for emitted output shape assignments such as `shapes[i][j] = inputs[n].shape[m]`.
+- A semantic stage axis should carry resolved local extent provenance explicitly rather than requiring later recovery by chasing `Use.value` edges.
+- The global output-shape representation must be able to identify, for each output dimension, the source input tensor index and source input dimension index.
+- Compile-time constant extents and input-dimension-derived extents are different concepts and should remain explicit in the IR.
+- Static split factors may continue using compile-time extent representations; tensor shape provenance should use `ExtentSource`.
+- Equivalent extent sources must be unified deterministically during lowering. When multiple equivalent graph input dimensions could serve as the source, the compiler should choose a deterministic canonical representative.
+- Output scalar typing is fixed by operator class: numeric ops produce `Float`; logical and boolean ops produce `Int`.

@@ -1,4 +1,4 @@
-use super::common::{BufferId, KernelId, Scalar, TensorType};
+use super::common::{BufferId, ExtentSource, KernelId, Scalar, TensorType};
 use super::loop_ir::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,13 +17,7 @@ pub struct ShapeData {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutputTensor {
     pub scalar: Scalar,
-    pub shape: Vec<DimExpr>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DimExpr {
-    Const(usize),
-    InputDim { input: usize, dim: usize },
+    pub shape: Vec<ExtentSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
