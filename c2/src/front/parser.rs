@@ -1,8 +1,9 @@
 use std::fmt;
 
 use crate::component;
-use crate::ir::common::{AxisRef, Extent, Op, Pattern, Split};
-use crate::ir::component::{Component, Expr, Schedule};
+use crate::ir::common::Op;
+use crate::ir::component::Component;
+use crate::ir::expr::{Expr, PermutationAtom};
 
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     Parser::new(src).parse_top_level_expr()
@@ -81,22 +82,24 @@ impl<'a> Parser<'a> {
         self.skip_ws();
         self.expect_byte(b'~', "expected `~` between inputs and output")?;
         let output = self.parse_pattern(true)?;
-        let schedule = if self.consume_byte_if(b'|') {
+        let (splits, permutation) = if self.consume_byte_if(b'|') {
             self.parse_schedule()?
         } else {
-            Schedule::default()
+            (Vec::new(), Vec::new())
         };
 
         Ok(Expr {
-            id: 0,
             op,
             inputs,
             output,
-            schedule,
+            splits,
+            permutation,
         })
     }
 
-    fn parse_schedule(&mut self) -> Result<Schedule, ParseError> {
+    fn parse_schedule(
+        &mut self,
+    ) -> Result<(Vec<(char, Vec<usize>)>, Vec<PermutationAtom>), ParseError> {
         let splits = if self.peek_byte() == Some(b'|') {
             Vec::new()
         } else {
@@ -104,16 +107,12 @@ impl<'a> Parser<'a> {
         };
 
         self.expect_byte(b'|', "expected second `|` in schedule")?;
-        let (order, compute_at) = self.parse_order()?;
+        let permutation = self.parse_permutation()?;
 
-        Ok(Schedule {
-            splits,
-            order,
-            compute_at,
-        })
+        Ok((splits, permutation))
     }
 
-    fn parse_splits(&mut self) -> Result<Vec<Split>, ParseError> {
+    fn parse_splits(&mut self) -> Result<Vec<(char, Vec<usize>)>, ParseError> {
         let mut splits = Vec::new();
 
         loop {
@@ -121,12 +120,15 @@ impl<'a> Parser<'a> {
             self.expect_byte(b':', "expected `:` after split axis")?;
 
             let mut factors = Vec::new();
-            factors.push(Extent::Known(self.parse_usize()?));
+            factors.push(self.parse_usize()?);
             while self.consume_byte_if(b':') {
-                factors.push(Extent::Known(self.parse_usize()?));
+                factors.push(self.parse_usize()?);
             }
 
-            splits.push(Split { axis, factors });
+            if splits.iter().any(|(existing, _)| *existing == axis) {
+                return Err(self.error(format!("duplicate split entry for axis {axis}")));
+            }
+            splits.push((axis, factors));
 
             if self.consume_byte_if(b',') {
                 continue;
@@ -137,9 +139,9 @@ impl<'a> Parser<'a> {
         Ok(splits)
     }
 
-    fn parse_order(&mut self) -> Result<(Vec<AxisRef>, Vec<Option<AxisRef>>), ParseError> {
-        let mut order = Vec::new();
-        let mut compute_at = Vec::new();
+    fn parse_permutation(&mut self) -> Result<Vec<PermutationAtom>, ParseError> {
+        let mut permutation = Vec::new();
+        let mut seen_inputs = Vec::new();
 
         loop {
             self.skip_ws();
@@ -147,39 +149,36 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            let axis = self.parse_axis()?;
-            let mut part = 0usize;
-            while self.consume_byte_if(b'\'') {
-                part += 1;
+            if matches!(self.peek_byte(), Some(byte) if byte.is_ascii_lowercase()) {
+                let axis = self.parse_axis()?;
+                let mut part = 0usize;
+                while self.consume_byte_if(b'\'') {
+                    part += 1;
+                }
+
+                permutation.push(PermutationAtom::Axis { axis, part });
+                continue;
             }
 
-            let axis_ref = AxisRef { axis, part };
-            order.push(axis_ref.clone());
-
-            while let Some(byte) = self.peek_byte() {
-                if !byte.is_ascii_digit() {
-                    break;
-                }
-
-                let index = usize::from(byte - b'0');
-                self.pos += 1;
-
-                if compute_at.len() <= index {
-                    compute_at.resize(index + 1, None);
-                }
-                if compute_at[index].is_some() {
+            if matches!(self.peek_byte(), Some(byte) if byte.is_ascii_digit()) {
+                let input = self.parse_usize()?;
+                if seen_inputs.contains(&input) {
                     return Err(
-                        self.error(format!("duplicate compute directive for input {}", index))
+                        self.error(format!("duplicate compute directive for input {input}"))
                     );
                 }
-                compute_at[index] = Some(axis_ref.clone());
+                seen_inputs.push(input);
+                permutation.push(PermutationAtom::Input(input));
+                continue;
             }
+
+            return Err(self.error("expected axis or input index in permutation"));
         }
 
-        Ok((order, compute_at))
+        Ok(permutation)
     }
 
-    fn parse_pattern(&mut self, allow_empty: bool) -> Result<Pattern, ParseError> {
+    fn parse_pattern(&mut self, allow_empty: bool) -> Result<Vec<char>, ParseError> {
         self.skip_ws();
 
         let mut axes = Vec::new();
@@ -195,7 +194,7 @@ impl<'a> Parser<'a> {
             return Err(self.error("expected pattern"));
         }
 
-        Ok(Pattern(axes))
+        Ok(axes)
     }
 
     fn parse_axis(&mut self) -> Result<char, ParseError> {
@@ -305,8 +304,8 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::common::{AxisRef, Extent, Pattern, Split};
-    use crate::ir::component::{Component, Expr, Schedule};
+    use crate::ir::component::Component;
+    use crate::ir::expr::{Expr, PermutationAtom};
 
     fn parse(src: &str) -> Expr {
         parse_expr(src).unwrap()
@@ -343,13 +342,8 @@ mod tests {
         for (src, op) in cases {
             let expr = parse(src);
             assert_eq!(expr.op, op, "{src}");
-            assert_eq!(expr.id, 0, "{src}");
-            assert_eq!(
-                expr.inputs,
-                vec![Pattern(vec!['i']), Pattern(vec!['i'])],
-                "{src}"
-            );
-            assert_eq!(expr.output, Pattern(vec!['i']), "{src}");
+            assert_eq!(expr.inputs, vec![vec!['i'], vec!['i']], "{src}");
+            assert_eq!(expr.output, vec!['i'], "{src}");
         }
     }
 
@@ -379,8 +373,8 @@ mod tests {
         for (src, op) in cases {
             let expr = parse(src);
             assert_eq!(expr.op, op, "{src}");
-            assert_eq!(expr.inputs, vec![Pattern(vec!['i', 'j'])], "{src}");
-            assert_eq!(expr.output, Pattern(vec!['i', 'j']), "{src}");
+            assert_eq!(expr.inputs, vec![vec!['i', 'j']], "{src}");
+            assert_eq!(expr.output, vec!['i', 'j'], "{src}");
         }
     }
 
@@ -388,62 +382,46 @@ mod tests {
     fn parses_reduction_and_scalar_output() {
         let expr = parse("+ijk~ij");
         assert_eq!(expr.op, Op::Add);
-        assert_eq!(expr.inputs, vec![Pattern(vec!['i', 'j', 'k'])]);
-        assert_eq!(expr.output, Pattern(vec!['i', 'j']));
+        assert_eq!(expr.inputs, vec![vec!['i', 'j', 'k']]);
+        assert_eq!(expr.output, vec!['i', 'j']);
 
         let scalar = parse("+ij~");
         assert_eq!(scalar.op, Op::Add);
-        assert_eq!(scalar.inputs, vec![Pattern(vec!['i', 'j'])]);
-        assert_eq!(scalar.output, Pattern(vec![]));
+        assert_eq!(scalar.inputs, vec![vec!['i', 'j']]);
+        assert_eq!(scalar.output, Vec::<char>::new());
     }
 
     #[test]
     fn parses_schedule_with_splits_order_and_compute_directives() {
         let expr = parse("ik*kj~ijk|i:2:4,k:8|ik0i'k'1j");
+        assert_eq!(expr.splits, vec![('i', vec![2, 4]), ('k', vec![8])]);
         assert_eq!(
-            expr.schedule,
-            Schedule {
-                splits: vec![
-                    Split {
-                        axis: 'i',
-                        factors: vec![Extent::Known(2), Extent::Known(4)],
-                    },
-                    Split {
-                        axis: 'k',
-                        factors: vec![Extent::Known(8)],
-                    },
-                ],
-                order: vec![
-                    AxisRef { axis: 'i', part: 0 },
-                    AxisRef { axis: 'k', part: 0 },
-                    AxisRef { axis: 'i', part: 1 },
-                    AxisRef { axis: 'k', part: 1 },
-                    AxisRef { axis: 'j', part: 0 },
-                ],
-                compute_at: vec![
-                    Some(AxisRef { axis: 'k', part: 0 }),
-                    Some(AxisRef { axis: 'k', part: 1 }),
-                ],
-            }
+            expr.permutation,
+            vec![
+                PermutationAtom::Axis { axis: 'i', part: 0 },
+                PermutationAtom::Axis { axis: 'k', part: 0 },
+                PermutationAtom::Input(0),
+                PermutationAtom::Axis { axis: 'i', part: 1 },
+                PermutationAtom::Axis { axis: 'k', part: 1 },
+                PermutationAtom::Input(1),
+                PermutationAtom::Axis { axis: 'j', part: 0 },
+            ]
         );
     }
 
     #[test]
     fn parses_empty_split_section() {
         let expr = parse("+ijk~ij||ijkk'0");
-        assert!(expr.schedule.splits.is_empty());
+        assert!(expr.splits.is_empty());
         assert_eq!(
-            expr.schedule.order,
+            expr.permutation,
             vec![
-                AxisRef { axis: 'i', part: 0 },
-                AxisRef { axis: 'j', part: 0 },
-                AxisRef { axis: 'k', part: 0 },
-                AxisRef { axis: 'k', part: 1 },
+                PermutationAtom::Axis { axis: 'i', part: 0 },
+                PermutationAtom::Axis { axis: 'j', part: 0 },
+                PermutationAtom::Axis { axis: 'k', part: 0 },
+                PermutationAtom::Axis { axis: 'k', part: 1 },
+                PermutationAtom::Input(0),
             ]
-        );
-        assert_eq!(
-            expr.schedule.compute_at,
-            vec![Some(AxisRef { axis: 'k', part: 1 })]
         );
     }
 
@@ -451,8 +429,8 @@ mod tests {
     fn parses_identity_expression_as_unary_add() {
         let expr = parse("ij~ij");
         assert_eq!(expr.op, Op::Add);
-        assert_eq!(expr.inputs, vec![Pattern(vec!['i', 'j'])]);
-        assert_eq!(expr.output, Pattern(vec!['i', 'j']));
+        assert_eq!(expr.inputs, vec![vec!['i', 'j']]);
+        assert_eq!(expr.output, vec!['i', 'j']);
     }
 
     #[test]

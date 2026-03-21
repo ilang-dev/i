@@ -25,14 +25,10 @@ pub fn swap(component: Component) -> Component {
 }
 
 pub fn finalize(component: Component) -> Component {
-    let mut next_expr_id = 0usize;
-    renumber_component(component, &mut next_expr_id)
+    component
 }
 
-pub fn renumber_expr_ids(component: &mut Component) {
-    let mut next_expr_id = 0usize;
-    renumber_component_in_place(component, &mut next_expr_id);
-}
+pub fn renumber_expr_ids(_component: &mut Component) {}
 
 impl From<Expr> for Component {
     fn from(value: Expr) -> Self {
@@ -66,34 +62,12 @@ impl Component {
     }
 }
 
-fn renumber_component(mut component: Component, next_expr_id: &mut usize) -> Component {
-    renumber_component_in_place(&mut component, next_expr_id);
-    component
-}
-
-fn renumber_component_in_place(component: &mut Component, next_expr_id: &mut usize) {
-    match component {
-        Component::Expr(expr) => {
-            expr.id = *next_expr_id;
-            *next_expr_id += 1;
-        }
-        Component::Compose(left, right)
-        | Component::Chain(left, right)
-        | Component::Fanout(left, right)
-        | Component::Pair(left, right) => {
-            renumber_component_in_place(left, next_expr_id);
-            renumber_component_in_place(right, next_expr_id);
-        }
-        Component::Swap(inner) => renumber_component_in_place(inner, next_expr_id),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{chain, compose, expr, fanout, finalize, pair, renumber_expr_ids, swap};
-    use crate::ir::common::{Op, Pattern};
-    use crate::ir::component::{Component, Expr, Schedule};
-
+    use crate::ir::common::Op;
+    use crate::ir::component::Component;
+    use crate::ir::expr::Expr;
     #[test]
     fn lifts_expr_into_component() {
         let lifted = expr(make_expr(7, Op::Add, &["i", "i"], "i"));
@@ -153,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_renumbers_expr_ids_left_to_right() {
+    fn finalize_preserves_structure() {
         let component = expr(make_expr(10, Op::Add, &["ij"], "i")).pair(
             expr(make_expr(20, Op::Mul, &["ik", "kj"], "ij")).compose(expr(make_expr(
                 30,
@@ -165,52 +139,31 @@ mod tests {
 
         let finalized = finalize(component);
 
-        assert_eq!(collect_expr_ids(&finalized), vec![0, 1, 2]);
+        assert!(matches!(finalized, Component::Pair(_, _)));
     }
 
     #[test]
-    fn renumber_expr_ids_is_deterministic_in_place() {
+    fn renumber_expr_ids_is_a_no_op() {
         let mut component = expr(make_expr(3, Op::Add, &["i"], "i"))
             .fanout(expr(make_expr(8, Op::Mul, &["i", "i"], "i")))
             .pair(expr(make_expr(13, Op::Sub, &["i"], "i")));
 
+        let before = component.clone();
         renumber_expr_ids(&mut component);
-        assert_eq!(collect_expr_ids(&component), vec![0, 1, 2]);
-
-        renumber_expr_ids(&mut component);
-        assert_eq!(collect_expr_ids(&component), vec![0, 1, 2]);
-    }
-
-    fn collect_expr_ids(component: &Component) -> Vec<usize> {
-        let mut ids = Vec::new();
-        collect_expr_ids_inner(component, &mut ids);
-        ids
-    }
-
-    fn collect_expr_ids_inner(component: &Component, ids: &mut Vec<usize>) {
-        match component {
-            Component::Expr(expr) => ids.push(expr.id),
-            Component::Compose(left, right)
-            | Component::Chain(left, right)
-            | Component::Fanout(left, right)
-            | Component::Pair(left, right) => {
-                collect_expr_ids_inner(left, ids);
-                collect_expr_ids_inner(right, ids);
-            }
-            Component::Swap(inner) => collect_expr_ids_inner(inner, ids),
-        }
+        assert_eq!(component, before);
     }
 
     fn make_expr(id: usize, op: Op, inputs: &[&str], output: &str) -> Expr {
+        let _ = id;
         Expr {
-            id,
             op,
             inputs: inputs
                 .iter()
-                .map(|pattern| Pattern(pattern.chars().collect()))
+                .map(|pattern| pattern.chars().collect())
                 .collect(),
-            output: Pattern(output.chars().collect()),
-            schedule: Schedule::default(),
+            output: output.chars().collect(),
+            splits: Vec::new(),
+            permutation: Vec::new(),
         }
     }
 }
