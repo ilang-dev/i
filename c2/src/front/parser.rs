@@ -142,6 +142,7 @@ impl<'a> Parser<'a> {
     fn parse_permutation(&mut self) -> Result<Vec<PermutationAtom>, ParseError> {
         let mut permutation = Vec::new();
         let mut seen_inputs = Vec::new();
+        let mut seen_bang = false;
 
         loop {
             self.skip_ws();
@@ -172,7 +173,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            return Err(self.error("expected axis or input index in permutation"));
+            if self.consume_byte_if(b'!') {
+                if seen_bang {
+                    return Err(self.error("duplicate output init directive"));
+                }
+                seen_bang = true;
+                permutation.push(PermutationAtom::Bang);
+                continue;
+            }
+
+            return Err(self.error("expected axis, `!`, or input index in permutation"));
         }
 
         Ok(permutation)
@@ -411,13 +421,14 @@ mod tests {
 
     #[test]
     fn parses_empty_split_section() {
-        let expr = parse("+ijk~ij||ijkk'0");
+        let expr = parse("+ijk~ij||ij!kk'0");
         assert!(expr.splits.is_empty());
         assert_eq!(
             expr.permutation,
             vec![
                 PermutationAtom::Axis { axis: 'i', part: 0 },
                 PermutationAtom::Axis { axis: 'j', part: 0 },
+                PermutationAtom::Bang,
                 PermutationAtom::Axis { axis: 'k', part: 0 },
                 PermutationAtom::Axis { axis: 'k', part: 1 },
                 PermutationAtom::Input(0),
@@ -443,6 +454,12 @@ mod tests {
     fn rejects_duplicate_compute_directive_for_same_input() {
         let err = parse_component("+ij~i||i0j0").unwrap_err();
         assert!(err.message.contains("duplicate compute directive"));
+    }
+
+    #[test]
+    fn rejects_duplicate_output_init_directive() {
+        let err = parse_component("+ijk~ij||ij!!k").unwrap_err();
+        assert!(err.message.contains("duplicate output init directive"));
     }
 
     #[test]

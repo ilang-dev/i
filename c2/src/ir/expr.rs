@@ -37,4 +37,6 @@ pub enum PermutationAtom {
     Axis { axis: char, part: usize },
     /// A marker indicating where one input is computed.
     Input(usize),
+    /// A marker indicating where the output is initialized.
+    Bang,
 }

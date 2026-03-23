@@ -168,7 +168,7 @@ fn validate_schedule(
         .copied()
         .collect::<BTreeSet<_>>();
     let split_parts = validate_splits(expr, expr_index, &local_axes)?;
-    validate_permutation(expr, expr_index, &local_axes, &split_parts)?;
+    validate_permutation(expr, expr_index, &local_axes, output_axes, &split_parts)?;
     Ok(())
 }
 
@@ -227,6 +227,7 @@ fn validate_permutation(
     expr: &Expr,
     expr_index: usize,
     local_axes: &BTreeSet<Axis>,
+    output_axes: &BTreeSet<Axis>,
     split_parts: &BTreeMap<Axis, usize>,
 ) -> Result<(), ValidationError> {
     if expr.permutation.is_empty() {
@@ -234,9 +235,11 @@ fn validate_permutation(
     }
 
     let expected = expected_axis_refs(local_axes, split_parts);
+    let output_parts = expected_axis_refs(output_axes, split_parts);
     let mut seen = BTreeSet::new();
     let mut last_axis_ref = None;
     let mut seen_inputs = BTreeSet::new();
+    let mut seen_bang = false;
 
     for atom in &expr.permutation {
         match atom {
@@ -284,6 +287,37 @@ fn validate_permutation(
                     return Err(err(
                         expr_index,
                         format!("duplicate compute directive for input {}", input),
+                    ));
+                }
+            }
+            PermutationAtom::Bang => {
+                if seen_bang {
+                    return Err(err(expr_index, "duplicate output init directive"));
+                }
+                seen_bang = true;
+
+                if let Some(missing) = output_parts.difference(&seen).next() {
+                    return Err(err(
+                        expr_index,
+                        format!(
+                            "output init cannot appear before output axis part `{}{}`",
+                            missing.0,
+                            apostrophes(missing.1)
+                        ),
+                    ));
+                }
+
+                if let Some(reduction) = seen
+                    .iter()
+                    .find(|axis_ref| !output_parts.contains(axis_ref))
+                {
+                    return Err(err(
+                        expr_index,
+                        format!(
+                            "output init cannot appear inside non-output loop `{}{}`",
+                            reduction.0,
+                            apostrophes(reduction.1)
+                        ),
                     ));
                 }
             }
@@ -639,6 +673,51 @@ mod tests {
     }
 
     #[test]
+    fn rejects_bad_output_init_directives() {
+        let duplicate = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ijk"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), axis('j', 0), bang(), bang(), axis('k', 0)],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            duplicate.to_string(),
+            "expr 0: duplicate output init directive"
+        );
+
+        let before_output = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ijk"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), bang(), axis('j', 0), axis('k', 0)],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            before_output.to_string(),
+            "expr 0: output init cannot appear before output axis part `j`"
+        );
+
+        let inside_reduction = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ijk"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), axis('j', 0), axis('k', 0), bang()],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            inside_reduction.to_string(),
+            "expr 0: output init cannot appear inside non-output loop `k`"
+        );
+    }
+
+    #[test]
     fn validates_nested_component_trees() {
         let component = Component::Chain(
             Box::new(Component::Expr(make_expr(
@@ -695,5 +774,9 @@ mod tests {
 
     fn input(index: usize) -> PermutationAtom {
         PermutationAtom::Input(index)
+    }
+
+    fn bang() -> PermutationAtom {
+        PermutationAtom::Bang
     }
 }
