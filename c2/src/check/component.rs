@@ -501,6 +501,39 @@ mod tests {
     }
 
     #[test]
+    fn accepts_unary_not_pointwise() {
+        let expr = make_expr(Op::Not, &["ij"], "ij", vec![], Vec::new());
+
+        assert!(validate_component(&Component::Expr(expr)).is_ok());
+    }
+
+    #[test]
+    fn accepts_scalar_reduction_with_root_bang() {
+        let expr = make_expr(
+            Op::Add,
+            &["ij"],
+            "",
+            vec![],
+            vec![bang(), axis('i', 0), axis('j', 0), input(0)],
+        );
+
+        assert!(validate_component(&Component::Expr(expr)).is_ok());
+    }
+
+    #[test]
+    fn accepts_split_reduction_with_bang_after_output_parts() {
+        let expr = make_expr(
+            Op::Add,
+            &["ik"],
+            "i",
+            vec![('i', vec![4])],
+            vec![axis('i', 0), axis('i', 1), bang(), axis('k', 0), input(0)],
+        );
+
+        assert!(validate_component(&Component::Expr(expr)).is_ok());
+    }
+
+    #[test]
     fn rejects_nonreducible_unary_reduction() {
         let error = validate_component(&Component::Expr(make_expr(
             Op::Sub,
@@ -597,6 +630,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_and_contradictory_split_entries() {
+        let duplicate = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![('i', vec![4]), ('i', vec![8])],
+            Vec::new(),
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            duplicate.to_string(),
+            "expr 0: duplicate split entry for axis `i`"
+        );
+
+        let contradictory = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![('i', vec![4]), ('i', vec![2, 2])],
+            Vec::new(),
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            contradictory.to_string(),
+            "expr 0: contradictory split entries for axis `i`"
+        );
+    }
+
+    #[test]
     fn rejects_bad_permutation_shape() {
         let repeated_axis = validate_component(&Component::Expr(make_expr(
             Op::Add,
@@ -642,6 +706,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_bad_permutation_axis_references() {
+        let unknown_axis = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), axis('k', 0)],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            unknown_axis.to_string(),
+            "expr 0: permutation references unknown local axis `k`"
+        );
+
+        let invalid_axis = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![],
+            vec![axis('I', 0), axis('j', 0)],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            invalid_axis.to_string(),
+            "expr 0: permutation uses invalid axis `I`; axes must be [a-z]"
+        );
+    }
+
+    #[test]
     fn rejects_bad_input_directives() {
         let duplicate = validate_component(&Component::Expr(make_expr(
             Op::Add,
@@ -669,6 +764,37 @@ mod tests {
         assert_eq!(
             no_loop.to_string(),
             "expr 0: input 0 cannot appear before any loop in permutation"
+        );
+
+        let nonexistent = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), input(1), axis('j', 0)],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            nonexistent.to_string(),
+            "expr 0: permutation references nonexistent input 1"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_split_axis_char() {
+        let error = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![('I', vec![4])],
+            Vec::new(),
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "expr 0: split uses invalid axis `I`; axes must be [a-z]"
         );
     }
 

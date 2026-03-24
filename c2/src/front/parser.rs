@@ -100,6 +100,7 @@ impl<'a> Parser<'a> {
     fn parse_schedule(
         &mut self,
     ) -> Result<(Vec<(char, Vec<usize>)>, Vec<PermutationAtom>), ParseError> {
+        self.skip_ws();
         let splits = if self.peek_byte() == Some(b'|') {
             Vec::new()
         } else {
@@ -437,6 +438,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_schedule_with_empty_permutation() {
+        let expr = parse("+ijk~ij|i:2,k:4|");
+        assert_eq!(expr.splits, vec![('i', vec![2]), ('k', vec![4])]);
+        assert!(expr.permutation.is_empty());
+    }
+
+    #[test]
+    fn parses_whitespace_in_expression_and_schedule() {
+        let expr = parse("  ij + i ~ ij |  | i j 1 ");
+        assert_eq!(expr.op, Op::Add);
+        assert_eq!(expr.inputs, vec![vec!['i', 'j'], vec!['i']]);
+        assert_eq!(expr.output, vec!['i', 'j']);
+        assert!(expr.splits.is_empty());
+        assert_eq!(
+            expr.permutation,
+            vec![
+                PermutationAtom::Axis { axis: 'i', part: 0 },
+                PermutationAtom::Axis { axis: 'j', part: 0 },
+                PermutationAtom::Input(1),
+            ]
+        );
+    }
+
+    #[test]
     fn parses_identity_expression_as_unary_add() {
         let expr = parse("ij~ij");
         assert_eq!(expr.op, Op::Add);
@@ -466,6 +491,36 @@ mod tests {
     fn rejects_malformed_split_entry() {
         let err = parse_component("+ij~i|i|ij").unwrap_err();
         assert!(err.message.contains("expected `:`"));
+    }
+
+    #[test]
+    fn rejects_missing_second_schedule_bar() {
+        let err = parse_component("+ij~i|i:2").unwrap_err();
+        assert!(err.message.contains("expected second `|`"));
+    }
+
+    #[test]
+    fn rejects_missing_split_factor_integer() {
+        let err = parse_component("+ij~i|i:|ij").unwrap_err();
+        assert!(err.message.contains("expected integer"));
+    }
+
+    #[test]
+    fn rejects_duplicate_split_entry() {
+        let err = parse_component("+ij~i|i:2,i:4|ij").unwrap_err();
+        assert!(err.message.contains("duplicate split entry"));
+    }
+
+    #[test]
+    fn rejects_invalid_permutation_token() {
+        let err = parse_component("+ij~i||i?").unwrap_err();
+        assert!(err.message.contains("expected axis, `!`, or input index"));
+    }
+
+    #[test]
+    fn rejects_empty_source() {
+        let err = parse_component("   ").unwrap_err();
+        assert!(err.message.contains("expected i-expression"));
     }
 
     #[test]
