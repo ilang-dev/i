@@ -294,6 +294,12 @@ fn validate_permutation(
                 if seen_bang {
                     return Err(err(expr_index, "duplicate output init directive"));
                 }
+                if local_axes == output_axes {
+                    return Err(err(
+                        expr_index,
+                        "output init directive is only valid for reductions",
+                    ));
+                }
                 seen_bang = true;
 
                 if let Some(missing) = output_parts.difference(&seen).next() {
@@ -528,6 +534,25 @@ mod tests {
             "i",
             vec![('i', vec![4])],
             vec![axis('i', 0), axis('i', 1), bang(), axis('k', 0), input(0)],
+        );
+
+        assert!(validate_component(&Component::Expr(expr)).is_ok());
+    }
+
+    #[test]
+    fn accepts_split_reduction_with_split_reduction_axis() {
+        let expr = make_expr(
+            Op::Add,
+            &["ijk"],
+            "ij",
+            vec![('k', vec![2])],
+            vec![
+                axis('i', 0),
+                axis('j', 0),
+                bang(),
+                axis('k', 0),
+                axis('k', 1),
+            ],
         );
 
         assert!(validate_component(&Component::Expr(expr)).is_ok());
@@ -840,6 +865,20 @@ mod tests {
         assert_eq!(
             inside_reduction.to_string(),
             "expr 0: output init cannot appear inside non-output loop `k`"
+        );
+
+        let pointwise = validate_component(&Component::Expr(make_expr(
+            Op::Add,
+            &["ij"],
+            "ij",
+            vec![],
+            vec![axis('i', 0), axis('j', 0), bang()],
+        )))
+        .unwrap_err();
+
+        assert_eq!(
+            pointwise.to_string(),
+            "expr 0: output init directive is only valid for reductions"
         );
     }
 

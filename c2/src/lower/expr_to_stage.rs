@@ -11,7 +11,10 @@ use crate::ir::stage::{
 
 pub fn lower_expr_to_stage(expr: &Expr) -> Result<ScheduledStage, LowerError> {
     validate_component(&Component::Expr(expr.clone())).map_err(LowerError::from_component)?;
+    lower_expr_to_stage_unchecked(expr)
+}
 
+pub(crate) fn lower_expr_to_stage_unchecked(expr: &Expr) -> Result<ScheduledStage, LowerError> {
     let axis_order = canonical_axis_order(expr);
     let axis_map = axis_order
         .iter()
@@ -501,7 +504,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "pointwise stage cannot have an output init directive"
+            "expr 0: output init directive is only valid for reductions"
         );
     }
 
