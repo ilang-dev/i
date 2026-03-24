@@ -20,8 +20,8 @@ use super::common::Op;
 /// One scheduled stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduledStage {
-    stage: Stage,
-    schedule: Schedule,
+    pub stage: Stage,
+    pub schedule: Schedule,
 }
 
 /// Semantic content of one 𝚒 expression.
@@ -48,29 +48,29 @@ pub struct Index(pub Vec<Axis>);
 /// Schedule of one stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Schedule {
-    splits: Vec<SplitList>,
-    order: Vec<AxisRef>,
-    compute_sites: Vec<Option<Site>>,
-    init_site: Option<Site>,
+    pub splits: Vec<SplitList>,
+    pub order: Vec<AxisRef>,
+    pub compute_sites: Vec<Option<Site>>,
+    pub init_site: Option<Site>,
 }
 
 /// Split factors of one stage axis.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SplitList(Vec<SplitFactor>);
+pub struct SplitList(pub Vec<SplitFactor>);
 
 /// One split factor.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SplitFactor(usize);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplitFactor(pub usize);
 
 /// One site in a stage loop nest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Site {
     Root,
     At(AxisRef),
 }
 
 /// One loop part of one stage axis.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AxisRef {
     pub axis: Axis,
     pub part: usize,
