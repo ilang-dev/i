@@ -1,15 +1,30 @@
+//! Scheduled stage IR.
+//!
+//! This module defines the payload of `Graph<ScheduledStage>`.
+//! `Stage` gives the semantic shape of one node.
+//! `Schedule` gives the loop structure of that node.
+//!
+//! Invariants:
+//! - `Stage` axes are local and canonical.
+//! - `Index` values refer only to `Stage` axes.
+//! - `Schedule.splits.len() == stage.rank`.
+//! - `AxisRef { part: 0 }` names the base loop of an axis.
+//! - An axis with `n` split factors has parts `0..=n`.
+//! - `Schedule.order` contains each loop part exactly once.
+//! - `Schedule.compute_sites.len() == stage.inputs.len()`.
+//! - `Schedule.init_site` is `Some(site)` for a reduction stage and `None` for
+//!   a pointwise stage.
+//!
 use super::common::Op;
 
+/// One scheduled stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduledStage {
     stage: Stage,
     schedule: Schedule,
 }
 
-/// Expression-local semantic content of one 𝚒 expression.
-///
-/// A `Stage` consists of a scalar op, a local iteration rank, one explicit
-/// index per input, and one explicit index for the output.
+/// Semantic content of one 𝚒 expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stage {
     /// Scalar operator applied at each point in the domain.
@@ -22,39 +37,39 @@ pub struct Stage {
     pub output: Index,
 }
 
-/// One axis of the domain.
-///
-/// `Axis(n)` denotes the `n`th axis.
+/// One stage axis.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Axis(pub usize);
 
-/// Explicit indexing of one tensor access by `Stage` axes.
-///
-/// Each entry specifies the stage axis used for one tensor dimension in tensor
-/// dimension order.
+/// Indexing of one tensor access by stage axes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Index(pub Vec<Axis>);
 
+/// Schedule of one stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Schedule {
-    splits: Vec<SplitList>, // assert!(splits.len() == stage.rank)
-    order: Vec<AxisRef>, // must represent every loop exactly once, where part 0 is the base loop and valid parts for axis a are 0..=splits[a].0.len(); assert!(order.len() == splits.iter().map(|x| x.0.len() + 1).sum())
-    compute_sites: Vec<Option<Site>>, // per input, assert!(compute_sites.len() == stage.inputs.len())
-    init_site: Option<Site>, // reduction init site; for pointwise stages assert!(init_site.is_none())
+    splits: Vec<SplitList>,
+    order: Vec<AxisRef>,
+    compute_sites: Vec<Option<Site>>,
+    init_site: Option<Site>,
 }
 
+/// Split factors of one stage axis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SplitList(Vec<SplitFactor>);
 
+/// One split factor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SplitFactor(usize);
 
+/// One site in a stage loop nest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Site {
     Root,
     At(AxisRef),
 }
 
+/// One loop part of one stage axis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AxisRef {
     pub axis: Axis,
