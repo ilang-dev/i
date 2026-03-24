@@ -268,6 +268,63 @@ mod tests {
     }
 
     #[test]
+    fn lowers_repeated_input_axes() {
+        let stage = lower("+iij~i");
+
+        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(
+            stage.stage.inputs,
+            vec![Index(vec![Axis(0), Axis(0), Axis(1)])]
+        );
+        assert_eq!(stage.stage.output, Index(vec![Axis(0)]));
+        assert_eq!(
+            stage.schedule.init_site,
+            Some(Site::At(AxisRef {
+                axis: Axis(0),
+                part: 0
+            }))
+        );
+    }
+
+    #[test]
+    fn lowers_broadcasted_input_indexing() {
+        let stage = lower("ij+i~ij");
+
+        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(
+            stage.stage.inputs,
+            vec![Index(vec![Axis(0), Axis(1)]), Index(vec![Axis(0)])]
+        );
+        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1)]));
+        assert_eq!(stage.schedule.init_site, None);
+    }
+
+    #[test]
+    fn lowers_axes_in_output_first_order() {
+        let stage = lower("ji+i~ji");
+
+        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(
+            stage.stage.inputs,
+            vec![Index(vec![Axis(0), Axis(1)]), Index(vec![Axis(1)])]
+        );
+        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1)]));
+        assert_eq!(
+            stage.schedule.order,
+            vec![
+                AxisRef {
+                    axis: Axis(0),
+                    part: 0
+                },
+                AxisRef {
+                    axis: Axis(1),
+                    part: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn lowers_reduction_with_default_init_site() {
         let stage = lower("+ijk~ij");
 
@@ -377,6 +434,26 @@ mod tests {
                 part: 0
             }))
         );
+    }
+
+    #[test]
+    fn lowers_scalar_reduction_with_explicit_root_bang() {
+        let stage = lower("+ij~||!ij");
+
+        assert_eq!(
+            stage.schedule.order,
+            vec![
+                AxisRef {
+                    axis: Axis(0),
+                    part: 0
+                },
+                AxisRef {
+                    axis: Axis(1),
+                    part: 0
+                },
+            ]
+        );
+        assert_eq!(stage.schedule.init_site, Some(Site::Root));
     }
 
     #[test]

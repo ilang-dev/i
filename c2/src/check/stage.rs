@@ -370,6 +370,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_loop_part() {
+        let error = validate_scheduled_stage(&ScheduledStage {
+            stage: Stage {
+                op: Op::Add,
+                rank: 1,
+                inputs: vec![Index(vec![Axis(0)])],
+                output: Index(vec![Axis(0)]),
+            },
+            schedule: Schedule {
+                splits: vec![SplitList(vec![])],
+                order: vec![
+                    AxisRef {
+                        axis: Axis(0),
+                        part: 0,
+                    },
+                    AxisRef {
+                        axis: Axis(0),
+                        part: 0,
+                    },
+                ],
+                compute_sites: vec![None],
+                init_site: None,
+            },
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "order repeats loop part 0");
+    }
+
+    #[test]
     fn rejects_invalid_compute_site() {
         let error = validate_scheduled_stage(&ScheduledStage {
             stage: Stage {
@@ -397,6 +427,59 @@ mod tests {
             error.to_string(),
             "compute site for input 0 references nonexistent loop part 0'"
         );
+    }
+
+    #[test]
+    fn accepts_root_compute_site() {
+        let stage = ScheduledStage {
+            stage: Stage {
+                op: Op::Add,
+                rank: 1,
+                inputs: vec![Index(vec![Axis(0)])],
+                output: Index(vec![Axis(0)]),
+            },
+            schedule: Schedule {
+                splits: vec![SplitList(vec![])],
+                order: vec![AxisRef {
+                    axis: Axis(0),
+                    part: 0,
+                }],
+                compute_sites: vec![Some(Site::Root)],
+                init_site: None,
+            },
+        };
+
+        assert!(validate_scheduled_stage(&stage).is_ok());
+    }
+
+    #[test]
+    fn rejects_out_of_range_axis_in_index() {
+        let error = validate_scheduled_stage(&ScheduledStage {
+            stage: Stage {
+                op: Op::Add,
+                rank: 2,
+                inputs: vec![Index(vec![Axis(0), Axis(2)])],
+                output: Index(vec![Axis(0)]),
+            },
+            schedule: Schedule {
+                splits: vec![SplitList(vec![]), SplitList(vec![])],
+                order: vec![
+                    AxisRef {
+                        axis: Axis(0),
+                        part: 0,
+                    },
+                    AxisRef {
+                        axis: Axis(1),
+                        part: 0,
+                    },
+                ],
+                compute_sites: vec![None],
+                init_site: None,
+            },
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "input 0 references nonexistent axis 2");
     }
 
     #[test]
