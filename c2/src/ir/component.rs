@@ -1,10 +1,17 @@
+//! Component IR.
+//!
+//! This module defines the source-shaped program tree of 𝚒.
+//! `Component` combines expression leaves with combinator nodes.
+//!
+//! Invariants:
+//! - Every leaf is an `Expr`.
+//! - Every interior node is a combinator.
+//! - Child order is explicit and preserved.
+//! - Combinator structure is explicit and preserved.
+//!
 pub use super::expr::{Expr, PermutationAtom};
 
-/// Source-shaped program structure for 𝚒.
-///
-/// A `Component` is a tree of combinators whose leaves are atomic source
-/// expressions. It preserves how a program is assembled before combinators
-/// are resolved into explicit dataflow.
+/// One component tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
     /// One atomic 𝚒 expression.

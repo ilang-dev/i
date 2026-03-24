@@ -1,15 +1,21 @@
+//! Source expression IR.
+//!
+//! This module defines the parsed local form of one 𝚒 expression.
+//! `Expr` records the operator, index patterns, split directives, and
+//! permutation stream of that expression.
+//!
+//! Invariants:
+//! - `Expr.inputs` preserves source input order.
+//! - Each input pattern preserves source index order.
+//! - `Expr.output` preserves source index order.
+//! - `Expr.splits` preserves source split order.
+//! - `Expr.permutation` preserves source permutation order.
+//! - Axis names are expression-local source chars.
+//! - `PermutationAtom::Input(i)` names input `i` of the same `Expr`.
+//!
 use super::common::Op;
 
-/// Parsed source form of one scheduled 𝚒 expression.
-///
-/// This type preserves the local structure written by the user: the operator,
-/// input and output index patterns, split directives, and the permutation
-/// stream that describes loop order together with input compute placement
-/// markers.
-///
-/// `Expr` is intentionally source-shaped. It is not a semantic stage and it
-/// does not resolve dataflow beyond what is written inside the expression
-/// itself.
+/// One parsed 𝚒 expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expr {
     /// Scalar operator applied by this expression.
@@ -30,7 +36,7 @@ pub struct Expr {
     pub permutation: Vec<PermutationAtom>,
 }
 
-/// One token in the source permutation stream of an [`Expr`].
+/// One token in an expression permutation stream.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PermutationAtom {
     /// A loop over one axis part.
