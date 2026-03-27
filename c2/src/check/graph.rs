@@ -28,7 +28,27 @@ pub fn validate_scheduled_stage_graph(
 ) -> Result<(), ValidationError> {
     validate_graph(graph, |stage| {
         validate_scheduled_stage(stage).map_err(|error| error.to_string())
-    })
+    })?;
+
+    for (node_index, node) in graph.nodes.iter().enumerate() {
+        if node.inputs.len() != node.inner.stage.inputs.len() {
+            return Err(err(format!(
+                "node {}: graph has {} inputs for {} stage inputs",
+                node_index,
+                node.inputs.len(),
+                node.inner.stage.inputs.len()
+            )));
+        }
+        if node.outputs.len() != 1 {
+            return Err(err(format!(
+                "node {}: graph has {} outputs for scheduled stage",
+                node_index,
+                node.outputs.len()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_node_source<T>(
@@ -236,6 +256,76 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "node 0: pointwise stage cannot have an init site"
+        );
+    }
+
+    #[test]
+    fn rejects_stage_graph_input_len_mismatch() {
+        let graph = Graph {
+            inputs: vec![Input],
+            nodes: vec![Node {
+                inner: ScheduledStage {
+                    stage: Stage {
+                        op: Op::Add,
+                        rank: 1,
+                        inputs: vec![Index(vec![Axis(0)]), Index(vec![Axis(0)])],
+                        output: Index(vec![Axis(0)]),
+                    },
+                    schedule: Schedule {
+                        splits: vec![SplitList(vec![])],
+                        order: vec![AxisRef {
+                            axis: Axis(0),
+                            part: 0,
+                        }],
+                        compute_sites: vec![None, None],
+                        init_site: None,
+                    },
+                },
+                inputs: vec![Source::Input(InputId(0))],
+                outputs: vec![Output],
+            }],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
+        };
+
+        let error = validate_scheduled_stage_graph(&graph).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 0: graph has 1 inputs for 2 stage inputs"
+        );
+    }
+
+    #[test]
+    fn rejects_stage_graph_multi_output_node() {
+        let graph = Graph {
+            inputs: vec![Input],
+            nodes: vec![Node {
+                inner: ScheduledStage {
+                    stage: Stage {
+                        op: Op::Add,
+                        rank: 1,
+                        inputs: vec![Index(vec![Axis(0)])],
+                        output: Index(vec![Axis(0)]),
+                    },
+                    schedule: Schedule {
+                        splits: vec![SplitList(vec![])],
+                        order: vec![AxisRef {
+                            axis: Axis(0),
+                            part: 0,
+                        }],
+                        compute_sites: vec![None],
+                        init_site: None,
+                    },
+                },
+                inputs: vec![Source::Input(InputId(0))],
+                outputs: vec![Output, Output],
+            }],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
+        };
+
+        let error = validate_scheduled_stage_graph(&graph).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 0: graph has 2 outputs for scheduled stage"
         );
     }
 }
