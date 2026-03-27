@@ -3,7 +3,7 @@ use std::fmt;
 use crate::check::component::validate_component;
 use crate::check::graph::validate_scheduled_stage_graph;
 use crate::ir::component::Component;
-use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Source};
+use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
 use crate::ir::stage::ScheduledStage;
 
 use super::expr_to_stage::{lower_expr_to_stage_unchecked, LowerError as ExprLowerError};
@@ -33,8 +33,9 @@ fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, Low
                     inputs: (0..expr.inputs.len())
                         .map(|index| Source::Input(InputId(index)))
                         .collect(),
+                    outputs: vec![Output],
                 }],
-                outputs: vec![Source::Node(NodeId(0))],
+                outputs: vec![Source::Node(NodeId(0), OutputId(0))],
             })
         }
         Component::Compose(left, right) => {
@@ -178,6 +179,7 @@ fn remap_nodes(
                 .into_iter()
                 .map(|source| remap_source(source, input_map, node_offset))
                 .collect(),
+            outputs: node.outputs,
         })
         .collect()
 }
@@ -193,7 +195,7 @@ fn remap_outputs(outputs: &[Source], input_map: &[Source], node_offset: usize) -
 fn remap_source(source: Source, input_map: &[Source], node_offset: usize) -> Source {
     match source {
         Source::Input(InputId(index)) => input_map[index],
-        Source::Node(NodeId(index)) => Source::Node(NodeId(node_offset + index)),
+        Source::Node(NodeId(index), output) => Source::Node(NodeId(node_offset + index), output),
     }
 }
 
@@ -241,7 +243,7 @@ mod tests {
     use crate::component;
     use crate::front::parse_expr;
     use crate::ir::common::Op;
-    use crate::ir::graph::{InputId, NodeId, Source};
+    use crate::ir::graph::{InputId, NodeId, OutputId, Source};
     use crate::ir::stage::{Axis, AxisRef, Site, SplitList};
 
     use super::lower_component_to_graph;
@@ -256,7 +258,7 @@ mod tests {
 
         assert_eq!(graph.inputs.len(), 2);
         assert_eq!(graph.nodes.len(), 1);
-        assert_eq!(graph.outputs, vec![Source::Node(NodeId(0))]);
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(0), OutputId(0))]);
         assert_eq!(
             graph.nodes[0].inputs,
             vec![Source::Input(InputId(0)), Source::Input(InputId(1))]
@@ -278,7 +280,10 @@ mod tests {
         assert_eq!(graph.nodes[1].inputs, vec![Source::Input(InputId(2))]);
         assert_eq!(
             graph.outputs,
-            vec![Source::Node(NodeId(0)), Source::Node(NodeId(1))]
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(1), OutputId(0)),
+            ]
         );
     }
 
@@ -293,8 +298,11 @@ mod tests {
             graph.nodes[0].inputs,
             vec![Source::Input(InputId(0)), Source::Input(InputId(1))]
         );
-        assert_eq!(graph.nodes[1].inputs, vec![Source::Node(NodeId(0))]);
-        assert_eq!(graph.outputs, vec![Source::Node(NodeId(1))]);
+        assert_eq!(
+            graph.nodes[1].inputs,
+            vec![Source::Node(NodeId(0), OutputId(0))]
+        );
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(1), OutputId(0))]);
         assert_eq!(
             graph.nodes[1].inner.schedule.init_site,
             Some(Site::At(AxisRef {
@@ -315,9 +323,15 @@ mod tests {
         assert_eq!(graph.nodes.len(), 3);
         assert_eq!(
             graph.outputs,
-            vec![Source::Node(NodeId(1)), Source::Node(NodeId(2))]
+            vec![
+                Source::Node(NodeId(1), OutputId(0)),
+                Source::Node(NodeId(2), OutputId(0)),
+            ]
         );
-        assert_eq!(graph.nodes[2].inputs, vec![Source::Node(NodeId(0))]);
+        assert_eq!(
+            graph.nodes[2].inputs,
+            vec![Source::Node(NodeId(0), OutputId(0))]
+        );
     }
 
     #[test]
@@ -330,9 +344,12 @@ mod tests {
         assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
             graph.nodes[1].inputs,
-            vec![Source::Node(NodeId(0)), Source::Input(InputId(1))]
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Input(InputId(1)),
+            ]
         );
-        assert_eq!(graph.outputs, vec![Source::Node(NodeId(1))]);
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(1), OutputId(0))]);
     }
 
     #[test]
@@ -343,10 +360,13 @@ mod tests {
 
         assert_eq!(graph.inputs.len(), 2);
         assert_eq!(graph.nodes.len(), 3);
-        assert_eq!(graph.outputs, vec![Source::Node(NodeId(2))]);
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(2), OutputId(0))]);
         assert_eq!(
             graph.nodes[2].inputs,
-            vec![Source::Node(NodeId(0)), Source::Node(NodeId(1))]
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(1), OutputId(0)),
+            ]
         );
     }
 
@@ -361,7 +381,10 @@ mod tests {
         assert_eq!(graph.nodes[1].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
             graph.outputs,
-            vec![Source::Node(NodeId(0)), Source::Node(NodeId(1))]
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(1), OutputId(0)),
+            ]
         );
     }
 
@@ -387,7 +410,10 @@ mod tests {
 
         assert_eq!(
             graph.outputs,
-            vec![Source::Node(NodeId(1)), Source::Node(NodeId(0))]
+            vec![
+                Source::Node(NodeId(1), OutputId(0)),
+                Source::Node(NodeId(0), OutputId(0)),
+            ]
         );
     }
 
@@ -396,7 +422,7 @@ mod tests {
         let component = parse_component_expr("+ij~i").swap();
         let graph = lower_component_to_graph(&component).unwrap();
 
-        assert_eq!(graph.outputs, vec![Source::Node(NodeId(0))]);
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(0), OutputId(0))]);
     }
 
     #[test]
@@ -411,7 +437,10 @@ mod tests {
         assert_eq!(graph.nodes.len(), 4);
         assert_eq!(
             graph.outputs,
-            vec![Source::Node(NodeId(3)), Source::Node(NodeId(2))]
+            vec![
+                Source::Node(NodeId(3), OutputId(0)),
+                Source::Node(NodeId(2), OutputId(0)),
+            ]
         );
     }
 

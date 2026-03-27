@@ -10,7 +10,10 @@
 //! - `Graph.outputs` is ordered.
 //! - `InputId(i)` names `Graph.inputs[i]`.
 //! - `NodeId(i)` names `Graph.nodes[i]`.
+//! - `OutputId(i)` names a node output `i`.
 //! - `Node.inputs` is in operand order.
+//! - `Node.outputs` is in output order.
+//! - `Source::Node(NodeId(n), OutputId(o))` names `Graph.nodes[n].outputs[o]`.
 //! - `Graph.outputs` is in user-visible order.
 //!
 /// One ordered dataflow graph over payloads of type `T`.
@@ -26,11 +29,16 @@ pub struct Graph<T> {
 pub struct Node<T> {
     pub inner: T,
     pub inputs: Vec<Source>,
+    pub outputs: Vec<Output>,
 }
 
 /// One ordered graph input.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Input;
+
+/// One ordered node output.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Output;
 
 /// Handle for one graph input.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -44,5 +52,9 @@ pub struct NodeId(pub usize);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Source {
     Input(InputId),
-    Node(NodeId),
+    Node(NodeId, OutputId),
 }
+
+/// Handle for one output of one interior graph node.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OutputId(pub usize);

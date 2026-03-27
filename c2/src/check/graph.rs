@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::check::stage::validate_scheduled_stage;
-use crate::ir::graph::{Graph, InputId, NodeId, Source};
+use crate::ir::graph::{Graph, InputId, NodeId, OutputId, Source};
 use crate::ir::stage::ScheduledStage;
 
 pub fn validate_graph<T, F>(graph: &Graph<T>, mut validate_node: F) -> Result<(), ValidationError>
@@ -45,7 +45,7 @@ fn validate_node_source<T>(
                 )));
             }
         }
-        Source::Node(NodeId(index)) => {
+        Source::Node(NodeId(index), OutputId(output)) => {
             if index >= graph.nodes.len() {
                 return Err(err(format!(
                     "node {} input references nonexistent node {}",
@@ -56,6 +56,12 @@ fn validate_node_source<T>(
                 return Err(err(format!(
                     "node {} input references non-prior node {}",
                     node_index, index
+                )));
+            }
+            if output >= graph.nodes[index].outputs.len() {
+                return Err(err(format!(
+                    "node {} input references nonexistent output {} of node {}",
+                    node_index, output, index
                 )));
             }
         }
@@ -74,9 +80,15 @@ fn validate_output_source<T>(graph: &Graph<T>, source: Source) -> Result<(), Val
                 )));
             }
         }
-        Source::Node(NodeId(index)) => {
+        Source::Node(NodeId(index), OutputId(output)) => {
             if index >= graph.nodes.len() {
                 return Err(err(format!("output references nonexistent node {}", index)));
+            }
+            if output >= graph.nodes[index].outputs.len() {
+                return Err(err(format!(
+                    "output references nonexistent output {} of node {}",
+                    output, index
+                )));
             }
         }
     }
@@ -107,7 +119,7 @@ impl std::error::Error for ValidationError {}
 mod tests {
     use super::{validate_graph, validate_scheduled_stage_graph};
     use crate::ir::common::Op;
-    use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Source};
+    use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
     use crate::ir::stage::{Axis, AxisRef, Index, Schedule, ScheduledStage, SplitList, Stage};
 
     #[test]
@@ -118,13 +130,18 @@ mod tests {
                 Node {
                     inner: 1usize,
                     inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
                 },
                 Node {
                     inner: 2usize,
-                    inputs: vec![Source::Node(NodeId(0)), Source::Input(InputId(1))],
+                    inputs: vec![
+                        Source::Node(NodeId(0), OutputId(0)),
+                        Source::Input(InputId(1)),
+                    ],
+                    outputs: vec![Output],
                 },
             ],
-            outputs: vec![Source::Node(NodeId(1))],
+            outputs: vec![Source::Node(NodeId(1), OutputId(0))],
         };
 
         assert!(validate_graph(&graph, |_| Ok(())).is_ok());
@@ -136,9 +153,10 @@ mod tests {
             inputs: vec![Input],
             nodes: vec![Node {
                 inner: 1usize,
-                inputs: vec![Source::Node(NodeId(1))],
+                inputs: vec![Source::Node(NodeId(1), OutputId(0))],
+                outputs: vec![Output],
             }],
-            outputs: vec![Source::Node(NodeId(0))],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
         let error = validate_graph(&graph, |_| Ok(())).unwrap_err();
@@ -155,14 +173,16 @@ mod tests {
             nodes: vec![
                 Node {
                     inner: 1usize,
-                    inputs: vec![Source::Node(NodeId(1))],
+                    inputs: vec![Source::Node(NodeId(1), OutputId(0))],
+                    outputs: vec![Output],
                 },
                 Node {
                     inner: 2usize,
                     inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
                 },
             ],
-            outputs: vec![Source::Node(NodeId(0))],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
         let error = validate_graph(&graph, |_| Ok(())).unwrap_err();
@@ -177,7 +197,7 @@ mod tests {
         let graph = Graph::<usize> {
             inputs: vec![Input],
             nodes: vec![],
-            outputs: vec![Source::Node(NodeId(0))],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
         let error = validate_graph(&graph, |_| Ok(())).unwrap_err();
@@ -207,8 +227,9 @@ mod tests {
                     },
                 },
                 inputs: vec![Source::Input(InputId(0))],
+                outputs: vec![Output],
             }],
-            outputs: vec![Source::Node(NodeId(0))],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
         let error = validate_scheduled_stage_graph(&graph).unwrap_err();
