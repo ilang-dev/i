@@ -217,6 +217,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_kernel_outputs_in_wrong_order() {
+        let kernel = Kernel(Graph {
+            inputs: vec![Input],
+            nodes: vec![
+                Node {
+                    inner: stage(1, vec![None]),
+                    inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+            ],
+            outputs: vec![
+                Source::Node(NodeId(1), OutputId(0)),
+                Source::Node(NodeId(0), OutputId(0)),
+            ],
+        });
+
+        let error = validate_kernel(&kernel).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "kernel output 0 must reference node 0 output 0"
+        );
+    }
+
+    #[test]
     fn accepts_valid_kernel_graph() {
         let kernel = Kernel(Graph {
             inputs: vec![Input],

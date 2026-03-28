@@ -488,6 +488,60 @@ mod tests {
     }
 
     #[test]
+    fn duplicates_once_for_some_and_once_for_none() {
+        let graph = Graph {
+            inputs: vec![Input],
+            nodes: vec![
+                Node {
+                    inner: unary_input_stage(),
+                    inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![None]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(1), OutputId(0))],
+                    outputs: vec![Output],
+                },
+            ],
+            outputs: vec![
+                Source::Node(NodeId(2), OutputId(0)),
+                Source::Node(NodeId(3), OutputId(0)),
+            ],
+        };
+
+        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+
+        assert_eq!(kernel_graph.nodes.len(), 3);
+        assert_eq!(kernel_graph.nodes[2].outputs.len(), 3);
+        assert_eq!(
+            kernel_graph.nodes[1].inputs,
+            vec![Source::Node(NodeId(0), OutputId(0))]
+        );
+
+        let some_kernel = &kernel_graph.nodes[2].inner.0;
+        assert_eq!(some_kernel.nodes.len(), 3);
+        assert_eq!(some_kernel.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(
+            some_kernel.nodes[1].inputs,
+            vec![Source::Node(NodeId(0), OutputId(0))]
+        );
+        assert_eq!(
+            some_kernel.nodes[2].inputs,
+            vec![Source::Node(NodeId(1), OutputId(0))]
+        );
+    }
+
+    #[test]
     fn program_output_forces_materialized_kernel() {
         let graph = Graph {
             inputs: vec![Input],
@@ -519,6 +573,55 @@ mod tests {
             vec![
                 Source::Node(NodeId(0), OutputId(0)),
                 Source::Node(NodeId(1), OutputId(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn program_output_adds_materialized_copy_beside_two_compute_at_copies() {
+        let graph = Graph {
+            inputs: vec![Input],
+            nodes: vec![
+                Node {
+                    inner: unary_input_stage(),
+                    inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(2, vec![Some(Site::Root), Some(Site::Root)]),
+                    inputs: vec![
+                        Source::Node(NodeId(1), OutputId(0)),
+                        Source::Node(NodeId(2), OutputId(0)),
+                    ],
+                    outputs: vec![Output],
+                },
+            ],
+            outputs: vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(3), OutputId(0)),
+            ],
+        };
+
+        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+
+        assert_eq!(kernel_graph.nodes.len(), 2);
+        assert_eq!(kernel_graph.nodes[0].outputs.len(), 1);
+        assert_eq!(kernel_graph.nodes[1].outputs.len(), 5);
+        assert_eq!(
+            kernel_graph.outputs,
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(1), OutputId(4)),
             ]
         );
     }
@@ -623,6 +726,66 @@ mod tests {
         assert_eq!(
             kernel.nodes[0].inputs,
             vec![Source::Input(InputId(0)), Source::Input(InputId(0))]
+        );
+    }
+
+    #[test]
+    fn records_branching_kernel_outputs_in_postorder() {
+        let graph = Graph {
+            inputs: vec![Input],
+            nodes: vec![
+                Node {
+                    inner: unary_input_stage(),
+                    inputs: vec![Source::Input(InputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(2, vec![Some(Site::Root), None]),
+                    inputs: vec![
+                        Source::Node(NodeId(1), OutputId(0)),
+                        Source::Input(InputId(0)),
+                    ],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(1, vec![Some(Site::Root)]),
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![Output],
+                },
+                Node {
+                    inner: stage(2, vec![Some(Site::Root), Some(Site::Root)]),
+                    inputs: vec![
+                        Source::Node(NodeId(2), OutputId(0)),
+                        Source::Node(NodeId(3), OutputId(0)),
+                    ],
+                    outputs: vec![Output],
+                },
+            ],
+            outputs: vec![Source::Node(NodeId(4), OutputId(0))],
+        };
+
+        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kernel = &kernel_graph.nodes[0].inner.0;
+
+        assert_eq!(
+            kernel.outputs,
+            vec![
+                Source::Node(NodeId(0), OutputId(0)),
+                Source::Node(NodeId(1), OutputId(0)),
+                Source::Node(NodeId(2), OutputId(0)),
+                Source::Node(NodeId(3), OutputId(0)),
+                Source::Node(NodeId(4), OutputId(0)),
+                Source::Node(NodeId(5), OutputId(0)),
+            ]
+        );
+        assert_eq!(
+            kernel_graph.outputs,
+            vec![Source::Node(NodeId(0), OutputId(5))]
         );
     }
 }
