@@ -37,13 +37,13 @@ pub struct Stage {
     pub output: Index,
 }
 
-/// One stage axis.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Axis(pub usize);
-
 /// Indexing of one tensor access by stage axes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Index(pub Vec<Axis>);
+
+/// One stage axis.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Axis(pub usize);
 
 /// Schedule of one stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
