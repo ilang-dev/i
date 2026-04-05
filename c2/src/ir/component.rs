@@ -4,8 +4,8 @@
 //! `Component` combines expression leaves with combinator nodes.
 //!
 //! Invariants:
-//! - Every leaf is an `Expr`.
-//! - Every interior node is a combinator.
+//! - Every leaf is an 𝚒 expression (`Expr` variant).
+//! - Every interior node is a combinator (non-`Expr` variant).
 //! - Child order is explicit and preserved.
 //! - Combinator structure is explicit and preserved.
 //!
