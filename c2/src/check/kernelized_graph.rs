@@ -2,20 +2,20 @@ use std::fmt;
 
 use crate::check::graph::{validate_graph, validate_scheduled_stage_graph};
 use crate::ir::graph::{Graph, NodeId, OutputId, Source};
-use crate::ir::kernel::Kernel;
+use crate::ir::kernelized_graph::KernelizedGraph;
 
-pub fn validate_kernel(kernel: &Kernel) -> Result<(), ValidationError> {
-    validate_scheduled_stage_graph(&kernel.0).map_err(|error| err(error.to_string()))?;
+pub fn validate_kernelized_graph(kg: &KernelizedGraph) -> Result<(), ValidationError> {
+    validate_scheduled_stage_graph(&kg.0).map_err(|error| err(error.to_string()))?;
 
-    if kernel.0.outputs.len() != kernel.0.nodes.len() {
+    if kg.0.outputs.len() != kg.0.nodes.len() {
         return Err(err(format!(
-            "kernel has {} outputs for {} nodes",
-            kernel.0.outputs.len(),
-            kernel.0.nodes.len()
+            "kernelized graph has {} outputs for {} nodes",
+            kg.0.outputs.len(),
+            kg.0.nodes.len()
         )));
     }
 
-    for (node_index, node) in kernel.0.nodes.iter().enumerate() {
+    for (node_index, node) in kg.0.nodes.iter().enumerate() {
         for (input_index, source) in node.inputs.iter().enumerate() {
             let compute_site = node.inner.schedule.compute_sites[input_index];
             match (source, compute_site) {
@@ -23,22 +23,22 @@ pub fn validate_kernel(kernel: &Kernel) -> Result<(), ValidationError> {
                 (Source::Node(_, _), Some(_)) => {}
                 (Source::Input(_), Some(_)) => {
                     return Err(err(format!(
-                        "node {} input {} is sourced from kernel input but has a compute site",
+                        "node {} input {} is sourced from kernelized graph input but has a compute site",
                         node_index, input_index
                     )))
                 }
                 (Source::Node(_, _), None) => {
                     return Err(err(format!(
-                        "node {} input {} is sourced from kernel node but has no compute site",
+                        "node {} input {} is sourced from kernelized graph node but has no compute site",
                         node_index, input_index
                     )))
                 }
             }
         }
 
-        if kernel.0.outputs[node_index] != Source::Node(NodeId(node_index), OutputId(0)) {
+        if kg.0.outputs[node_index] != Source::Node(NodeId(node_index), OutputId(0)) {
             return Err(err(format!(
-                "kernel output {} must reference node {} output 0",
+                "kernelized graph output {} must reference node {} output 0",
                 node_index, node_index
             )));
         }
@@ -47,16 +47,18 @@ pub fn validate_kernel(kernel: &Kernel) -> Result<(), ValidationError> {
     Ok(())
 }
 
-pub fn validate_kernel_graph(graph: &Graph<Kernel>) -> Result<(), ValidationError> {
-    validate_graph(graph, |kernel| {
-        validate_kernel(kernel).map_err(|error| error.to_string())
+pub fn validate_kernelized_graph_graph(
+    graph: &Graph<KernelizedGraph>,
+) -> Result<(), ValidationError> {
+    validate_graph(graph, |kg| {
+        validate_kernelized_graph(kg).map_err(|error| error.to_string())
     })
     .map_err(|error| err(error.to_string()))?;
 
     for (node_index, node) in graph.nodes.iter().enumerate() {
         if node.inputs.len() != node.inner.0.inputs.len() {
             return Err(err(format!(
-                "node {}: graph has {} inputs for {} kernel inputs",
+                "node {}: graph has {} inputs for {} kernelized graph inputs",
                 node_index,
                 node.inputs.len(),
                 node.inner.0.inputs.len()
@@ -64,7 +66,7 @@ pub fn validate_kernel_graph(graph: &Graph<Kernel>) -> Result<(), ValidationErro
         }
         if node.outputs.len() != node.inner.0.outputs.len() {
             return Err(err(format!(
-                "node {}: graph has {} outputs for {} kernel outputs",
+                "node {}: graph has {} outputs for {} kernelized graph outputs",
                 node_index,
                 node.outputs.len(),
                 node.inner.0.outputs.len()
@@ -96,10 +98,10 @@ impl std::error::Error for ValidationError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_kernel, validate_kernel_graph};
+    use super::{validate_kernelized_graph, validate_kernelized_graph_graph};
     use crate::ir::common::Op;
     use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
-    use crate::ir::kernel::Kernel;
+    use crate::ir::kernelized_graph::KernelizedGraph;
     use crate::ir::stage::{
         Axis, AxisRef, Index, Schedule, ScheduledStage, Site, SplitList, Stage,
     };
@@ -125,8 +127,8 @@ mod tests {
     }
 
     #[test]
-    fn accepts_valid_kernel() {
-        let kernel = Kernel(Graph {
+    fn accepts_valid_kernelized_graph() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![
                 Node {
@@ -146,12 +148,12 @@ mod tests {
             ],
         });
 
-        assert!(validate_kernel(&kernel).is_ok());
+        assert!(validate_kernelized_graph(&kg).is_ok());
     }
 
     #[test]
-    fn rejects_kernel_input_with_compute_site() {
-        let kernel = Kernel(Graph {
+    fn rejects_kernelized_graph_input_with_compute_site() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![Node {
                 inner: stage(1, vec![Some(Site::Root)]),
@@ -161,16 +163,16 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         });
 
-        let error = validate_kernel(&kernel).unwrap_err();
+        let error = validate_kernelized_graph(&kg).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0 input 0 is sourced from kernel input but has a compute site"
+            "node 0 input 0 is sourced from kernelized graph input but has a compute site"
         );
     }
 
     #[test]
-    fn rejects_kernel_node_source_without_compute_site() {
-        let kernel = Kernel(Graph {
+    fn rejects_kernelized_graph_node_source_without_compute_site() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![],
             nodes: vec![
                 Node {
@@ -190,16 +192,16 @@ mod tests {
             ],
         });
 
-        let error = validate_kernel(&kernel).unwrap_err();
+        let error = validate_kernelized_graph(&kg).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 1 input 0 is sourced from kernel node but has no compute site"
+            "node 1 input 0 is sourced from kernelized graph node but has no compute site"
         );
     }
 
     #[test]
-    fn rejects_noncanonical_kernel_outputs() {
-        let kernel = Kernel(Graph {
+    fn rejects_noncanonical_kernelized_graph_outputs() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![Node {
                 inner: stage(1, vec![None]),
@@ -209,16 +211,16 @@ mod tests {
             outputs: vec![Source::Input(InputId(0))],
         });
 
-        let error = validate_kernel(&kernel).unwrap_err();
+        let error = validate_kernelized_graph(&kg).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "kernel output 0 must reference node 0 output 0"
+            "kernelized graph output 0 must reference node 0 output 0"
         );
     }
 
     #[test]
-    fn rejects_kernel_outputs_in_wrong_order() {
-        let kernel = Kernel(Graph {
+    fn rejects_kernelized_graph_outputs_in_wrong_order() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![
                 Node {
@@ -238,16 +240,16 @@ mod tests {
             ],
         });
 
-        let error = validate_kernel(&kernel).unwrap_err();
+        let error = validate_kernelized_graph(&kg).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "kernel output 0 must reference node 0 output 0"
+            "kernelized graph output 0 must reference node 0 output 0"
         );
     }
 
     #[test]
-    fn accepts_valid_kernel_graph() {
-        let kernel = Kernel(Graph {
+    fn accepts_valid_kernelized_graph_graph() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![Node {
                 inner: stage(1, vec![None]),
@@ -260,19 +262,19 @@ mod tests {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
-                inner: kernel,
+                inner: kg,
                 inputs: vec![Source::Input(InputId(0))],
                 outputs: vec![Output],
             }],
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        assert!(validate_kernel_graph(&graph).is_ok());
+        assert!(validate_kernelized_graph_graph(&graph).is_ok());
     }
 
     #[test]
-    fn rejects_kernel_graph_input_len_mismatch() {
-        let kernel = Kernel(Graph {
+    fn rejects_kernelized_graph_graph_input_len_mismatch() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![Input],
             nodes: vec![Node {
                 inner: stage(1, vec![None]),
@@ -285,23 +287,23 @@ mod tests {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
-                inner: kernel,
+                inner: kg,
                 inputs: vec![],
                 outputs: vec![Output],
             }],
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let error = validate_kernel_graph(&graph).unwrap_err();
+        let error = validate_kernelized_graph_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0: graph has 0 inputs for 1 kernel inputs"
+            "node 0: graph has 0 inputs for 1 kernelized graph inputs"
         );
     }
 
     #[test]
-    fn rejects_kernel_graph_output_len_mismatch() {
-        let kernel = Kernel(Graph {
+    fn rejects_kernelized_graph_graph_output_len_mismatch() {
+        let kg = KernelizedGraph(Graph {
             inputs: vec![],
             nodes: vec![Node {
                 inner: stage(0, vec![]),
@@ -314,17 +316,17 @@ mod tests {
         let graph = Graph {
             inputs: vec![],
             nodes: vec![Node {
-                inner: kernel,
+                inner: kg,
                 inputs: vec![],
                 outputs: vec![],
             }],
             outputs: vec![],
         };
 
-        let error = validate_kernel_graph(&graph).unwrap_err();
+        let error = validate_kernelized_graph_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0: graph has 0 outputs for 1 kernel outputs"
+            "node 0: graph has 0 outputs for 1 kernelized graph outputs"
         );
     }
 }

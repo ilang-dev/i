@@ -2,33 +2,33 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::check::graph::validate_scheduled_stage_graph;
-use crate::check::kernel::validate_kernel_graph;
+use crate::check::kernelized_graph::validate_kernelized_graph_graph;
 use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
-use crate::ir::kernel::Kernel;
+use crate::ir::kernelized_graph::KernelizedGraph;
 use crate::ir::stage::ScheduledStage;
 
-pub fn lower_graph_to_kernel_graph(
+pub fn lower_graph_to_kernelized_graph_graph(
     graph: &Graph<ScheduledStage>,
-) -> Result<Graph<Kernel>, LowerError> {
+) -> Result<Graph<KernelizedGraph>, LowerError> {
     validate_scheduled_stage_graph(graph).map_err(LowerError::from_graph)?;
     reject_graph_input_compute_sites(graph)?;
 
     let materialized_roots = materialized_roots(graph);
-    let mut root_kernel_map = BTreeMap::new();
-    let mut kernels = Vec::new();
+    let mut root_kg_map = BTreeMap::new();
+    let mut kgs = Vec::new();
 
     for root in &materialized_roots {
-        let built = build_kernel(graph, *root)?;
-        let kernel_node_id = NodeId(kernels.len());
+        let built = build_kernelized_graph(graph, *root)?;
+        let kg_node_id = NodeId(kgs.len());
         let node_inputs = built
             .boundary_sources
             .iter()
-            .map(|source| remap_boundary_source(*source, &root_kernel_map))
+            .map(|source| remap_boundary_source(*source, &root_kg_map))
             .collect::<Result<Vec<_>, _>>()?;
-        let node_outputs = vec![Output; built.kernel.0.outputs.len()];
-        root_kernel_map.insert(*root, (kernel_node_id, built.root_output));
-        kernels.push(Node {
-            inner: built.kernel,
+        let node_outputs = vec![Output; built.kg.0.outputs.len()];
+        root_kg_map.insert(*root, (kg_node_id, built.root_output));
+        kgs.push(Node {
+            inner: built.kg,
             inputs: node_inputs,
             outputs: node_outputs,
         });
@@ -38,16 +38,16 @@ pub fn lower_graph_to_kernel_graph(
         .outputs
         .iter()
         .copied()
-        .map(|source| remap_graph_output(source, &root_kernel_map))
+        .map(|source| remap_graph_output(source, &root_kg_map))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let kernel_graph = Graph {
+    let kg_graph = Graph {
         inputs: vec![Input; graph.inputs.len()],
-        nodes: kernels,
+        nodes: kgs,
         outputs,
     };
-    validate_kernel_graph(&kernel_graph).map_err(LowerError::from_kernel_graph)?;
-    Ok(kernel_graph)
+    validate_kernelized_graph_graph(&kg_graph).map_err(LowerError::from_kernelized_graph_graph)?;
+    Ok(kg_graph)
 }
 
 fn reject_graph_input_compute_sites(graph: &Graph<ScheduledStage>) -> Result<(), LowerError> {
@@ -57,7 +57,7 @@ fn reject_graph_input_compute_sites(graph: &Graph<ScheduledStage>) -> Result<(),
                 && node.inner.schedule.compute_sites[input_index].is_some()
             {
                 return Err(LowerError::new(format!(
-                    "node {} input {} computes graph input inside the kernel",
+                    "node {} input {} computes graph input inside the kernelized graph",
                     node_index, input_index
                 )));
             }
@@ -91,17 +91,17 @@ fn materialized_roots(graph: &Graph<ScheduledStage>) -> BTreeSet<NodeId> {
 
 fn remap_boundary_source(
     source: Source,
-    root_kernel_map: &BTreeMap<NodeId, (NodeId, OutputId)>,
+    root_kg_map: &BTreeMap<NodeId, (NodeId, OutputId)>,
 ) -> Result<Source, LowerError> {
     match source {
         Source::Input(input) => Ok(Source::Input(input)),
-        Source::Node(node, OutputId(0)) => root_kernel_map
+        Source::Node(node, OutputId(0)) => root_kg_map
             .get(&node)
             .copied()
-            .map(|(kernel, output)| Source::Node(kernel, output))
+            .map(|(kg, output)| Source::Node(kg, output))
             .ok_or_else(|| {
                 LowerError::new(format!(
-                    "materialized producer node {} has no kernel",
+                    "materialized producer node {} has no kernelized graph",
                     node.0
                 ))
             }),
@@ -114,15 +114,17 @@ fn remap_boundary_source(
 
 fn remap_graph_output(
     source: Source,
-    root_kernel_map: &BTreeMap<NodeId, (NodeId, OutputId)>,
+    root_kg_map: &BTreeMap<NodeId, (NodeId, OutputId)>,
 ) -> Result<Source, LowerError> {
     match source {
         Source::Input(input) => Ok(Source::Input(input)),
-        Source::Node(node, OutputId(0)) => root_kernel_map
+        Source::Node(node, OutputId(0)) => root_kg_map
             .get(&node)
             .copied()
-            .map(|(kernel, output)| Source::Node(kernel, output))
-            .ok_or_else(|| LowerError::new(format!("output node {} has no kernel", node.0))),
+            .map(|(kg, output)| Source::Node(kg, output))
+            .ok_or_else(|| {
+                LowerError::new(format!("output node {} has no kernelized graph", node.0))
+            }),
         Source::Node(node, output) => Err(LowerError::new(format!(
             "output node {} references unsupported output {}",
             node.0, output.0
@@ -130,8 +132,11 @@ fn remap_graph_output(
     }
 }
 
-fn build_kernel(graph: &Graph<ScheduledStage>, root: NodeId) -> Result<BuiltKernel, LowerError> {
-    let mut builder = KernelBuilder {
+fn build_kernelized_graph(
+    graph: &Graph<ScheduledStage>,
+    root: NodeId,
+) -> Result<BuiltKernelizedGraph, LowerError> {
+    let mut builder = KernelizedGraphBuilder {
         graph,
         boundary_inputs: Vec::new(),
         boundary_map: BTreeMap::new(),
@@ -142,11 +147,11 @@ fn build_kernel(graph: &Graph<ScheduledStage>, root: NodeId) -> Result<BuiltKern
     let root_output = match root_source {
         Source::Node(node, OutputId(0)) => OutputId(node.0),
         Source::Node(_, output) => output,
-        Source::Input(_) => unreachable!("kernel root cannot be a graph input"),
+        Source::Input(_) => unreachable!("kernelized graph root cannot be a graph input"),
     };
 
-    Ok(BuiltKernel {
-        kernel: Kernel(Graph {
+    Ok(BuiltKernelizedGraph {
+        kg: KernelizedGraph(Graph {
             inputs: vec![Input; builder.boundary_inputs.len()],
             nodes: builder.nodes,
             outputs: builder.outputs,
@@ -156,7 +161,7 @@ fn build_kernel(graph: &Graph<ScheduledStage>, root: NodeId) -> Result<BuiltKern
     })
 }
 
-struct KernelBuilder<'a> {
+struct KernelizedGraphBuilder<'a> {
     graph: &'a Graph<ScheduledStage>,
     boundary_inputs: Vec<Source>,
     boundary_map: BTreeMap<Source, InputId>,
@@ -164,7 +169,7 @@ struct KernelBuilder<'a> {
     outputs: Vec<Source>,
 }
 
-impl<'a> KernelBuilder<'a> {
+impl<'a> KernelizedGraphBuilder<'a> {
     fn build_instance(&mut self, node_id: NodeId) -> Result<Source, LowerError> {
         let node = &self.graph.nodes[node_id.0];
         let mut inputs = Vec::with_capacity(node.inputs.len());
@@ -173,7 +178,7 @@ impl<'a> KernelBuilder<'a> {
             match (source, node.inner.schedule.compute_sites[input_index]) {
                 (Source::Input(_), Some(_)) => {
                     return Err(LowerError::new(format!(
-                        "node {} input {} computes graph input inside the kernel",
+                        "node {} input {} computes graph input inside the kernelized graph",
                         node_id.0, input_index
                     )))
                 }
@@ -216,8 +221,8 @@ impl<'a> KernelBuilder<'a> {
     }
 }
 
-struct BuiltKernel {
-    kernel: Kernel,
+struct BuiltKernelizedGraph {
+    kg: KernelizedGraph,
     boundary_sources: Vec<Source>,
     root_output: OutputId,
 }
@@ -238,7 +243,7 @@ impl LowerError {
         Self::new(error.to_string())
     }
 
-    fn from_kernel_graph(error: crate::check::kernel::ValidationError) -> Self {
+    fn from_kernelized_graph_graph(error: crate::check::kernelized_graph::ValidationError) -> Self {
         Self::new(error.to_string())
     }
 }
@@ -253,7 +258,7 @@ impl std::error::Error for LowerError {}
 
 #[cfg(test)]
 mod tests {
-    use super::lower_graph_to_kernel_graph;
+    use super::lower_graph_to_kernelized_graph_graph;
     use crate::ir::common::Op;
     use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
     use crate::ir::stage::{
@@ -285,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_single_output_stage_to_single_kernel() {
+    fn lowers_single_output_stage_to_single_kernelized_graph() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
@@ -296,28 +301,22 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.inputs.len(), 1);
-        assert_eq!(kernel_graph.nodes.len(), 1);
-        assert_eq!(
-            kernel_graph.nodes[0].inputs,
-            vec![Source::Input(InputId(0))]
-        );
-        assert_eq!(kernel_graph.nodes[0].outputs.len(), 1);
-        assert_eq!(
-            kernel_graph.outputs,
-            vec![Source::Node(NodeId(0), OutputId(0))]
-        );
+        assert_eq!(kg_graph.inputs.len(), 1);
+        assert_eq!(kg_graph.nodes.len(), 1);
+        assert_eq!(kg_graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(kg_graph.nodes[0].outputs.len(), 1);
+        assert_eq!(kg_graph.outputs, vec![Source::Node(NodeId(0), OutputId(0))]);
 
-        let kernel = &kernel_graph.nodes[0].inner.0;
-        assert_eq!(kernel.inputs.len(), 1);
-        assert_eq!(kernel.nodes.len(), 1);
-        assert_eq!(kernel.outputs, vec![Source::Node(NodeId(0), OutputId(0))]);
+        let kg = &kg_graph.nodes[0].inner.0;
+        assert_eq!(kg.inputs.len(), 1);
+        assert_eq!(kg.nodes.len(), 1);
+        assert_eq!(kg.outputs, vec![Source::Node(NodeId(0), OutputId(0))]);
     }
 
     #[test]
-    fn lowers_none_edge_as_kernel_boundary() {
+    fn lowers_none_edge_as_kernelized_graph_boundary() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -335,25 +334,19 @@ mod tests {
             outputs: vec![Source::Node(NodeId(1), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 2);
+        assert_eq!(kg_graph.nodes.len(), 2);
+        assert_eq!(kg_graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
-            kernel_graph.nodes[0].inputs,
-            vec![Source::Input(InputId(0))]
-        );
-        assert_eq!(
-            kernel_graph.nodes[1].inputs,
+            kg_graph.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
-        assert_eq!(
-            kernel_graph.outputs,
-            vec![Source::Node(NodeId(1), OutputId(0))]
-        );
+        assert_eq!(kg_graph.outputs, vec![Source::Node(NodeId(1), OutputId(0))]);
     }
 
     #[test]
-    fn lowers_some_edge_inside_consumer_kernel() {
+    fn lowers_some_edge_inside_consumer_kernelized_graph() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -371,27 +364,21 @@ mod tests {
             outputs: vec![Source::Node(NodeId(1), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 1);
-        assert_eq!(
-            kernel_graph.nodes[0].inputs,
-            vec![Source::Input(InputId(0))]
-        );
-        assert_eq!(kernel_graph.nodes[0].outputs.len(), 2);
-        assert_eq!(
-            kernel_graph.outputs,
-            vec![Source::Node(NodeId(0), OutputId(1))]
-        );
+        assert_eq!(kg_graph.nodes.len(), 1);
+        assert_eq!(kg_graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(kg_graph.nodes[0].outputs.len(), 2);
+        assert_eq!(kg_graph.outputs, vec![Source::Node(NodeId(0), OutputId(1))]);
 
-        let kernel = &kernel_graph.nodes[0].inner.0;
-        assert_eq!(kernel.nodes.len(), 2);
+        let kg = &kg_graph.nodes[0].inner.0;
+        assert_eq!(kg.nodes.len(), 2);
         assert_eq!(
-            kernel.nodes[1].inputs,
+            kg.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
         assert_eq!(
-            kernel.outputs,
+            kg.outputs,
             vec![
                 Source::Node(NodeId(0), OutputId(0)),
                 Source::Node(NodeId(1), OutputId(0)),
@@ -400,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicates_per_compute_directive_inside_one_kernel() {
+    fn duplicates_per_compute_directive_inside_one_kernelized_graph() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -431,15 +418,15 @@ mod tests {
             outputs: vec![Source::Node(NodeId(3), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
-        let kernel = &kernel_graph.nodes[0].inner.0;
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
+        let kg = &kg_graph.nodes[0].inner.0;
 
-        assert_eq!(kernel.nodes.len(), 5);
-        assert_eq!(kernel.outputs.len(), 5);
-        assert_eq!(kernel.nodes[0].inputs, vec![Source::Input(InputId(0))]);
-        assert_eq!(kernel.nodes[2].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(kg.nodes.len(), 5);
+        assert_eq!(kg.outputs.len(), 5);
+        assert_eq!(kg.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(kg.nodes[2].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
-            kernel.nodes[4].inputs,
+            kg.nodes[4].inputs,
             vec![
                 Source::Node(NodeId(1), OutputId(0)),
                 Source::Node(NodeId(3), OutputId(0)),
@@ -448,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn shares_one_materialized_kernel_for_multiple_none_consumers() {
+    fn shares_one_materialized_kernelized_graph_for_multiple_none_consumers() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -474,15 +461,15 @@ mod tests {
             ],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 3);
+        assert_eq!(kg_graph.nodes.len(), 3);
         assert_eq!(
-            kernel_graph.nodes[1].inputs,
+            kg_graph.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
         assert_eq!(
-            kernel_graph.nodes[2].inputs,
+            kg_graph.nodes[2].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
     }
@@ -519,30 +506,30 @@ mod tests {
             ],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 3);
-        assert_eq!(kernel_graph.nodes[2].outputs.len(), 3);
+        assert_eq!(kg_graph.nodes.len(), 3);
+        assert_eq!(kg_graph.nodes[2].outputs.len(), 3);
         assert_eq!(
-            kernel_graph.nodes[1].inputs,
+            kg_graph.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
 
-        let some_kernel = &kernel_graph.nodes[2].inner.0;
-        assert_eq!(some_kernel.nodes.len(), 3);
-        assert_eq!(some_kernel.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        let some_kg = &kg_graph.nodes[2].inner.0;
+        assert_eq!(some_kg.nodes.len(), 3);
+        assert_eq!(some_kg.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
-            some_kernel.nodes[1].inputs,
+            some_kg.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
         assert_eq!(
-            some_kernel.nodes[2].inputs,
+            some_kg.nodes[2].inputs,
             vec![Source::Node(NodeId(1), OutputId(0))]
         );
     }
 
     #[test]
-    fn program_output_forces_materialized_kernel() {
+    fn program_output_forces_materialized_kernelized_graph() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -563,13 +550,13 @@ mod tests {
             ],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 2);
-        assert_eq!(kernel_graph.nodes[0].outputs.len(), 1);
-        assert_eq!(kernel_graph.nodes[1].outputs.len(), 2);
+        assert_eq!(kg_graph.nodes.len(), 2);
+        assert_eq!(kg_graph.nodes[0].outputs.len(), 1);
+        assert_eq!(kg_graph.nodes[1].outputs.len(), 2);
         assert_eq!(
-            kernel_graph.outputs,
+            kg_graph.outputs,
             vec![
                 Source::Node(NodeId(0), OutputId(0)),
                 Source::Node(NodeId(1), OutputId(1)),
@@ -612,13 +599,13 @@ mod tests {
             ],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.nodes.len(), 2);
-        assert_eq!(kernel_graph.nodes[0].outputs.len(), 1);
-        assert_eq!(kernel_graph.nodes[1].outputs.len(), 5);
+        assert_eq!(kg_graph.nodes.len(), 2);
+        assert_eq!(kg_graph.nodes[0].outputs.len(), 1);
+        assert_eq!(kg_graph.nodes[1].outputs.len(), 5);
         assert_eq!(
-            kernel_graph.outputs,
+            kg_graph.outputs,
             vec![
                 Source::Node(NodeId(0), OutputId(0)),
                 Source::Node(NodeId(1), OutputId(4)),
@@ -648,10 +635,10 @@ mod tests {
             ],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
         assert_eq!(
-            kernel_graph.outputs,
+            kg_graph.outputs,
             vec![
                 Source::Node(NodeId(1), OutputId(0)),
                 Source::Node(NodeId(0), OutputId(0)),
@@ -667,11 +654,11 @@ mod tests {
             outputs: vec![Source::Input(InputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
 
-        assert_eq!(kernel_graph.inputs.len(), 1);
-        assert!(kernel_graph.nodes.is_empty());
-        assert_eq!(kernel_graph.outputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(kg_graph.inputs.len(), 1);
+        assert!(kg_graph.nodes.is_empty());
+        assert_eq!(kg_graph.outputs, vec![Source::Input(InputId(0))]);
     }
 
     #[test]
@@ -686,15 +673,15 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let error = lower_graph_to_kernel_graph(&graph).unwrap_err();
+        let error = lower_graph_to_kernelized_graph_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0 input 0 computes graph input inside the kernel"
+            "node 0 input 0 computes graph input inside the kernelized graph"
         );
     }
 
     #[test]
-    fn deduplicates_kernel_boundary_inputs() {
+    fn deduplicates_kernelized_graph_boundary_inputs() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -715,22 +702,22 @@ mod tests {
             outputs: vec![Source::Node(NodeId(1), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
-        let kernel = &kernel_graph.nodes[1].inner.0;
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
+        let kg = &kg_graph.nodes[1].inner.0;
 
         assert_eq!(
-            kernel_graph.nodes[1].inputs,
+            kg_graph.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
         );
-        assert_eq!(kernel.inputs.len(), 1);
+        assert_eq!(kg.inputs.len(), 1);
         assert_eq!(
-            kernel.nodes[0].inputs,
+            kg.nodes[0].inputs,
             vec![Source::Input(InputId(0)), Source::Input(InputId(0))]
         );
     }
 
     #[test]
-    fn records_branching_kernel_outputs_in_postorder() {
+    fn records_branching_kernelized_graph_outputs_in_postorder() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![
@@ -769,11 +756,11 @@ mod tests {
             outputs: vec![Source::Node(NodeId(4), OutputId(0))],
         };
 
-        let kernel_graph = lower_graph_to_kernel_graph(&graph).unwrap();
-        let kernel = &kernel_graph.nodes[0].inner.0;
+        let kg_graph = lower_graph_to_kernelized_graph_graph(&graph).unwrap();
+        let kg = &kg_graph.nodes[0].inner.0;
 
         assert_eq!(
-            kernel.outputs,
+            kg.outputs,
             vec![
                 Source::Node(NodeId(0), OutputId(0)),
                 Source::Node(NodeId(1), OutputId(0)),
@@ -783,9 +770,6 @@ mod tests {
                 Source::Node(NodeId(5), OutputId(0)),
             ]
         );
-        assert_eq!(
-            kernel_graph.outputs,
-            vec![Source::Node(NodeId(0), OutputId(5))]
-        );
+        assert_eq!(kg_graph.outputs, vec![Source::Node(NodeId(0), OutputId(5))]);
     }
 }
