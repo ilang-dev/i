@@ -4,7 +4,6 @@ pub mod expr;
 pub mod graph;
 pub mod iir;
 pub mod kernel;
-pub mod kernelized_graph;
 pub mod loop_ir;
 pub mod stage;
 
