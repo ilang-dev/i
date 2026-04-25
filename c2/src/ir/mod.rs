@@ -5,6 +5,7 @@ pub mod graph;
 pub mod iir;
 pub mod kernel;
 pub mod loop_ir;
+pub mod node;
 pub mod stage;
 
 /*

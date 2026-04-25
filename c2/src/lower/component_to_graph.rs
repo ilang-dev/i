@@ -1,16 +1,14 @@
 use std::fmt;
 
 use crate::check::component::validate_component;
-use crate::check::graph::validate_scheduled_stage_graph;
+use crate::check::graph::validate_node_graph;
 use crate::ir::component::Component;
 use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
-use crate::ir::stage::ScheduledStage;
+use crate::ir::node::Node as IrNode;
 
-use super::expr_to_stage::{lower_expr_to_stage_unchecked, LowerError as ExprLowerError};
+use super::expr_to_node::{lower_expr_to_node_unchecked, LowerError as ExprLowerError};
 
-pub fn lower_component_to_graph(
-    component: &Component,
-) -> Result<Graph<ScheduledStage>, LowerError> {
+pub fn lower_component_to_graph(component: &Component) -> Result<Graph<IrNode>, LowerError> {
     validate_component(component).map_err(LowerError::from_component)?;
     let partial = lower_component_to_partial(component)?;
     let graph = Graph {
@@ -18,18 +16,18 @@ pub fn lower_component_to_graph(
         nodes: partial.nodes,
         outputs: partial.outputs,
     };
-    validate_scheduled_stage_graph(&graph).map_err(LowerError::from_graph)?;
+    validate_node_graph(&graph).map_err(LowerError::from_graph)?;
     Ok(graph)
 }
 
 fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, LowerError> {
     match component {
         Component::Expr(expr) => {
-            let stage = lower_expr_to_stage_unchecked(expr).map_err(LowerError::from_expr)?;
+            let node = lower_expr_to_node_unchecked(expr).map_err(LowerError::from_expr)?;
             Ok(PartialGraph {
-                inputs: stage.stage.inputs.len(),
+                inputs: node.inputs.len(),
                 nodes: vec![Node {
-                    inner: stage,
+                    inner: node,
                     inputs: (0..expr.inputs.len())
                         .map(|index| Source::Input(InputId(index)))
                         .collect(),
@@ -166,10 +164,10 @@ fn input_sources(base: usize, len: usize) -> Vec<Source> {
 }
 
 fn remap_nodes(
-    nodes: Vec<Node<ScheduledStage>>,
+    nodes: Vec<Node<IrNode>>,
     input_map: &[Source],
     node_offset: usize,
-) -> Vec<Node<ScheduledStage>> {
+) -> Vec<Node<IrNode>> {
     nodes
         .into_iter()
         .map(|node| Node {
@@ -201,7 +199,7 @@ fn remap_source(source: Source, input_map: &[Source], node_offset: usize) -> Sou
 
 struct PartialGraph {
     inputs: usize,
-    nodes: Vec<Node<ScheduledStage>>,
+    nodes: Vec<Node<IrNode>>,
     outputs: Vec<Source>,
 }
 
@@ -242,9 +240,9 @@ impl std::error::Error for LowerError {}
 mod tests {
     use crate::component;
     use crate::front::parse_expr;
-    use crate::ir::common::Op;
+    use crate::ir::common::{Index, Op};
     use crate::ir::graph::{InputId, NodeId, OutputId, Source};
-    use crate::ir::stage::{Axis, AxisRef, Site, SplitList};
+    use crate::ir::node::{AxisRef, Site, SplitList};
 
     use super::lower_component_to_graph;
 
@@ -263,7 +261,7 @@ mod tests {
             graph.nodes[0].inputs,
             vec![Source::Input(InputId(0)), Source::Input(InputId(1))]
         );
-        assert_eq!(graph.nodes[0].inner.stage.op, Op::Add);
+        assert_eq!(graph.nodes[0].inner.op, Op::Add);
     }
 
     #[test]
@@ -304,10 +302,10 @@ mod tests {
         );
         assert_eq!(graph.outputs, vec![Source::Node(NodeId(1), OutputId(0))]);
         assert_eq!(
-            graph.nodes[1].inner.schedule.init_site,
+            graph.nodes[1].inner.init_site,
             Some(Site::At(AxisRef {
-                axis: Axis(1),
-                part: 0
+                index: Index(1),
+                level: 0
             }))
         );
     }
@@ -460,7 +458,7 @@ mod tests {
         let graph = lower_component_to_graph(&component).unwrap();
 
         assert_eq!(
-            graph.nodes[2].inner.schedule.splits,
+            graph.nodes[2].inner.splits,
             vec![SplitList(vec![]), SplitList(vec![])]
         );
     }

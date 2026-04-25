@@ -2,58 +2,55 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::check::component::validate_component;
-use crate::check::stage::{required_init_site_from_order, validate_scheduled_stage};
+use crate::check::node::{required_init_site_from_order, validate_node};
+use crate::ir::common::Index;
 use crate::ir::component::Component;
 use crate::ir::expr::{Expr, PermutationAtom};
-use crate::ir::stage::{
-    Axis, AxisRef, Index, Schedule, ScheduledStage, Site, SplitFactor, SplitList, Stage,
-};
+use crate::ir::node::{AxisRef, MultiIndex, Node, Site, SplitFactor, SplitList};
 
-pub fn lower_expr_to_stage(expr: &Expr) -> Result<ScheduledStage, LowerError> {
+pub fn lower_expr_to_node(expr: &Expr) -> Result<Node, LowerError> {
     validate_component(&Component::Expr(expr.clone())).map_err(LowerError::from_component)?;
-    lower_expr_to_stage_unchecked(expr)
+    lower_expr_to_node_unchecked(expr)
 }
 
-pub(crate) fn lower_expr_to_stage_unchecked(expr: &Expr) -> Result<ScheduledStage, LowerError> {
+pub(crate) fn lower_expr_to_node_unchecked(expr: &Expr) -> Result<Node, LowerError> {
     let axis_order = canonical_axis_order(expr);
     let axis_map = axis_order
         .iter()
         .enumerate()
-        .map(|(index, axis)| (*axis, Axis(index)))
+        .map(|(index, axis)| (*axis, Index(index)))
         .collect::<BTreeMap<_, _>>();
 
-    let stage = Stage {
+    let mut node = Node {
         op: expr.op,
         rank: axis_order.len(),
         inputs: expr
             .inputs
             .iter()
-            .map(|pattern| lower_index(pattern, &axis_map))
+            .map(|pattern| lower_multi_index(pattern, &axis_map))
             .collect::<Result<_, _>>()?,
-        output: lower_index(&expr.output, &axis_map)?,
+        output: lower_multi_index(&expr.output, &axis_map)?,
+        splits: lower_splits(expr, &axis_order),
+        order: Vec::new(),
+        compute_sites: Vec::new(),
+        init_site: None,
     };
 
-    let splits = lower_splits(expr, &axis_order);
     let (order, compute_sites, init_site) = if expr.permutation.is_empty() {
-        let order = default_order(splits.as_slice());
-        let init_site = required_init_site_from_order(&stage, splits.as_slice(), &order)
-            .map_err(LowerError::from_stage)?;
-        (order, vec![None; stage.inputs.len()], init_site)
+        let order = default_order(node.splits.as_slice());
+        let init_site =
+            required_init_site_from_order(node.rank, &node.output, node.splits.as_slice(), &order)
+                .map_err(LowerError::from_node)?;
+        (order, vec![None; node.inputs.len()], init_site)
     } else {
-        lower_schedule_from_permutation(expr, &stage, splits.as_slice(), &axis_map)?
+        lower_schedule_from_permutation(expr, &node, &axis_map)?
     };
 
-    let scheduled = ScheduledStage {
-        stage,
-        schedule: Schedule {
-            splits,
-            order,
-            compute_sites,
-            init_site,
-        },
-    };
-    validate_scheduled_stage(&scheduled).map_err(LowerError::from_stage)?;
-    Ok(scheduled)
+    node.order = order;
+    node.compute_sites = compute_sites;
+    node.init_site = init_site;
+    validate_node(&node).map_err(LowerError::from_node)?;
+    Ok(node)
 }
 
 fn canonical_axis_order(expr: &Expr) -> Vec<char> {
@@ -76,7 +73,10 @@ fn canonical_axis_order(expr: &Expr) -> Vec<char> {
     axes
 }
 
-fn lower_index(pattern: &[char], axis_map: &BTreeMap<char, Axis>) -> Result<Index, LowerError> {
+fn lower_multi_index(
+    pattern: &[char],
+    axis_map: &BTreeMap<char, Index>,
+) -> Result<MultiIndex, LowerError> {
     pattern
         .iter()
         .map(|axis| {
@@ -86,7 +86,7 @@ fn lower_index(pattern: &[char], axis_map: &BTreeMap<char, Axis>) -> Result<Inde
                 .ok_or_else(|| LowerError::new(format!("unknown local axis `{axis}`")))
         })
         .collect::<Result<Vec<_>, _>>()
-        .map(Index)
+        .map(MultiIndex)
 }
 
 fn lower_splits(expr: &Expr, axis_order: &[char]) -> Vec<SplitList> {
@@ -113,11 +113,11 @@ fn lower_splits(expr: &Expr, axis_order: &[char]) -> Vec<SplitList> {
 
 fn default_order(splits: &[SplitList]) -> Vec<AxisRef> {
     let mut order = Vec::new();
-    for (axis, split_list) in splits.iter().enumerate() {
-        for part in 0..=split_list.0.len() {
+    for (index, split_list) in splits.iter().enumerate() {
+        for level in 0..=split_list.0.len() {
             order.push(AxisRef {
-                axis: Axis(axis),
-                part,
+                index: Index(index),
+                level,
             });
         }
     }
@@ -126,9 +126,8 @@ fn default_order(splits: &[SplitList]) -> Vec<AxisRef> {
 
 fn lower_schedule_from_permutation(
     expr: &Expr,
-    stage: &Stage,
-    splits: &[SplitList],
-    axis_map: &BTreeMap<char, Axis>,
+    node: &Node,
+    axis_map: &BTreeMap<char, Index>,
 ) -> Result<(Vec<AxisRef>, Vec<Option<Site>>, Option<Site>), LowerError> {
     let mut order = Vec::new();
     let mut compute_sites = vec![None; expr.inputs.len()];
@@ -138,11 +137,14 @@ fn lower_schedule_from_permutation(
     for atom in &expr.permutation {
         match atom {
             PermutationAtom::Axis { axis, part } => {
-                let axis = axis_map
+                let index = axis_map
                     .get(axis)
                     .copied()
                     .ok_or_else(|| LowerError::new(format!("unknown local axis `{axis}`")))?;
-                let axis_ref = AxisRef { axis, part: *part };
+                let axis_ref = AxisRef {
+                    index,
+                    level: *part,
+                };
                 order.push(axis_ref);
                 last_axis_ref = Some(axis_ref);
             }
@@ -169,12 +171,13 @@ fn lower_schedule_from_permutation(
     }
 
     let required_init_site =
-        required_init_site_from_order(stage, splits, &order).map_err(LowerError::from_stage)?;
+        required_init_site_from_order(node.rank, &node.output, node.splits.as_slice(), &order)
+            .map_err(LowerError::from_node)?;
     let init_site = match (required_init_site, explicit_init_site) {
         (None, None) => None,
         (None, Some(_)) => {
             return Err(LowerError::new(
-                "pointwise stage cannot have an output init directive",
+                "pointwise node cannot have an output init directive",
             ))
         }
         (Some(site), None) => Some(site),
@@ -193,7 +196,7 @@ fn lower_schedule_from_permutation(
 fn format_site(site: Site) -> String {
     match site {
         Site::Root => "Root".to_string(),
-        Site::At(axis_ref) => format!("At({}{})", axis_ref.axis.0, "'".repeat(axis_ref.part)),
+        Site::At(axis_ref) => format!("At({}{})", axis_ref.index.0, "'".repeat(axis_ref.level)),
     }
 }
 
@@ -213,7 +216,7 @@ impl LowerError {
         Self::new(error.to_string())
     }
 
-    fn from_stage(error: crate::check::stage::ValidationError) -> Self {
+    fn from_node(error: crate::check::node::ValidationError) -> Self {
         Self::new(error.to_string())
     }
 }
@@ -228,100 +231,109 @@ impl std::error::Error for LowerError {}
 
 #[cfg(test)]
 mod tests {
-    use super::lower_expr_to_stage;
+    use super::lower_expr_to_node;
     use crate::front::parse_expr;
-    use crate::ir::common::Op;
-    use crate::ir::stage::{Axis, AxisRef, Index, Site, SplitFactor, SplitList};
+    use crate::ir::common::{Index, Op};
+    use crate::ir::node::{AxisRef, MultiIndex, Node, Site, SplitFactor, SplitList};
 
-    fn lower(src: &str) -> crate::ir::stage::ScheduledStage {
+    fn lower(src: &str) -> Node {
         let expr = parse_expr(src).unwrap();
-        lower_expr_to_stage(&expr).unwrap()
+        lower_expr_to_node(&expr).unwrap()
     }
 
     #[test]
     fn lowers_pointwise_expr_with_canonical_axis_order() {
-        let stage = lower("ik*kj~ijk");
+        let node = lower("ik*kj~ijk");
 
-        assert_eq!(stage.stage.op, Op::Mul);
-        assert_eq!(stage.stage.rank, 3);
+        assert_eq!(node.op, Op::Mul);
+        assert_eq!(node.rank, 3);
         assert_eq!(
-            stage.stage.inputs,
-            vec![Index(vec![Axis(0), Axis(2)]), Index(vec![Axis(2), Axis(1)])]
+            node.inputs,
+            vec![
+                MultiIndex(vec![Index(0), Index(2)]),
+                MultiIndex(vec![Index(2), Index(1)])
+            ]
         );
-        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1), Axis(2)]));
+        assert_eq!(node.output, MultiIndex(vec![Index(0), Index(1), Index(2)]));
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 0
+                    index: Index(2),
+                    level: 0
                 },
             ]
         );
-        assert_eq!(stage.schedule.compute_sites, vec![None, None]);
-        assert_eq!(stage.schedule.init_site, None);
+        assert_eq!(node.compute_sites, vec![None, None]);
+        assert_eq!(node.init_site, None);
     }
 
     #[test]
     fn lowers_repeated_input_axes() {
-        let stage = lower("+iij~i");
+        let node = lower("+iij~i");
 
-        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(node.rank, 2);
         assert_eq!(
-            stage.stage.inputs,
-            vec![Index(vec![Axis(0), Axis(0), Axis(1)])]
+            node.inputs,
+            vec![MultiIndex(vec![Index(0), Index(0), Index(1)])]
         );
-        assert_eq!(stage.stage.output, Index(vec![Axis(0)]));
+        assert_eq!(node.output, MultiIndex(vec![Index(0)]));
         assert_eq!(
-            stage.schedule.init_site,
+            node.init_site,
             Some(Site::At(AxisRef {
-                axis: Axis(0),
-                part: 0
+                index: Index(0),
+                level: 0
             }))
         );
     }
 
     #[test]
     fn lowers_broadcasted_input_indexing() {
-        let stage = lower("ij+i~ij");
+        let node = lower("ij+i~ij");
 
-        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(node.rank, 2);
         assert_eq!(
-            stage.stage.inputs,
-            vec![Index(vec![Axis(0), Axis(1)]), Index(vec![Axis(0)])]
+            node.inputs,
+            vec![
+                MultiIndex(vec![Index(0), Index(1)]),
+                MultiIndex(vec![Index(0)])
+            ]
         );
-        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1)]));
-        assert_eq!(stage.schedule.init_site, None);
+        assert_eq!(node.output, MultiIndex(vec![Index(0), Index(1)]));
+        assert_eq!(node.init_site, None);
     }
 
     #[test]
     fn lowers_axes_in_output_first_order() {
-        let stage = lower("ji+i~ji");
+        let node = lower("ji+i~ji");
 
-        assert_eq!(stage.stage.rank, 2);
+        assert_eq!(node.rank, 2);
         assert_eq!(
-            stage.stage.inputs,
-            vec![Index(vec![Axis(0), Axis(1)]), Index(vec![Axis(1)])]
+            node.inputs,
+            vec![
+                MultiIndex(vec![Index(0), Index(1)]),
+                MultiIndex(vec![Index(1)])
+            ]
         );
-        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1)]));
+        assert_eq!(node.output, MultiIndex(vec![Index(0), Index(1)]));
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
             ]
         );
@@ -329,39 +341,39 @@ mod tests {
 
     #[test]
     fn lowers_reduction_with_default_init_site() {
-        let stage = lower("+ijk~ij");
+        let node = lower("+ijk~ij");
 
-        assert_eq!(stage.stage.op, Op::Add);
-        assert_eq!(stage.stage.rank, 3);
+        assert_eq!(node.op, Op::Add);
+        assert_eq!(node.rank, 3);
         assert_eq!(
-            stage.stage.inputs,
-            vec![Index(vec![Axis(0), Axis(1), Axis(2)])]
+            node.inputs,
+            vec![MultiIndex(vec![Index(0), Index(1), Index(2)])]
         );
-        assert_eq!(stage.stage.output, Index(vec![Axis(0), Axis(1)]));
+        assert_eq!(node.output, MultiIndex(vec![Index(0), Index(1)]));
         assert_eq!(
-            stage.schedule.init_site,
+            node.init_site,
             Some(Site::At(AxisRef {
-                axis: Axis(1),
-                part: 0
+                index: Index(1),
+                level: 0
             }))
         );
     }
 
     #[test]
     fn lowers_scalar_reduction_with_root_init_site() {
-        let stage = lower("+ij~");
+        let node = lower("+ij~");
 
-        assert_eq!(stage.stage.rank, 2);
-        assert_eq!(stage.stage.output, Index(vec![]));
-        assert_eq!(stage.schedule.init_site, Some(Site::Root));
+        assert_eq!(node.rank, 2);
+        assert_eq!(node.output, MultiIndex(vec![]));
+        assert_eq!(node.init_site, Some(Site::Root));
     }
 
     #[test]
     fn lowers_split_order_and_compute_sites_from_permutation() {
-        let stage = lower("ik*kj~ijk|i:2,k:8|ik0i'k'1j");
+        let node = lower("ik*kj~ijk|i:2,k:8|ik0i'k'1j");
 
         assert_eq!(
-            stage.schedule.splits,
+            node.splits,
             vec![
                 SplitList(vec![SplitFactor(2)]),
                 SplitList(vec![]),
@@ -369,130 +381,130 @@ mod tests {
             ]
         );
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 0
+                    index: Index(2),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(0),
-                    part: 1
+                    index: Index(0),
+                    level: 1
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 1
+                    index: Index(2),
+                    level: 1
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
             ]
         );
         assert_eq!(
-            stage.schedule.compute_sites,
+            node.compute_sites,
             vec![
                 Some(Site::At(AxisRef {
-                    axis: Axis(2),
-                    part: 0,
+                    index: Index(2),
+                    level: 0,
                 })),
                 Some(Site::At(AxisRef {
-                    axis: Axis(2),
-                    part: 1,
+                    index: Index(2),
+                    level: 1,
                 })),
             ]
         );
-        assert_eq!(stage.schedule.init_site, None);
+        assert_eq!(node.init_site, None);
     }
 
     #[test]
     fn lowers_reduction_with_explicit_bang() {
-        let stage = lower("+ijk~ij||ij!k");
+        let node = lower("+ijk~ij||ij!k");
 
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 0
+                    index: Index(2),
+                    level: 0
                 },
             ]
         );
         assert_eq!(
-            stage.schedule.init_site,
+            node.init_site,
             Some(Site::At(AxisRef {
-                axis: Axis(1),
-                part: 0
+                index: Index(1),
+                level: 0
             }))
         );
     }
 
     #[test]
     fn lowers_scalar_reduction_with_explicit_root_bang() {
-        let stage = lower("+ij~||!ij");
+        let node = lower("+ij~||!ij");
 
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
             ]
         );
-        assert_eq!(stage.schedule.init_site, Some(Site::Root));
+        assert_eq!(node.init_site, Some(Site::Root));
     }
 
     #[test]
     fn lowers_default_order_when_only_splits_are_present() {
-        let stage = lower("+ijk~ij|i:2,k:4|");
+        let node = lower("+ijk~ij|i:2,k:4|");
 
         assert_eq!(
-            stage.schedule.order,
+            node.order,
             vec![
                 AxisRef {
-                    axis: Axis(0),
-                    part: 0
+                    index: Index(0),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(0),
-                    part: 1
+                    index: Index(0),
+                    level: 1
                 },
                 AxisRef {
-                    axis: Axis(1),
-                    part: 0
+                    index: Index(1),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 0
+                    index: Index(2),
+                    level: 0
                 },
                 AxisRef {
-                    axis: Axis(2),
-                    part: 1
+                    index: Index(2),
+                    level: 1
                 },
             ]
         );
         assert_eq!(
-            stage.schedule.init_site,
+            node.init_site,
             Some(Site::At(AxisRef {
-                axis: Axis(1),
-                part: 0
+                index: Index(1),
+                level: 0
             }))
         );
     }
@@ -500,7 +512,7 @@ mod tests {
     #[test]
     fn rejects_pointwise_bang() {
         let expr = parse_expr("ij~ij||ij!").unwrap();
-        let error = lower_expr_to_stage(&expr).unwrap_err();
+        let error = lower_expr_to_node(&expr).unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -511,7 +523,7 @@ mod tests {
     #[test]
     fn rejects_interleaved_reduction_order_without_init_site_boundary() {
         let expr = parse_expr("+ijk~ij||ikj").unwrap();
-        let error = lower_expr_to_stage(&expr).unwrap_err();
+        let error = lower_expr_to_node(&expr).unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -522,7 +534,7 @@ mod tests {
     #[test]
     fn propagates_invalid_expr_errors() {
         let expr = parse_expr("ii~ii").unwrap();
-        let error = lower_expr_to_stage(&expr).unwrap_err();
+        let error = lower_expr_to_node(&expr).unwrap_err();
 
         assert_eq!(error.to_string(), "expr 0: output pattern repeats axis `i`");
     }
