@@ -2,9 +2,10 @@ use super::common::Op;
 
 struct Kernel(Block);
 
-struct Block(Vec<Statement>);
+struct Block(Vec<Action>);
 
-enum Statement {
+// top-level statement appearing in kernels
+enum Action {
     Loop {
         id: LoopId,
         extent: Extent,
