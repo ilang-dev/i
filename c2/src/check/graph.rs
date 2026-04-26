@@ -1,8 +1,8 @@
 use std::fmt;
 
-use crate::check::stage::validate_scheduled_stage;
+use crate::check::node::validate_node;
 use crate::ir::graph::{Graph, InputId, NodeId, OutputId, Source};
-use crate::ir::stage::ScheduledStage;
+use crate::ir::node::Node;
 
 pub fn validate_graph<T, F>(graph: &Graph<T>, mut validate_node: F) -> Result<(), ValidationError>
 where
@@ -23,25 +23,23 @@ where
     Ok(())
 }
 
-pub fn validate_scheduled_stage_graph(
-    graph: &Graph<ScheduledStage>,
-) -> Result<(), ValidationError> {
-    validate_graph(graph, |stage| {
-        validate_scheduled_stage(stage).map_err(|error| error.to_string())
+pub fn validate_node_graph(graph: &Graph<Node>) -> Result<(), ValidationError> {
+    validate_graph(graph, |node| {
+        validate_node(node).map_err(|error| error.to_string())
     })?;
 
     for (node_index, node) in graph.nodes.iter().enumerate() {
-        if node.inputs.len() != node.inner.stage.inputs.len() {
+        if node.inputs.len() != node.inner.inputs.len() {
             return Err(err(format!(
-                "node {}: graph has {} inputs for {} stage inputs",
+                "node {}: graph has {} inputs for {} node inputs",
                 node_index,
                 node.inputs.len(),
-                node.inner.stage.inputs.len()
+                node.inner.inputs.len()
             )));
         }
         if node.outputs.len() != 1 {
             return Err(err(format!(
-                "node {}: graph has {} outputs for scheduled stage",
+                "node {}: graph has {} outputs for node",
                 node_index,
                 node.outputs.len()
             )));
@@ -137,10 +135,11 @@ impl std::error::Error for ValidationError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_graph, validate_scheduled_stage_graph};
+    use super::{validate_graph, validate_node_graph};
+    use crate::ir::common::Index;
     use crate::ir::common::Op;
     use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
-    use crate::ir::stage::{Axis, AxisRef, Index, Schedule, ScheduledStage, SplitList, Stage};
+    use crate::ir::node::{AxisRef, MultiIndex, Node as IrNode, Site, SplitList};
 
     #[test]
     fn accepts_valid_graph() {
@@ -225,26 +224,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_scheduled_stage_node() {
+    fn rejects_invalid_graph_node() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
-                inner: ScheduledStage {
-                    stage: Stage {
-                        op: Op::Add,
-                        rank: 1,
-                        inputs: vec![Index(vec![Axis(0)])],
-                        output: Index(vec![Axis(0)]),
-                    },
-                    schedule: Schedule {
-                        splits: vec![SplitList(vec![])],
-                        order: vec![AxisRef {
-                            axis: Axis(0),
-                            part: 0,
-                        }],
-                        compute_sites: vec![None],
-                        init_site: Some(crate::ir::stage::Site::Root),
-                    },
+                inner: IrNode {
+                    op: Op::Add,
+                    rank: 1,
+                    inputs: vec![MultiIndex(vec![Index(0)])],
+                    output: MultiIndex(vec![Index(0)]),
+                    splits: vec![SplitList(vec![])],
+                    order: vec![AxisRef {
+                        index: Index(0),
+                        level: 0,
+                    }],
+                    compute_sites: vec![None],
+                    init_site: Some(Site::Root),
                 },
                 inputs: vec![Source::Input(InputId(0))],
                 outputs: vec![Output],
@@ -252,34 +247,30 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let error = validate_scheduled_stage_graph(&graph).unwrap_err();
+        let error = validate_node_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0: pointwise stage cannot have an init site"
+            "node 0: pointwise node cannot have an init site"
         );
     }
 
     #[test]
-    fn rejects_stage_graph_input_len_mismatch() {
+    fn rejects_node_graph_input_len_mismatch() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
-                inner: ScheduledStage {
-                    stage: Stage {
-                        op: Op::Add,
-                        rank: 1,
-                        inputs: vec![Index(vec![Axis(0)]), Index(vec![Axis(0)])],
-                        output: Index(vec![Axis(0)]),
-                    },
-                    schedule: Schedule {
-                        splits: vec![SplitList(vec![])],
-                        order: vec![AxisRef {
-                            axis: Axis(0),
-                            part: 0,
-                        }],
-                        compute_sites: vec![None, None],
-                        init_site: None,
-                    },
+                inner: IrNode {
+                    op: Op::Add,
+                    rank: 1,
+                    inputs: vec![MultiIndex(vec![Index(0)]), MultiIndex(vec![Index(0)])],
+                    output: MultiIndex(vec![Index(0)]),
+                    splits: vec![SplitList(vec![])],
+                    order: vec![AxisRef {
+                        index: Index(0),
+                        level: 0,
+                    }],
+                    compute_sites: vec![None, None],
+                    init_site: None,
                 },
                 inputs: vec![Source::Input(InputId(0))],
                 outputs: vec![Output],
@@ -287,34 +278,30 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let error = validate_scheduled_stage_graph(&graph).unwrap_err();
+        let error = validate_node_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "node 0: graph has 1 inputs for 2 stage inputs"
+            "node 0: graph has 1 inputs for 2 node inputs"
         );
     }
 
     #[test]
-    fn rejects_stage_graph_multi_output_node() {
+    fn rejects_node_graph_multi_output_node() {
         let graph = Graph {
             inputs: vec![Input],
             nodes: vec![Node {
-                inner: ScheduledStage {
-                    stage: Stage {
-                        op: Op::Add,
-                        rank: 1,
-                        inputs: vec![Index(vec![Axis(0)])],
-                        output: Index(vec![Axis(0)]),
-                    },
-                    schedule: Schedule {
-                        splits: vec![SplitList(vec![])],
-                        order: vec![AxisRef {
-                            axis: Axis(0),
-                            part: 0,
-                        }],
-                        compute_sites: vec![None],
-                        init_site: None,
-                    },
+                inner: IrNode {
+                    op: Op::Add,
+                    rank: 1,
+                    inputs: vec![MultiIndex(vec![Index(0)])],
+                    output: MultiIndex(vec![Index(0)]),
+                    splits: vec![SplitList(vec![])],
+                    order: vec![AxisRef {
+                        index: Index(0),
+                        level: 0,
+                    }],
+                    compute_sites: vec![None],
+                    init_site: None,
                 },
                 inputs: vec![Source::Input(InputId(0))],
                 outputs: vec![Output, Output],
@@ -322,10 +309,7 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let error = validate_scheduled_stage_graph(&graph).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "node 0: graph has 2 outputs for scheduled stage"
-        );
+        let error = validate_node_graph(&graph).unwrap_err();
+        assert_eq!(error.to_string(), "node 0: graph has 2 outputs for node");
     }
 }

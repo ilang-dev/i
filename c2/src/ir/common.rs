@@ -6,6 +6,16 @@ pub type KernelId = usize;
 pub type BufferId = usize;
 pub type LoopId = usize;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Index(pub usize);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExtentKind {
+    Semantic,
+    Base(Vec<usize>),
+    Split { level: usize, factor: usize },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Extent {
     Known(usize),
