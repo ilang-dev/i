@@ -1,7 +1,8 @@
 //! Stage IR.
 //!
 //! This module defines the payload of `Graph<Stage>`.
-//! `Stage` gives the physical axis shape of one graph node.
+//! `Stage` gives the physical axes of one graph node.
+//! `Shape` values give local semantic buffer dimensions.
 //! `Layout` values give input and output buffer dimensions.
 //!
 //! Invariants:
@@ -13,14 +14,18 @@
 //! - `Axis::Live` carries one semantic index source and one extent kind.
 //! - `Axis::Pruned` carries the consumer axis supplying that axis.
 //! - Every pruned axis is resolved through graph edges by aligning output
-//!   layout with consumer input layout.
+//!   shape with consumer input shape.
+//! - `Shape` values preserve semantic dimension order.
+//! - `Shape` values refer only to semantic indexes of the same `Stage`.
 //! - `Layout` values preserve tensor dimension order.
 //! - `LayoutDim::Physical` names one dimension sourced by one physical axis.
 //! - `LayoutDim::Semantic` names one dimension sourced by one semantic shape
 //!   dimension.
 //! - `LayoutDim::Semantic.axes` is ordered by physical extent kind for that
 //!   semantic index.
+//! - `Output.shape` gives the stage output shape.
 //! - `Output.layout` gives the stage output layout.
+//! - `Input.shape` gives one stage input shape.
 //! - `Input.layout` gives one stage input layout.
 //! - `Output.init` is `Some(site)` for a reduction stage and `None` for a
 //!   pointwise stage.
@@ -35,9 +40,9 @@ pub struct Stage {
     pub op: Op,
     /// Physical axes of the stage domain.
     pub axes: Vec<Axis>,
-    /// Explicit output layout.
+    /// Explicit output buffer.
     pub output: Output,
-    /// One explicit input layout per input, in input order.
+    /// One explicit input buffer per input, in input order.
     pub inputs: Vec<Input>,
 }
 
@@ -75,6 +80,10 @@ pub enum AxisRef {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Layout(pub Vec<LayoutDim>);
 
+/// One tensor shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shape(pub Vec<Index>);
+
 /// One dimension of one tensor layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LayoutDim {
@@ -89,18 +98,22 @@ pub enum LayoutDim {
     },
 }
 
-/// One stage output layout.
+/// One stage output buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Output {
+    /// Output shape.
+    pub shape: Shape,
     /// Output layout.
     pub layout: Layout,
     /// Output init site.
     pub init: Option<Site>,
 }
 
-/// One stage input layout.
+/// One stage input buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Input {
+    /// Input shape.
+    pub shape: Shape,
     /// Input layout.
     pub layout: Layout,
     /// Input compute site.

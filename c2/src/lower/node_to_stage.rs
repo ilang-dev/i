@@ -3,11 +3,12 @@ use std::fmt;
 
 use crate::check::graph::validate_node_graph;
 use crate::check::stage::validate_stage_graph;
-use crate::ir::common::ExtentKind;
+use crate::ir::common::{ExtentKind, Index};
 use crate::ir::graph::{Graph, Node as GraphNode, NodeId, OutputId, Source};
 use crate::ir::node::{AxisRef as NodeAxisRef, MultiIndex, Node};
 use crate::ir::stage::{
-    Axis, AxisId, AxisMultiId, Input as StageInput, Output as StageOutput, Site as StageSite, Stage,
+    Axis, AxisId, AxisRef as StageAxisRef, Input as StageInput, Layout, LayoutDim,
+    Output as StageOutput, Shape, Site as StageSite, Stage,
 };
 
 pub fn lower_node_graph_to_stage_graph(graph: &Graph<Node>) -> Result<Graph<Stage>, LowerError> {
@@ -54,7 +55,7 @@ impl<'a> Builder<'a> {
         if let Some(stage) = self.materialized[node.0] {
             return Ok(stage);
         }
-        let stage = self.instantiate_stage(node, None)?;
+        let stage = self.instantiate_stage(node, OutputLayout::Semantic, None)?;
         self.materialized[node.0] = Some(stage);
         Ok(stage)
     }
@@ -67,6 +68,7 @@ impl<'a> Builder<'a> {
     ) -> Result<NodeId, LowerError> {
         self.instantiate_stage(
             node,
+            OutputLayout::Physical,
             Some(PruneContext {
                 consumer,
                 input_index,
@@ -77,14 +79,18 @@ impl<'a> Builder<'a> {
     fn instantiate_stage(
         &mut self,
         node_id: NodeId,
+        output_layout: OutputLayout,
         prune_context: Option<PruneContext<'_>>,
     ) -> Result<NodeId, LowerError> {
         let graph_node = &self.graph.nodes[node_id.0];
-        let mut stage = lower_node_to_stage(&graph_node.inner);
+        let axis_sources = axis_sources(&graph_node.inner);
+        let mut stage = lower_node_to_stage_skeleton(&graph_node.inner);
 
         if let Some(context) = prune_context {
             prune_producer_for_consumer(&mut stage, context.consumer, context.input_index)?;
         }
+
+        assign_layouts(&mut stage, &graph_node.inner, &axis_sources, output_layout)?;
 
         let inputs = self.lower_stage_inputs(node_id, &stage)?;
         let stage_id = NodeId(self.nodes.len());
@@ -107,7 +113,15 @@ impl<'a> Builder<'a> {
             .copied()
             .enumerate()
             .map(|(input_index, source)| match source {
-                Source::Input(input) => Ok(Source::Input(input)),
+                Source::Input(input) => {
+                    if stage.inputs[input_index].compute.is_some() {
+                        return Err(LowerError::new(format!(
+                            "node {} input {} is a graph input with a compute site",
+                            node_id.0, input_index
+                        )));
+                    }
+                    Ok(Source::Input(input))
+                }
                 Source::Node(producer, output) => {
                     if output != OutputId(0) {
                         return Err(LowerError::new(format!(
@@ -138,20 +152,32 @@ struct PruneContext<'a> {
     input_index: usize,
 }
 
-fn lower_node_to_stage(node: &Node) -> Stage {
+#[derive(Clone, Copy)]
+enum OutputLayout {
+    Semantic,
+    Physical,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AxisSource {
+    index: Index,
+    kind: ExtentKind,
+}
+
+fn lower_node_to_stage_skeleton(node: &Node) -> Stage {
     let axis_map = axis_map(node);
     Stage {
         op: node.op,
-        axes: node
-            .order
-            .iter()
-            .map(|axis_ref| Axis::Live {
-                index: axis_ref.index,
-                kind: extent_kind(node, *axis_ref),
+        axes: axis_sources(node)
+            .into_iter()
+            .map(|source| Axis::Live {
+                index: source.index,
+                kind: source.kind,
             })
             .collect(),
         output: StageOutput {
-            axes: lower_multi_index(&node.output, &axis_map),
+            shape: lower_shape(&node.output),
+            layout: Layout(Vec::new()),
             init: node.init_site.map(|site| lower_site(site, &axis_map)),
         },
         inputs: node
@@ -159,11 +185,122 @@ fn lower_node_to_stage(node: &Node) -> Stage {
             .iter()
             .zip(node.compute_sites.iter())
             .map(|(input, compute)| StageInput {
-                axes: lower_multi_index(input, &axis_map),
+                shape: lower_shape(input),
+                layout: Layout(Vec::new()),
                 compute: compute.map(|site| lower_site(site, &axis_map)),
             })
             .collect(),
     }
+}
+
+fn assign_layouts(
+    stage: &mut Stage,
+    node: &Node,
+    axis_sources: &[AxisSource],
+    output_layout: OutputLayout,
+) -> Result<(), LowerError> {
+    stage.output.layout = lower_layout(stage, axis_sources, &node.output, output_layout, &[])?;
+    for input_index in 0..stage.inputs.len() {
+        let (layout, excluded_axes) = if stage.inputs[input_index].compute.is_some() {
+            (
+                OutputLayout::Physical,
+                consumer_axis_prefix(stage, input_index)?,
+            )
+        } else {
+            (OutputLayout::Semantic, Vec::new())
+        };
+        stage.inputs[input_index].layout = lower_layout(
+            stage,
+            axis_sources,
+            &node.inputs[input_index],
+            layout,
+            excluded_axes.as_slice(),
+        )?;
+    }
+    Ok(())
+}
+
+fn lower_shape(multi_index: &MultiIndex) -> Shape {
+    Shape(multi_index.0.clone())
+}
+
+fn lower_layout(
+    stage: &Stage,
+    axis_sources: &[AxisSource],
+    multi_index: &MultiIndex,
+    layout: OutputLayout,
+    excluded_axes: &[AxisId],
+) -> Result<Layout, LowerError> {
+    match layout {
+        OutputLayout::Semantic => semantic_layout(stage, axis_sources, multi_index),
+        OutputLayout::Physical => physical_layout(stage, axis_sources, multi_index, excluded_axes),
+    }
+}
+
+fn semantic_layout(
+    stage: &Stage,
+    axis_sources: &[AxisSource],
+    multi_index: &MultiIndex,
+) -> Result<Layout, LowerError> {
+    multi_index
+        .0
+        .iter()
+        .copied()
+        .map(|index| {
+            Ok(LayoutDim::Semantic {
+                index,
+                axes: axis_refs_for_index(stage, axis_sources, index)?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Layout)
+}
+
+fn physical_layout(
+    stage: &Stage,
+    axis_sources: &[AxisSource],
+    multi_index: &MultiIndex,
+    excluded_axes: &[AxisId],
+) -> Result<Layout, LowerError> {
+    let mut dims = Vec::new();
+    for index in &multi_index.0 {
+        for axis_ref in axis_refs_for_index(stage, axis_sources, *index)? {
+            if let StageAxisRef::Local(axis) = axis_ref {
+                if !excluded_axes.contains(&axis) {
+                    dims.push(LayoutDim::Physical(axis_ref));
+                }
+            }
+        }
+    }
+    Ok(Layout(dims))
+}
+
+fn axis_refs_for_index(
+    stage: &Stage,
+    axis_sources: &[AxisSource],
+    index: Index,
+) -> Result<Vec<StageAxisRef>, LowerError> {
+    let mut refs = axis_sources
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| source.index == index)
+        .map(|(axis, source)| {
+            let axis_id = AxisId(axis);
+            let axis_ref = match stage.axes.get(axis) {
+                Some(Axis::Live { .. }) => StageAxisRef::Local(axis_id),
+                Some(Axis::Pruned { by }) => *by,
+                None => {
+                    return Err(LowerError::new(format!(
+                        "axis {} does not exist while lowering layout",
+                        axis
+                    )));
+                }
+            };
+            Ok((extent_order(&source.kind), axis_ref))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    refs.sort_by_key(|(order, _)| *order);
+    Ok(refs.into_iter().map(|(_, axis_ref)| axis_ref).collect())
 }
 
 fn axis_map(node: &Node) -> BTreeMap<(usize, usize), AxisId> {
@@ -174,23 +311,14 @@ fn axis_map(node: &Node) -> BTreeMap<(usize, usize), AxisId> {
         .collect()
 }
 
-fn lower_multi_index(
-    multi_index: &MultiIndex,
-    axis_map: &BTreeMap<(usize, usize), AxisId>,
-) -> AxisMultiId {
-    AxisMultiId(
-        multi_index
-            .0
-            .iter()
-            .flat_map(|index| {
-                axis_map
-                    .iter()
-                    .filter_map(move |((axis_index, _), axis_id)| {
-                        (*axis_index == index.0).then_some(*axis_id)
-                    })
-            })
-            .collect(),
-    )
+fn axis_sources(node: &Node) -> Vec<AxisSource> {
+    node.order
+        .iter()
+        .map(|axis_ref| AxisSource {
+            index: axis_ref.index,
+            kind: extent_kind(node, *axis_ref),
+        })
+        .collect()
 }
 
 fn lower_site(
@@ -228,8 +356,8 @@ pub(crate) fn prune_producer_for_consumer(
     consumer: &Stage,
     input_index: usize,
 ) -> Result<(), LowerError> {
-    let prefix = prunable_axis_prefix(producer, consumer, input_index)?;
-    apply_axis_pruning(producer, prefix.as_slice());
+    let pruning = prunable_axis_prefix(producer, consumer, input_index)?;
+    apply_axis_pruning(producer, pruning.as_slice());
     Ok(())
 }
 
@@ -237,7 +365,7 @@ pub(crate) fn prunable_axis_prefix(
     producer: &Stage,
     consumer: &Stage,
     input_index: usize,
-) -> Result<Vec<AxisId>, LowerError> {
+) -> Result<Vec<AxisPrune>, LowerError> {
     let consumer_prefix = consumer_axis_prefix(consumer, input_index)?;
     let alignment = edge_axis_alignment(producer, consumer, input_index)?;
     let mut pruned = Vec::new();
@@ -246,7 +374,7 @@ pub(crate) fn prunable_axis_prefix(
         let producer_axis = AxisId(position);
         let aligned_consumer_axis = alignment.get(&producer_axis).copied().ok_or_else(|| {
             LowerError::new(format!(
-                "producer axis {} is not present in output axes",
+                "producer axis {} is not present in output shape",
                 producer_axis.0
             ))
         })?;
@@ -257,7 +385,10 @@ pub(crate) fn prunable_axis_prefix(
             )));
         }
         validate_prunable_axis_pair(producer, consumer, producer_axis, *consumer_axis)?;
-        pruned.push(producer_axis);
+        pruned.push(AxisPrune {
+            axis: producer_axis,
+            by: StageAxisRef::Consumer(*consumer_axis),
+        });
     }
 
     Ok(pruned)
@@ -303,27 +434,60 @@ pub(crate) fn edge_axis_alignment(
             input_index
         ))
     })?;
-    if producer.output.axes.0.len() != input.axes.0.len() {
+    if producer.output.shape.0.len() != input.shape.0.len() {
         return Err(LowerError::new(format!(
-            "producer output has {} axes but consumer input {} has {} axes",
-            producer.output.axes.0.len(),
+            "producer output has {} shape dimensions but consumer input {} has {} shape dimensions",
+            producer.output.shape.0.len(),
             input_index,
-            input.axes.0.len()
+            input.shape.0.len()
         )));
     }
-    Ok(producer
+
+    let mut alignment = BTreeMap::new();
+    for (producer_index, consumer_index) in producer
         .output
-        .axes
+        .shape
         .0
         .iter()
         .copied()
-        .zip(input.axes.0.iter().copied())
-        .collect())
+        .zip(input.shape.0.iter().copied())
+    {
+        let producer_axes = live_axes_for_index(producer, producer_index)?;
+        let consumer_axes = live_axes_for_index(consumer, consumer_index)?;
+        if producer_axes.len() != consumer_axes.len() {
+            return Err(LowerError::new(format!(
+                "producer index {} has {} axes but consumer index {} has {} axes",
+                producer_index.0,
+                producer_axes.len(),
+                consumer_index.0,
+                consumer_axes.len()
+            )));
+        }
+        for ((producer_axis, producer_kind), (consumer_axis, consumer_kind)) in
+            producer_axes.into_iter().zip(consumer_axes)
+        {
+            if producer_kind != consumer_kind {
+                return Err(LowerError::new(format!(
+                    "producer extent kind {:?} does not match consumer extent kind {:?}",
+                    producer_kind, consumer_kind
+                )));
+            }
+            alignment.insert(producer_axis, consumer_axis);
+        }
+    }
+
+    Ok(alignment)
 }
 
-pub(crate) fn apply_axis_pruning(producer: &mut Stage, axes: &[AxisId]) {
-    for axis in axes {
-        producer.axes[axis.0] = Axis::Pruned;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AxisPrune {
+    pub axis: AxisId,
+    pub by: StageAxisRef,
+}
+
+pub(crate) fn apply_axis_pruning(producer: &mut Stage, axes: &[AxisPrune]) {
+    for prune in axes {
+        producer.axes[prune.axis.0] = Axis::Pruned { by: prune.by };
     }
 }
 
@@ -344,10 +508,31 @@ fn validate_prunable_axis_pair(
     Ok(())
 }
 
+fn live_axes_for_index(
+    stage: &Stage,
+    index: Index,
+) -> Result<Vec<(AxisId, ExtentKind)>, LowerError> {
+    let mut axes = stage
+        .axes
+        .iter()
+        .enumerate()
+        .filter_map(|(axis, value)| match value {
+            Axis::Live {
+                index: axis_index,
+                kind,
+            } if *axis_index == index => Some(Ok((AxisId(axis), kind.clone()))),
+            Axis::Live { .. } => None,
+            Axis::Pruned { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    axes.sort_by_key(|(_, kind)| extent_order(kind));
+    Ok(axes)
+}
+
 fn live_axis(stage: &Stage, axis: AxisId) -> Result<LiveAxis<'_>, LowerError> {
     match stage.axes.get(axis.0) {
         Some(Axis::Live { index, kind }) => Ok(LiveAxis { index, kind }),
-        Some(Axis::Pruned) => Err(LowerError::new(format!(
+        Some(Axis::Pruned { .. }) => Err(LowerError::new(format!(
             "axis {} is already pruned",
             axis.0
         ))),
@@ -358,9 +543,17 @@ fn live_axis(stage: &Stage, axis: AxisId) -> Result<LiveAxis<'_>, LowerError> {
     }
 }
 
+fn extent_order(kind: &ExtentKind) -> (usize, usize) {
+    match kind {
+        ExtentKind::Semantic => (0, 0),
+        ExtentKind::Base(_) => (0, 0),
+        ExtentKind::Split { level, .. } => (1, *level),
+    }
+}
+
 struct LiveAxis<'a> {
     #[allow(dead_code)]
-    index: &'a crate::ir::common::Index,
+    index: &'a Index,
     kind: &'a ExtentKind,
 }
 
@@ -398,6 +591,7 @@ mod tests {
     use super::{
         apply_axis_pruning, consumer_axis_prefix, edge_axis_alignment,
         lower_node_graph_to_stage_graph, prunable_axis_prefix, prune_producer_for_consumer,
+        AxisPrune,
     };
     use crate::front::parse_expr;
     use crate::ir::common::{ExtentKind, Index, Op};
@@ -409,8 +603,8 @@ mod tests {
         AxisRef as NodeAxisRef, MultiIndex, Node, Site as NodeSite, SplitFactor, SplitList,
     };
     use crate::ir::stage::{
-        Axis, AxisId, AxisMultiId, Input as StageInput, Output as StageOutput, Site as StageSite,
-        Stage,
+        Axis, AxisId, AxisRef as StageAxisRef, Input as StageInput, Layout, LayoutDim,
+        Output as StageOutput, Shape, Site as StageSite, Stage,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::{component, front};
@@ -424,6 +618,20 @@ mod tests {
             index: Index(index),
             kind,
         }
+    }
+
+    fn semantic(index: usize, axes: Vec<usize>) -> LayoutDim {
+        LayoutDim::Semantic {
+            index: Index(index),
+            axes: axes
+                .into_iter()
+                .map(|axis| StageAxisRef::Local(AxisId(axis)))
+                .collect(),
+        }
+    }
+
+    fn physical(axis: usize) -> LayoutDim {
+        LayoutDim::Physical(StageAxisRef::Local(AxisId(axis)))
     }
 
     #[test]
@@ -446,11 +654,13 @@ mod tests {
             stage.inputs,
             vec![
                 StageInput {
-                    axes: AxisMultiId(vec![AxisId(0), AxisId(2)]),
+                    shape: Shape(vec![Index(0), Index(2)]),
+                    layout: Layout(vec![semantic(0, vec![0]), semantic(2, vec![2])]),
                     compute: None,
                 },
                 StageInput {
-                    axes: AxisMultiId(vec![AxisId(2), AxisId(1)]),
+                    shape: Shape(vec![Index(2), Index(1)]),
+                    layout: Layout(vec![semantic(2, vec![2]), semantic(1, vec![1])]),
                     compute: None,
                 },
             ]
@@ -458,16 +668,21 @@ mod tests {
         assert_eq!(
             stage.output,
             StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1), AxisId(2)]),
+                shape: Shape(vec![Index(0), Index(1), Index(2)]),
+                layout: Layout(vec![
+                    semantic(0, vec![0]),
+                    semantic(1, vec![1]),
+                    semantic(2, vec![2])
+                ]),
                 init: None,
             }
         );
     }
 
     #[test]
-    fn lowers_splits_to_extent_kinds() {
+    fn lowers_splits_to_extent_kinds_and_semantic_layout_axes() {
         let graph =
-            lower_node_graph_to_stage_graph(&lower_expr("ik*kj~ijk|i:2,k:8|ik0i'k'1j")).unwrap();
+            lower_node_graph_to_stage_graph(&lower_expr("ik*kj~ijk|i:2,k:8|iki'k'j")).unwrap();
 
         assert_eq!(
             graph.nodes[0].inner.axes,
@@ -492,15 +707,22 @@ mod tests {
             ]
         );
         assert_eq!(
-            graph.nodes[0].inner.output.axes,
-            AxisMultiId(vec![AxisId(0), AxisId(2), AxisId(4), AxisId(1), AxisId(3)])
+            graph.nodes[0].inner.output.layout,
+            Layout(vec![
+                semantic(0, vec![0, 2]),
+                semantic(1, vec![4]),
+                semantic(2, vec![1, 3])
+            ])
         );
     }
 
     #[test]
     fn lowers_init_and_compute_sites() {
-        let graph = lower_node_graph_to_stage_graph(&lower_expr("+ijk~ij||ij0k")).unwrap();
-        let stage = &graph.nodes[0].inner;
+        let component = component::expr(front::parse_expr("ik*kj~ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap()));
+        let node_graph = lower_component_to_graph(&component).unwrap();
+        let graph = lower_node_graph_to_stage_graph(&node_graph).unwrap();
+        let stage = &graph.nodes[1].inner;
 
         assert_eq!(stage.output.init, Some(StageSite::At(AxisId(1))));
         assert_eq!(stage.inputs[0].compute, Some(StageSite::At(AxisId(1))));
@@ -522,7 +744,14 @@ mod tests {
             .inner
             .axes
             .iter()
-            .all(|axis| !matches!(axis, Axis::Pruned)));
+            .all(|axis| !matches!(axis, Axis::Pruned { .. })));
+        assert!(stage_graph.nodes[0]
+            .inner
+            .output
+            .layout
+            .0
+            .iter()
+            .all(|dim| matches!(dim, LayoutDim::Semantic { .. })));
     }
 
     #[test]
@@ -539,11 +768,49 @@ mod tests {
         );
         assert_eq!(
             stage_graph.nodes[0].inner.axes,
-            vec![Axis::Pruned, Axis::Pruned, live(2, ExtentKind::Semantic)]
+            vec![
+                Axis::Pruned {
+                    by: StageAxisRef::Consumer(AxisId(0))
+                },
+                Axis::Pruned {
+                    by: StageAxisRef::Consumer(AxisId(1))
+                },
+                live(2, ExtentKind::Semantic),
+            ]
         );
         assert_eq!(
-            stage_graph.nodes[1].inner.inputs[0].compute,
-            Some(StageSite::At(AxisId(1)))
+            stage_graph.nodes[0].inner.output.shape,
+            Shape(vec![Index(0), Index(1), Index(2)])
+        );
+        assert_eq!(
+            stage_graph.nodes[0].inner.output.layout,
+            Layout(vec![physical(2)])
+        );
+        assert_eq!(
+            stage_graph.nodes[1].inner.inputs[0].layout,
+            Layout(vec![physical(2)])
+        );
+    }
+
+    #[test]
+    fn pruned_stage_semantic_input_reconstructs_from_consumer_axes() {
+        let component = component::expr(front::parse_expr("ik*kj~ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap()));
+        let node_graph = lower_component_to_graph(&component).unwrap();
+        let stage_graph = lower_node_graph_to_stage_graph(&node_graph).unwrap();
+
+        assert_eq!(
+            stage_graph.nodes[0].inner.inputs[0].layout,
+            Layout(vec![
+                LayoutDim::Semantic {
+                    index: Index(0),
+                    axes: vec![StageAxisRef::Consumer(AxisId(0))]
+                },
+                LayoutDim::Semantic {
+                    index: Index(2),
+                    axes: vec![StageAxisRef::Local(AxisId(2))]
+                }
+            ])
         );
     }
 
@@ -561,13 +828,13 @@ mod tests {
             .inner
             .axes
             .iter()
-            .any(|axis| matches!(axis, Axis::Pruned))));
+            .any(|axis| matches!(axis, Axis::Pruned { .. }))));
         assert!(stage_graph.nodes.iter().any(|node| node.inner.op == Op::Mul
             && node
                 .inner
                 .axes
                 .iter()
-                .all(|axis| !matches!(axis, Axis::Pruned))));
+                .all(|axis| !matches!(axis, Axis::Pruned { .. }))));
     }
 
     #[test]
@@ -580,11 +847,13 @@ mod tests {
                 live(2, ExtentKind::Semantic),
             ],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: Some(StageSite::At(AxisId(1))),
             },
             inputs: vec![StageInput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1), AxisId(2)]),
+                shape: Shape(vec![Index(0), Index(1), Index(2)]),
+                layout: Layout(vec![physical(2)]),
                 compute: Some(StageSite::At(AxisId(1))),
             }],
         };
@@ -596,12 +865,13 @@ mod tests {
     }
 
     #[test]
-    fn edge_axis_alignment_uses_access_positions() {
+    fn edge_axis_alignment_uses_shape_positions() {
         let producer = Stage {
             op: Op::Add,
-            axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
+            axes: vec![live(1, ExtentKind::Semantic), live(0, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(1), AxisId(0)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![1]), semantic(1, vec![0])]),
                 init: None,
             },
             inputs: vec![],
@@ -610,11 +880,13 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: None,
             },
             inputs: vec![StageInput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![physical(0), physical(1)]),
                 compute: Some(StageSite::At(AxisId(0))),
             }],
         };
@@ -628,9 +900,10 @@ mod tests {
     fn prunable_prefix_rejects_mismatched_order() {
         let producer = Stage {
             op: Op::Add,
-            axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
+            axes: vec![live(1, ExtentKind::Semantic), live(0, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(1), AxisId(0)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![1]), semantic(1, vec![0])]),
                 init: None,
             },
             inputs: vec![],
@@ -639,11 +912,13 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: None,
             },
             inputs: vec![StageInput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![physical(0), physical(1)]),
                 compute: Some(StageSite::At(AxisId(0))),
             }],
         };
@@ -661,7 +936,8 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Base(vec![4]))],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0)]),
+                shape: Shape(vec![Index(0)]),
+                layout: Layout(vec![semantic(0, vec![0])]),
                 init: None,
             },
             inputs: vec![],
@@ -670,11 +946,13 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0)]),
+                shape: Shape(vec![Index(0)]),
+                layout: Layout(vec![semantic(0, vec![0])]),
                 init: None,
             },
             inputs: vec![StageInput {
-                axes: AxisMultiId(vec![AxisId(0)]),
+                shape: Shape(vec![Index(0)]),
+                layout: Layout(vec![physical(0)]),
                 compute: Some(StageSite::At(AxisId(0))),
             }],
         };
@@ -687,21 +965,33 @@ mod tests {
     }
 
     #[test]
-    fn apply_axis_pruning_sets_axes_to_pruned() {
+    fn apply_axis_pruning_records_consumer_axis() {
         let mut stage = Stage {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: None,
             },
             inputs: vec![],
         };
 
-        apply_axis_pruning(&mut stage, &[AxisId(1)]);
+        apply_axis_pruning(
+            &mut stage,
+            &[AxisPrune {
+                axis: AxisId(1),
+                by: StageAxisRef::Consumer(AxisId(0)),
+            }],
+        );
         assert_eq!(
             stage.axes,
-            vec![live(0, ExtentKind::Semantic), Axis::Pruned]
+            vec![
+                live(0, ExtentKind::Semantic),
+                Axis::Pruned {
+                    by: StageAxisRef::Consumer(AxisId(0))
+                }
+            ]
         );
     }
 
@@ -711,7 +1001,8 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: None,
             },
             inputs: vec![],
@@ -720,11 +1011,13 @@ mod tests {
             op: Op::Add,
             axes: vec![live(0, ExtentKind::Semantic), live(1, ExtentKind::Semantic)],
             output: StageOutput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![semantic(0, vec![0]), semantic(1, vec![1])]),
                 init: None,
             },
             inputs: vec![StageInput {
-                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                shape: Shape(vec![Index(0), Index(1)]),
+                layout: Layout(vec![physical(1)]),
                 compute: Some(StageSite::At(AxisId(0))),
             }],
         };
@@ -732,12 +1025,17 @@ mod tests {
         prune_producer_for_consumer(&mut producer, &consumer, 0).unwrap();
         assert_eq!(
             producer.axes,
-            vec![Axis::Pruned, live(1, ExtentKind::Semantic)]
+            vec![
+                Axis::Pruned {
+                    by: StageAxisRef::Consumer(AxisId(0))
+                },
+                live(1, ExtentKind::Semantic)
+            ]
         );
     }
 
     #[test]
-    fn root_compute_site_does_not_prune() {
+    fn root_compute_site_uses_physical_layout_without_pruning() {
         let graph = Graph {
             inputs: vec![GraphInput],
             nodes: vec![GraphNode {
@@ -760,14 +1058,10 @@ mod tests {
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
 
-        let stage_graph = lower_node_graph_to_stage_graph(&graph).unwrap();
+        let error = lower_node_graph_to_stage_graph(&graph).unwrap_err();
         assert_eq!(
-            stage_graph.nodes[0].inner.inputs[0].compute,
-            Some(StageSite::Root)
-        );
-        assert_eq!(
-            stage_graph.nodes[0].inner.axes,
-            vec![live(0, ExtentKind::Semantic)]
+            error.to_string(),
+            "node 0 input 0 is a graph input with a compute site"
         );
     }
 
@@ -807,28 +1101,8 @@ mod tests {
 
         let stage_graph = lower_node_graph_to_stage_graph(&graph).unwrap();
         assert_eq!(
-            stage_graph.nodes[0].inner.axes,
-            vec![
-                live(0, ExtentKind::Base(vec![2, 4])),
-                live(
-                    0,
-                    ExtentKind::Split {
-                        level: 1,
-                        factor: 2
-                    }
-                ),
-                live(
-                    0,
-                    ExtentKind::Split {
-                        level: 2,
-                        factor: 4
-                    }
-                ),
-            ]
-        );
-        assert_eq!(
-            stage_graph.nodes[0].inner.output.axes,
-            AxisMultiId(vec![AxisId(0), AxisId(1), AxisId(2)])
+            stage_graph.nodes[0].inner.output.layout,
+            Layout(vec![semantic(0, vec![0, 1, 2])])
         );
     }
 }
