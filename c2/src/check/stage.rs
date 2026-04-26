@@ -1,215 +1,177 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::ir::stage::{Axis, AxisRef, Schedule, ScheduledStage, Site, SplitList, Stage};
+use crate::check::graph::validate_graph;
+use crate::ir::graph::{Graph, NodeId, OutputId, Source};
+use crate::ir::stage::{Axis, AxisId, AxisMultiId, Site, Stage};
 
-pub fn validate_scheduled_stage(stage: &ScheduledStage) -> Result<(), ValidationError> {
-    validate_stage(&stage.stage)?;
-    validate_schedule(&stage.stage, &stage.schedule)
-}
-
-fn validate_stage(stage: &Stage) -> Result<(), ValidationError> {
-    let mut referenced = BTreeSet::new();
+pub fn validate_stage(stage: &Stage) -> Result<(), ValidationError> {
+    validate_axis_multi_id(stage, &stage.output.axes)
+        .map_err(|message| err(format!("output {}", message)))?;
+    validate_site(stage, stage.output.init)
+        .map_err(|message| err(format!("output {}", message)))?;
 
     for (input_index, input) in stage.inputs.iter().enumerate() {
-        for axis in &input.0 {
-            validate_axis(stage.rank, *axis)
-                .map_err(|message| err(format!("input {} {}", input_index, message)))?;
-            referenced.insert(axis.0);
-        }
+        validate_axis_multi_id(stage, &input.axes)
+            .map_err(|message| err(format!("input {} {}", input_index, message)))?;
+        validate_site(stage, input.compute)
+            .map_err(|message| err(format!("input {} {}", input_index, message)))?;
     }
 
-    let mut output_seen = BTreeSet::new();
-    for axis in &stage.output.0 {
-        validate_axis(stage.rank, *axis).map_err(|message| err(format!("output {}", message)))?;
-        if !output_seen.insert(axis.0) {
-            return Err(err(format!("output repeats axis {}", axis.0)));
-        }
-        referenced.insert(axis.0);
+    let has_reduction = stage
+        .axes
+        .iter()
+        .enumerate()
+        .any(|(axis, _)| !stage.output.axes.0.contains(&AxisId(axis)));
+    match (has_reduction, stage.output.init) {
+        (false, None) => Ok(()),
+        (false, Some(_)) => Err(err("pointwise stage cannot have an init site")),
+        (true, None) => Err(err("reduction stage must have an init site")),
+        (true, Some(_)) => Ok(()),
     }
-
-    for axis in 0..stage.rank {
-        if !referenced.contains(&axis) {
-            return Err(err(format!("stage axis {} is not referenced", axis)));
-        }
-    }
-
-    Ok(())
 }
 
-fn validate_schedule(stage: &Stage, schedule: &Schedule) -> Result<(), ValidationError> {
-    if schedule.splits.len() != stage.rank {
-        return Err(err(format!(
-            "schedule has {} split lists for rank {}",
-            schedule.splits.len(),
-            stage.rank
-        )));
-    }
+pub fn validate_stage_graph(graph: &Graph<Stage>) -> Result<(), ValidationError> {
+    validate_graph(graph, |stage| {
+        validate_stage(stage).map_err(|error| error.to_string())
+    })
+    .map_err(|error| err(error.to_string()))?;
 
-    let expected = expected_axis_refs(schedule.splits.as_slice());
-    let mut seen = BTreeSet::new();
-
-    for axis_ref in &schedule.order {
-        validate_axis_ref(stage.rank, schedule.splits.as_slice(), *axis_ref)
-            .map_err(|message| err(format!("order {}", message)))?;
-        if !seen.insert((axis_ref.axis.0, axis_ref.part)) {
+    for (node_index, node) in graph.nodes.iter().enumerate() {
+        if node.inputs.len() != node.inner.inputs.len() {
             return Err(err(format!(
-                "order repeats loop part {}",
-                format_axis_ref(*axis_ref)
+                "node {}: graph has {} inputs for {} stage inputs",
+                node_index,
+                node.inputs.len(),
+                node.inner.inputs.len()
+            )));
+        }
+        if node.outputs.len() != 1 {
+            return Err(err(format!(
+                "node {}: graph has {} outputs for stage",
+                node_index,
+                node.outputs.len()
             )));
         }
     }
 
-    if schedule.order.len() != expected.len() {
-        return Err(err(format!(
-            "order must contain {} loop parts, found {}",
-            expected.len(),
-            schedule.order.len()
-        )));
-    }
+    validate_pruned_axes(graph)
+}
 
-    for axis_ref in &expected {
-        if !seen.contains(&(axis_ref.axis.0, axis_ref.part)) {
+fn validate_pruned_axes(graph: &Graph<Stage>) -> Result<(), ValidationError> {
+    let consumers = stage_consumers(graph);
+
+    for (node_index, node) in graph.nodes.iter().enumerate() {
+        let pruned_axes = node
+            .inner
+            .axes
+            .iter()
+            .enumerate()
+            .filter_map(|(axis_index, axis)| {
+                matches!(axis, Axis::Pruned).then_some(AxisId(axis_index))
+            })
+            .collect::<Vec<_>>();
+        if pruned_axes.is_empty() {
+            continue;
+        }
+
+        if graph
+            .outputs
+            .iter()
+            .any(|source| *source == Source::Node(NodeId(node_index), OutputId(0)))
+        {
             return Err(err(format!(
-                "order is missing loop part {}",
-                format_axis_ref(*axis_ref)
+                "node {}: graph output references pruned stage",
+                node_index
             )));
         }
-    }
 
-    if schedule.compute_sites.len() != stage.inputs.len() {
-        return Err(err(format!(
-            "schedule has {} compute sites for {} inputs",
-            schedule.compute_sites.len(),
-            stage.inputs.len()
-        )));
-    }
+        let node_consumers = &consumers[node_index];
+        if node_consumers.len() != 1 {
+            return Err(err(format!(
+                "node {}: pruned stage must have exactly one consumer, found {}",
+                node_index,
+                node_consumers.len()
+            )));
+        }
 
-    for (input_index, site) in schedule.compute_sites.iter().enumerate() {
-        if let Some(site) = site {
-            validate_site(stage.rank, schedule.splits.as_slice(), *site).map_err(|message| {
-                err(format!(
-                    "compute site for input {} {}",
-                    input_index, message
-                ))
+        let (consumer_index, input_index) = node_consumers[0];
+        let consumer = &graph.nodes[consumer_index].inner;
+        if consumer.inputs[input_index].compute.is_none() {
+            return Err(err(format!(
+                "node {}: pruned stage consumer {} input {} has no compute site",
+                node_index, consumer_index, input_index
+            )));
+        }
+
+        for axis in pruned_axes {
+            resolve_pruned_axis(&node.inner, consumer, input_index, axis).map_err(|message| {
+                err(format!("node {} axis {} {}", node_index, axis.0, message))
             })?;
         }
     }
 
-    let required_init_site =
-        required_init_site_from_order(stage, schedule.splits.as_slice(), &schedule.order)?;
-    match (required_init_site, schedule.init_site) {
-        (None, None) => Ok(()),
-        (None, Some(_)) => Err(err("pointwise stage cannot have an init site")),
-        (Some(_), None) => Err(err("reduction stage must have an init site")),
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
-        (Some(expected), Some(_)) => {
-            Err(err(format!("init site must be {}", format_site(expected))))
-        }
-    }
+    Ok(())
 }
 
-pub(crate) fn required_init_site_from_order(
-    stage: &Stage,
-    splits: &[SplitList],
-    order: &[AxisRef],
-) -> Result<Option<Site>, ValidationError> {
-    let output_axes = stage
-        .output
-        .0
-        .iter()
-        .map(|axis| axis.0)
-        .collect::<BTreeSet<_>>();
-    let has_reduction = (0..stage.rank).any(|axis| !output_axes.contains(&axis));
-    if !has_reduction {
-        return Ok(None);
-    }
-
-    let output_parts = stage
-        .output
-        .0
-        .iter()
-        .map(|axis| splits[axis.0].0.len() + 1)
-        .sum::<usize>();
-    if output_parts == 0 {
-        return Ok(Some(Site::Root));
-    }
-
-    let mut seen_output_parts = 0usize;
-    let mut saw_reduction = false;
-    let mut last_output = None;
-
-    for axis_ref in order {
-        if output_axes.contains(&axis_ref.axis.0) {
-            if saw_reduction {
-                return Err(err(
-                    "reduction loops cannot appear before output loops complete",
-                ));
+fn stage_consumers(graph: &Graph<Stage>) -> Vec<Vec<(usize, usize)>> {
+    let mut consumers = vec![Vec::new(); graph.nodes.len()];
+    for (consumer_index, node) in graph.nodes.iter().enumerate() {
+        for (input_index, source) in node.inputs.iter().enumerate() {
+            if let Source::Node(NodeId(producer_index), OutputId(0)) = *source {
+                consumers[producer_index].push((consumer_index, input_index));
             }
-            seen_output_parts += 1;
-            last_output = Some(*axis_ref);
-        } else {
-            saw_reduction = true;
         }
     }
-
-    if seen_output_parts != output_parts {
-        return Err(err("order does not contain every output loop part"));
-    }
-
-    Ok(Some(Site::At(last_output.expect(
-        "reduction with output parts must see one output loop part",
-    ))))
+    consumers
 }
 
-fn expected_axis_refs(splits: &[SplitList]) -> Vec<AxisRef> {
-    let mut expected = Vec::new();
-    for (axis, split_list) in splits.iter().enumerate() {
-        for part in 0..=split_list.0.len() {
-            expected.push(AxisRef {
-                axis: Axis(axis),
-                part,
-            });
+fn resolve_pruned_axis(
+    producer: &Stage,
+    consumer: &Stage,
+    input_index: usize,
+    axis: AxisId,
+) -> Result<AxisId, String> {
+    let position = producer
+        .output
+        .axes
+        .0
+        .iter()
+        .position(|candidate| *candidate == axis)
+        .ok_or_else(|| "is not present in output axes".to_string())?;
+    consumer
+        .inputs
+        .get(input_index)
+        .and_then(|input| input.axes.0.get(position))
+        .copied()
+        .ok_or_else(|| "does not resolve through consumer input axes".to_string())
+}
+
+fn validate_axis_multi_id(stage: &Stage, axes: &AxisMultiId) -> Result<(), String> {
+    for axis in &axes.0 {
+        validate_axis_id(stage, *axis)?;
+    }
+    let mut seen = BTreeSet::new();
+    for axis in &axes.0 {
+        if !seen.insert(axis.0) {
+            return Err(format!("repeats axis {}", axis.0));
         }
-    }
-    expected
-}
-
-fn validate_site(rank: usize, splits: &[SplitList], site: Site) -> Result<(), String> {
-    match site {
-        Site::Root => Ok(()),
-        Site::At(axis_ref) => validate_axis_ref(rank, splits, axis_ref),
-    }
-}
-
-fn validate_axis_ref(rank: usize, splits: &[SplitList], axis_ref: AxisRef) -> Result<(), String> {
-    validate_axis(rank, axis_ref.axis)?;
-    let max_part = splits[axis_ref.axis.0].0.len();
-    if axis_ref.part > max_part {
-        return Err(format!(
-            "references nonexistent loop part {}",
-            format_axis_ref(axis_ref)
-        ));
     }
     Ok(())
 }
 
-fn validate_axis(rank: usize, axis: Axis) -> Result<(), String> {
-    if axis.0 >= rank {
+fn validate_site(stage: &Stage, site: Option<Site>) -> Result<(), String> {
+    match site {
+        None | Some(Site::Root) => Ok(()),
+        Some(Site::At(axis)) => validate_axis_id(stage, axis),
+    }
+}
+
+fn validate_axis_id(stage: &Stage, axis: AxisId) -> Result<(), String> {
+    if axis.0 >= stage.axes.len() {
         return Err(format!("references nonexistent axis {}", axis.0));
     }
     Ok(())
-}
-
-fn format_site(site: Site) -> String {
-    match site {
-        Site::Root => "Root".to_string(),
-        Site::At(axis_ref) => format!("At({})", format_axis_ref(axis_ref)),
-    }
-}
-
-fn format_axis_ref(axis_ref: AxisRef) -> String {
-    format!("{}{}", axis_ref.axis.0, "'".repeat(axis_ref.part))
 }
 
 fn err(message: impl Into<String>) -> ValidationError {
@@ -233,276 +195,57 @@ impl std::error::Error for ValidationError {}
 
 #[cfg(test)]
 mod tests {
-    use super::validate_scheduled_stage;
-    use crate::ir::common::Op;
-    use crate::ir::stage::{
-        Axis, AxisRef, Index, Schedule, ScheduledStage, Site, SplitFactor, SplitList, Stage,
+    use super::{validate_stage, validate_stage_graph};
+    use crate::ir::common::{ExtentKind, Index, Op};
+    use crate::ir::graph::{
+        Graph, Input as GraphInput, Node, NodeId, Output as GraphOutput, OutputId, Source,
     };
+    use crate::ir::stage::{Axis, AxisId, AxisMultiId, Input, Output, Site, Stage};
+
+    fn pointwise_stage() -> Stage {
+        Stage {
+            op: Op::Add,
+            axes: vec![
+                Axis::Live {
+                    index: Index(0),
+                    kind: ExtentKind::Semantic,
+                },
+                Axis::Live {
+                    index: Index(1),
+                    kind: ExtentKind::Semantic,
+                },
+            ],
+            output: Output {
+                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                init: None,
+            },
+            inputs: vec![Input {
+                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                compute: None,
+            }],
+        }
+    }
 
     #[test]
     fn accepts_pointwise_stage() {
-        let stage = ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 2,
-                inputs: vec![Index(vec![Axis(0), Axis(1)]), Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0), Axis(1)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![]), SplitList(vec![])],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(1),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![
-                    None,
-                    Some(Site::At(AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    })),
-                ],
-                init_site: None,
-            },
-        };
-
-        assert!(validate_scheduled_stage(&stage).is_ok());
+        assert!(validate_stage(&pointwise_stage()).is_ok());
     }
 
     #[test]
-    fn accepts_reduction_stage() {
-        let stage = ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 3,
-                inputs: vec![Index(vec![Axis(0), Axis(1), Axis(2)])],
-                output: Index(vec![Axis(0), Axis(1)]),
-            },
-            schedule: Schedule {
-                splits: vec![
-                    SplitList(vec![SplitFactor(4)]),
-                    SplitList(vec![]),
-                    SplitList(vec![]),
-                ],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 1,
-                    },
-                    AxisRef {
-                        axis: Axis(1),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(2),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![None],
-                init_site: Some(Site::At(AxisRef {
-                    axis: Axis(1),
-                    part: 0,
-                })),
-            },
-        };
+    fn rejects_invalid_output_axis() {
+        let mut stage = pointwise_stage();
+        stage.output.axes = AxisMultiId(vec![AxisId(2)]);
 
-        assert!(validate_scheduled_stage(&stage).is_ok());
-    }
-
-    #[test]
-    fn rejects_split_len_mismatch() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![],
-                order: vec![AxisRef {
-                    axis: Axis(0),
-                    part: 0,
-                }],
-                compute_sites: vec![None],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
-
-        assert_eq!(error.to_string(), "schedule has 0 split lists for rank 1");
-    }
-
-    #[test]
-    fn rejects_missing_loop_part() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![SplitFactor(4)])],
-                order: vec![AxisRef {
-                    axis: Axis(0),
-                    part: 0,
-                }],
-                compute_sites: vec![None],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "order must contain 2 loop parts, found 1"
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_loop_part() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![])],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![None],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
-
-        assert_eq!(error.to_string(), "order repeats loop part 0");
-    }
-
-    #[test]
-    fn rejects_invalid_compute_site() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![])],
-                order: vec![AxisRef {
-                    axis: Axis(0),
-                    part: 0,
-                }],
-                compute_sites: vec![Some(Site::At(AxisRef {
-                    axis: Axis(0),
-                    part: 1,
-                }))],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "compute site for input 0 references nonexistent loop part 0'"
-        );
-    }
-
-    #[test]
-    fn accepts_root_compute_site() {
-        let stage = ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![])],
-                order: vec![AxisRef {
-                    axis: Axis(0),
-                    part: 0,
-                }],
-                compute_sites: vec![Some(Site::Root)],
-                init_site: None,
-            },
-        };
-
-        assert!(validate_scheduled_stage(&stage).is_ok());
-    }
-
-    #[test]
-    fn rejects_out_of_range_axis_in_index() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 2,
-                inputs: vec![Index(vec![Axis(0), Axis(2)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![]), SplitList(vec![])],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(1),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![None],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
-
-        assert_eq!(error.to_string(), "input 0 references nonexistent axis 2");
+        let error = validate_stage(&stage).unwrap_err();
+        assert_eq!(error.to_string(), "output references nonexistent axis 2");
     }
 
     #[test]
     fn rejects_pointwise_init_site() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 1,
-                inputs: vec![Index(vec![Axis(0)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![])],
-                order: vec![AxisRef {
-                    axis: Axis(0),
-                    part: 0,
-                }],
-                compute_sites: vec![None],
-                init_site: Some(Site::Root),
-            },
-        })
-        .unwrap_err();
+        let mut stage = pointwise_stage();
+        stage.output.init = Some(Site::Root);
 
+        let error = validate_stage(&stage).unwrap_err();
         assert_eq!(
             error.to_string(),
             "pointwise stage cannot have an init site"
@@ -511,71 +254,89 @@ mod tests {
 
     #[test]
     fn rejects_reduction_without_init_site() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 2,
-                inputs: vec![Index(vec![Axis(0), Axis(1)])],
-                output: Index(vec![Axis(0)]),
-            },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![]), SplitList(vec![])],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(1),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![None],
-                init_site: None,
-            },
-        })
-        .unwrap_err();
+        let mut stage = pointwise_stage();
+        stage.output.axes = AxisMultiId(vec![AxisId(0)]);
 
+        let error = validate_stage(&stage).unwrap_err();
         assert_eq!(error.to_string(), "reduction stage must have an init site");
     }
 
     #[test]
-    fn rejects_interleaved_reduction_order() {
-        let error = validate_scheduled_stage(&ScheduledStage {
-            stage: Stage {
-                op: Op::Add,
-                rank: 3,
-                inputs: vec![Index(vec![Axis(0), Axis(1), Axis(2)])],
-                output: Index(vec![Axis(0), Axis(2)]),
+    fn accepts_pruned_stage_with_compute_consumer() {
+        let producer = Stage {
+            op: Op::Mul,
+            axes: vec![
+                Axis::Pruned,
+                Axis::Live {
+                    index: Index(1),
+                    kind: ExtentKind::Semantic,
+                },
+            ],
+            output: Output {
+                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                init: None,
             },
-            schedule: Schedule {
-                splits: vec![SplitList(vec![]), SplitList(vec![]), SplitList(vec![])],
-                order: vec![
-                    AxisRef {
-                        axis: Axis(0),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(1),
-                        part: 0,
-                    },
-                    AxisRef {
-                        axis: Axis(2),
-                        part: 0,
-                    },
-                ],
-                compute_sites: vec![None],
-                init_site: Some(Site::At(AxisRef {
-                    axis: Axis(2),
-                    part: 0,
-                })),
+            inputs: vec![],
+        };
+        let consumer = Stage {
+            op: Op::Add,
+            axes: vec![
+                Axis::Live {
+                    index: Index(0),
+                    kind: ExtentKind::Semantic,
+                },
+                Axis::Live {
+                    index: Index(1),
+                    kind: ExtentKind::Semantic,
+                },
+            ],
+            output: Output {
+                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                init: None,
             },
-        })
-        .unwrap_err();
+            inputs: vec![Input {
+                axes: AxisMultiId(vec![AxisId(0), AxisId(1)]),
+                compute: Some(Site::At(AxisId(0))),
+            }],
+        };
+        let graph = Graph {
+            inputs: vec![],
+            nodes: vec![
+                Node {
+                    inner: producer,
+                    inputs: vec![],
+                    outputs: vec![GraphOutput],
+                },
+                Node {
+                    inner: consumer,
+                    inputs: vec![Source::Node(NodeId(0), OutputId(0))],
+                    outputs: vec![GraphOutput],
+                },
+            ],
+            outputs: vec![Source::Node(NodeId(1), OutputId(0))],
+        };
 
+        assert!(validate_stage_graph(&graph).is_ok());
+    }
+
+    #[test]
+    fn rejects_pruned_graph_output() {
+        let mut stage = pointwise_stage();
+        stage.axes[0] = Axis::Pruned;
+        let graph = Graph {
+            inputs: vec![GraphInput],
+            nodes: vec![Node {
+                inner: stage,
+                inputs: vec![Source::Input(crate::ir::graph::InputId(0))],
+                outputs: vec![GraphOutput],
+            }],
+            outputs: vec![Source::Node(NodeId(0), OutputId(0))],
+        };
+
+        let error = validate_stage_graph(&graph).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "reduction loops cannot appear before output loops complete"
+            "node 0: graph output references pruned stage"
         );
     }
 }
