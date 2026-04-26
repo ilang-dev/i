@@ -2,18 +2,26 @@
 //!
 //! This module defines the payload of `Graph<Stage>`.
 //! `Stage` gives the physical axis shape of one graph node.
-//! `AxisMultiId` values tie inputs and outputs to those axes.
+//! `Layout` values give input and output buffer dimensions.
 //!
 //! Invariants:
 //! - `Stage.axes` is ordered.
 //! - `AxisId(i)` names `Stage.axes[i]`.
-//! - `AxisMultiId` values refer only to `Stage` axes.
-//! - `AxisMultiId` values preserve access order.
+//! - `AxisRef::Local(axis)` names one axis of the same `Stage`.
+//! - `AxisRef::Consumer(axis)` names one axis of the consuming `Stage`.
+//! - `AxisRef::Consumer(_)` appears only in stages placed under a consumer.
 //! - `Axis::Live` carries one semantic index source and one extent kind.
-//! - `Axis::Pruned` is resolved through graph edges by aligning output axes
-//!   with consumer input axes.
-//! - `Output.axes` gives the stage output layout.
-//! - `Input.axes` gives one stage input layout.
+//! - `Axis::Pruned` carries the consumer axis supplying that axis.
+//! - Every pruned axis is resolved through graph edges by aligning output
+//!   layout with consumer input layout.
+//! - `Layout` values preserve tensor dimension order.
+//! - `LayoutDim::Physical` names one dimension sourced by one physical axis.
+//! - `LayoutDim::Semantic` names one dimension sourced by one semantic shape
+//!   dimension.
+//! - `LayoutDim::Semantic.axes` is ordered by physical extent kind for that
+//!   semantic index.
+//! - `Output.layout` gives the stage output layout.
+//! - `Input.layout` gives one stage input layout.
 //! - `Output.init` is `Some(site)` for a reduction stage and `None` for a
 //!   pointwise stage.
 //!
@@ -27,9 +35,9 @@ pub struct Stage {
     pub op: Op,
     /// Physical axes of the stage domain.
     pub axes: Vec<Axis>,
-    /// Explicit output access pattern.
+    /// Explicit output layout.
     pub output: Output,
-    /// One explicit access pattern per input, in input order.
+    /// One explicit input layout per input, in input order.
     pub inputs: Vec<Input>,
 }
 
@@ -44,31 +52,57 @@ pub enum Axis {
         kind: ExtentKind,
     },
     /// One pruned physical axis.
-    Pruned,
+    Pruned {
+        /// Consumer axis supplying this axis.
+        by: AxisRef,
+    },
 }
 
-/// Handle for one physical axis.
+/// Handle for one stage axis.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AxisId(pub usize);
 
-/// Indexing of one tensor access by physical axes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AxisMultiId(pub Vec<AxisId>);
+/// Reference to one available axis iterator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AxisRef {
+    /// One local stage axis.
+    Local(AxisId),
+    /// One consumer axis supplying a pruned stage axis.
+    Consumer(AxisId),
+}
 
-/// One stage output access.
+/// One tensor layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Layout(pub Vec<LayoutDim>);
+
+/// One dimension of one tensor layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LayoutDim {
+    /// One dimension sourced by one physical axis.
+    Physical(AxisRef),
+    /// One dimension sourced by one semantic shape dimension.
+    Semantic {
+        /// Semantic index naming the shape dimension.
+        index: Index,
+        /// Axis iterators composing the semantic iterator.
+        axes: Vec<AxisRef>,
+    },
+}
+
+/// One stage output layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Output {
-    /// Output layout in physical axes.
-    pub axes: AxisMultiId,
+    /// Output layout.
+    pub layout: Layout,
     /// Output init site.
     pub init: Option<Site>,
 }
 
-/// One stage input access.
+/// One stage input layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Input {
-    /// Input layout in physical axes.
-    pub axes: AxisMultiId,
+    /// Input layout.
+    pub layout: Layout,
     /// Input compute site.
     pub compute: Option<Site>,
 }
@@ -78,6 +112,6 @@ pub struct Input {
 pub enum Site {
     /// The root of the stage.
     Root,
-    /// The body of one physical axis.
+    /// The body of one local stage axis.
     At(AxisId),
 }
