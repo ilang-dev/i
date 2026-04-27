@@ -3,6 +3,8 @@
 //! This module defines planned kernel dataflow.
 //! `KernelProgram` gives logical buffers and an ordered graph of kernels.
 //! `Kernel` gives one kernel body over graph-local logical buffers.
+//! `BufferShape` values give semantic buffer dimensions.
+//! `BufferLayout` values give physical buffer dimensions.
 //! `Block` values give ordered kernel statements.
 //! `Extent` values give loop bounds in terms of logical buffer dimensions.
 //! `Access` values give logical buffer indexing.
@@ -13,7 +15,9 @@
 //! - `BufferId(i)` names `KernelProgram.buffers[i]`.
 //! - `BufferId` values are graph-local.
 //! - `Buffer.kind` gives the graph boundary role of one logical buffer.
+//! - `Buffer.shape` gives the semantic shape of one logical buffer.
 //! - `Buffer.layout` gives the allocation layout of one logical buffer.
+//! - `BufferShape` preserves semantic buffer dimension order.
 //! - `BufferLayout` preserves physical buffer dimension order.
 //! - `Kernel.reads` is ordered.
 //! - `Kernel.writes` is ordered.
@@ -64,6 +68,8 @@ pub struct Kernel {
 pub struct Buffer {
     /// Buffer role.
     pub kind: BufferKind,
+    /// Buffer semantic shape.
+    pub shape: BufferShape,
     /// Buffer allocation layout.
     pub layout: BufferLayout,
 }
@@ -78,6 +84,10 @@ pub enum BufferKind {
     /// One program output buffer.
     Output,
 }
+
+/// Semantic shape of one logical buffer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BufferShape(pub Vec<DimRef>);
 
 /// Physical allocation layout of one logical buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
