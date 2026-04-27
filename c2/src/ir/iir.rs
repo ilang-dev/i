@@ -1,5 +1,5 @@
 use super::common::{BufferId, ExtentSource, KernelId, Scalar, TensorType};
-use super::loop_ir::Kernel;
+use super::kernel_program::Kernel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
