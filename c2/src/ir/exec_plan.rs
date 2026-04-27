@@ -32,6 +32,7 @@
 //! - `Exec` steps execute in order.
 //! - `Step::Alloc` allocates one intermediate buffer.
 //! - `Step::Dispatch` calls one kernel.
+//! - Each kernel is dispatched exactly once.
 //! - `Step::Dispatch.reads` is ordered as kernel `readonlys`.
 //! - `Step::Dispatch.writes` is ordered as kernel `writeables`.
 //! - `Step::Free` releases one intermediate buffer.
@@ -40,63 +41,71 @@
 use super::kernel_program::{DimRef, Extent, Kernel};
 
 /// One public execution plan.
-struct ExecPlan {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecPlan {
     /// Param-bound kernels in execution-plan order.
-    kernels: Vec<Kernel<Param>>,
+    pub kernels: Vec<Kernel<Param>>,
     /// Runtime buffers.
-    buffers: Buffers,
+    pub buffers: Buffers,
     /// Number of program outputs.
-    count: usize,
+    pub count: usize,
     /// Rank of each program output.
-    ranks: Vec<usize>,
+    pub ranks: Vec<usize>,
     /// Shape of each program output.
-    shapes: Vec<Shape>,
+    pub shapes: Vec<Shape>,
     /// Ordered execution steps.
-    exec: Exec,
+    pub exec: Exec,
 }
 
 /// Runtime buffers.
-struct Buffers {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Buffers {
     /// Program input buffers.
-    inputs: Vec<InputBuffer>,
+    pub inputs: Vec<InputBuffer>,
     /// Exec-owned intermediate buffers.
-    intermediates: Vec<IntermediateBuffer>,
+    pub intermediates: Vec<IntermediateBuffer>,
     /// Program output buffers.
-    outputs: Vec<OutputBuffer>,
+    pub outputs: Vec<OutputBuffer>,
 }
 
 /// One program input buffer.
-struct InputBuffer {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputBuffer {
     /// Buffer semantic shape.
-    shape: Shape,
+    pub shape: Shape,
     /// Buffer allocation layout.
-    layout: Layout,
+    pub layout: Layout,
 }
 
 /// One exec-owned intermediate buffer.
-struct IntermediateBuffer {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntermediateBuffer {
     /// Buffer semantic shape.
-    shape: Shape,
+    pub shape: Shape,
     /// Buffer allocation layout.
-    layout: Layout,
+    pub layout: Layout,
 }
 
 /// One program output buffer.
-struct OutputBuffer {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputBuffer {
     /// Buffer semantic shape.
-    shape: Shape,
+    pub shape: Shape,
     /// Buffer allocation layout.
-    layout: Layout,
+    pub layout: Layout,
 }
 
 /// Semantic shape of one runtime buffer.
-struct Shape(Vec<DimRef<Input>>);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shape(pub Vec<DimRef<Input>>);
 
 /// Physical allocation layout of one runtime buffer.
-struct Layout(Vec<Extent<Input>>);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Layout(pub Vec<Extent<Input>>);
 
 /// Reference to one runtime buffer.
-enum BufferRef {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BufferRef {
     /// One program input buffer.
     Input(Input),
     /// One exec-owned intermediate buffer.
@@ -106,16 +115,20 @@ enum BufferRef {
 }
 
 /// Handle for one program input buffer.
-struct Input(usize);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Input(pub usize);
 
 /// Handle for one exec-owned intermediate buffer.
-struct Intermediate(usize);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Intermediate(pub usize);
 
 /// Handle for one program output buffer.
-struct Output(usize);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Output(pub usize);
 
 /// Kernel ABI argument bucket.
-enum Arg {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Arg {
     /// The `readonlys` argument.
     Readonly,
     /// The `writeables` argument.
@@ -123,18 +136,21 @@ enum Arg {
 }
 
 /// Handle for one kernel ABI parameter.
-struct Param {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Param {
     /// ABI argument bucket.
-    arg: Arg,
+    pub arg: Arg,
     /// Parameter index within the bucket.
-    ind: usize,
+    pub ind: usize,
 }
 
 /// Ordered execution steps.
-struct Exec(Vec<Step>);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Exec(pub Vec<Step>);
 
 /// One execution step.
-enum Step {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Step {
     /// Allocate one intermediate buffer.
     Alloc(Intermediate),
     /// Dispatch one kernel.
@@ -151,4 +167,5 @@ enum Step {
 }
 
 /// Handle for one planned kernel.
-struct KernelId(usize);
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct KernelId(pub usize);
