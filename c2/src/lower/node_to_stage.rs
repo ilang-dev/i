@@ -8,10 +8,11 @@ use crate::ir::graph::{Graph, Node as GraphNode, NodeId, OutputId, Source};
 use crate::ir::node::{AxisRef as NodeAxisRef, MultiIndex, Node};
 use crate::ir::stage::{
     Axis, AxisId, AxisRef as StageAxisRef, Input as StageInput, Layout, LayoutDim,
-    Output as StageOutput, Shape, Site as StageSite, Stage,
+    Output as StageOutput, ProgramShape, Shape, ShapeDim, ShapeTable, Site as StageSite, Stage,
+    StageProgram,
 };
 
-pub fn lower_node_graph_to_stage_graph(graph: &Graph<Node>) -> Result<Graph<Stage>, LowerError> {
+pub fn lower_node_graph_to_stage_program(graph: &Graph<Node>) -> Result<StageProgram, LowerError> {
     validate_node_graph(graph).map_err(LowerError::from_node_graph)?;
     let mut builder = Builder::new(graph);
     let outputs = graph
@@ -20,18 +21,31 @@ pub fn lower_node_graph_to_stage_graph(graph: &Graph<Node>) -> Result<Graph<Stag
         .copied()
         .map(|source| builder.lower_output_source(source))
         .collect::<Result<Vec<_>, _>>()?;
+    let input_shapes = builder.input_shapes();
     let stage_graph = Graph {
         inputs: graph.inputs.clone(),
         nodes: builder.nodes,
         outputs,
     };
     validate_stage_graph(&stage_graph).map_err(LowerError::from_stage_graph)?;
-    Ok(stage_graph)
+    Ok(StageProgram {
+        shapes: ShapeTable {
+            inputs: input_shapes,
+            nodes: builder.shapes,
+        },
+        graph: stage_graph,
+    })
+}
+
+pub fn lower_node_graph_to_stage_graph(graph: &Graph<Node>) -> Result<Graph<Stage>, LowerError> {
+    Ok(lower_node_graph_to_stage_program(graph)?.graph)
 }
 
 struct Builder<'a> {
     graph: &'a Graph<Node>,
     nodes: Vec<GraphNode<Stage>>,
+    shapes: Vec<ProgramShape>,
+    input_ranks: Vec<usize>,
     materialized: Vec<Option<NodeId>>,
 }
 
@@ -40,6 +54,8 @@ impl<'a> Builder<'a> {
         Self {
             graph,
             nodes: Vec::new(),
+            shapes: Vec::new(),
+            input_ranks: vec![0; graph.inputs.len()],
             materialized: vec![None; graph.nodes.len()],
         }
     }
@@ -93,12 +109,14 @@ impl<'a> Builder<'a> {
         assign_layouts(&mut stage, &graph_node.inner, &axis_sources, output_layout)?;
 
         let inputs = self.lower_stage_inputs(node_id, &stage)?;
+        let shape = self.lower_stage_shape(&stage, inputs.as_slice())?;
         let stage_id = NodeId(self.nodes.len());
         self.nodes.push(GraphNode {
             inner: stage,
             inputs,
             outputs: graph_node.outputs.clone(),
         });
+        self.shapes.push(shape);
         Ok(stage_id)
     }
 
@@ -141,6 +159,86 @@ impl<'a> Builder<'a> {
                         ))
                     }
                 }
+            })
+            .collect()
+    }
+
+    fn lower_stage_shape(
+        &mut self,
+        stage: &Stage,
+        inputs: &[Source],
+    ) -> Result<ProgramShape, LowerError> {
+        let mut dims = BTreeMap::new();
+        for (input_index, input) in stage.inputs.iter().enumerate() {
+            let source = inputs[input_index];
+            let source_shape = self.source_shape(source, input.shape.0.len())?;
+            for (dim, index) in input.shape.0.iter().enumerate() {
+                dims.entry(index.0).or_insert(source_shape.0[dim]);
+            }
+        }
+
+        stage
+            .output
+            .shape
+            .0
+            .iter()
+            .map(|index| {
+                dims.get(&index.0).copied().ok_or_else(|| {
+                    LowerError::new(format!(
+                        "stage output index {} has no input shape source",
+                        index.0
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(ProgramShape)
+    }
+
+    fn source_shape(&mut self, source: Source, rank: usize) -> Result<ProgramShape, LowerError> {
+        match source {
+            Source::Input(input) => {
+                self.input_ranks[input.0] = self.input_ranks[input.0].max(rank);
+                Ok(ProgramShape(
+                    (0..rank).map(|dim| ShapeDim { input, dim }).collect(),
+                ))
+            }
+            Source::Node(node, OutputId(0)) => {
+                let shape = self.shapes.get(node.0).ok_or_else(|| {
+                    LowerError::new(format!(
+                        "stage input references shape of nonexistent stage {}",
+                        node.0
+                    ))
+                })?;
+                if shape.0.len() != rank {
+                    return Err(LowerError::new(format!(
+                        "stage input expects rank {} but source stage {} has rank {}",
+                        rank,
+                        node.0,
+                        shape.0.len()
+                    )));
+                }
+                Ok(shape.clone())
+            }
+            Source::Node(_, output) => Err(LowerError::new(format!(
+                "stage input references output {}",
+                output.0
+            ))),
+        }
+    }
+
+    fn input_shapes(&self) -> Vec<ProgramShape> {
+        self.input_ranks
+            .iter()
+            .enumerate()
+            .map(|(input, rank)| {
+                ProgramShape(
+                    (0..*rank)
+                        .map(|dim| ShapeDim {
+                            input: crate::ir::graph::InputId(input),
+                            dim,
+                        })
+                        .collect(),
+                )
             })
             .collect()
     }
@@ -590,8 +688,8 @@ impl std::error::Error for LowerError {}
 mod tests {
     use super::{
         apply_axis_pruning, consumer_axis_prefix, edge_axis_alignment,
-        lower_node_graph_to_stage_graph, prunable_axis_prefix, prune_producer_for_consumer,
-        AxisPrune,
+        lower_node_graph_to_stage_graph, lower_node_graph_to_stage_program, prunable_axis_prefix,
+        prune_producer_for_consumer, AxisPrune,
     };
     use crate::front::parse_expr;
     use crate::ir::common::{ExtentKind, Index, Op};
@@ -604,7 +702,7 @@ mod tests {
     };
     use crate::ir::stage::{
         Axis, AxisId, AxisRef as StageAxisRef, Input as StageInput, Layout, LayoutDim,
-        Output as StageOutput, Shape, Site as StageSite, Stage,
+        Output as StageOutput, ProgramShape, Shape, ShapeDim, Site as StageSite, Stage,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::{component, front};
@@ -632,6 +730,13 @@ mod tests {
 
     fn physical(axis: usize) -> LayoutDim {
         LayoutDim::Physical(StageAxisRef::Local(AxisId(axis)))
+    }
+
+    fn shape_dim(input: usize, dim: usize) -> ShapeDim {
+        ShapeDim {
+            input: InputId(input),
+            dim,
+        }
     }
 
     #[test]
@@ -676,6 +781,43 @@ mod tests {
                 ]),
                 init: None,
             }
+        );
+    }
+
+    #[test]
+    fn lowers_stage_program_shapes() {
+        let program = lower_node_graph_to_stage_program(&lower_expr("ik*kj~ijk")).unwrap();
+
+        assert_eq!(
+            program.shapes.inputs,
+            vec![
+                ProgramShape(vec![shape_dim(0, 0), shape_dim(0, 1)]),
+                ProgramShape(vec![shape_dim(1, 0), shape_dim(1, 1)]),
+            ]
+        );
+        assert_eq!(
+            program.shapes.nodes,
+            vec![ProgramShape(vec![
+                shape_dim(0, 0),
+                shape_dim(1, 1),
+                shape_dim(0, 1),
+            ])]
+        );
+    }
+
+    #[test]
+    fn lowers_stage_program_shapes_for_duplicates() {
+        let component = component::expr(front::parse_expr("ik*kj~ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap()));
+        let node_graph = lower_component_to_graph(&component).unwrap();
+        let program = lower_node_graph_to_stage_program(&node_graph).unwrap();
+
+        assert_eq!(
+            program.shapes.nodes,
+            vec![
+                ProgramShape(vec![shape_dim(0, 0), shape_dim(1, 1), shape_dim(0, 1)]),
+                ProgramShape(vec![shape_dim(0, 0), shape_dim(1, 1)]),
+            ]
         );
     }
 

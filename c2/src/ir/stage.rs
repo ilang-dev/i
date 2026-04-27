@@ -1,11 +1,19 @@
 //! Stage IR.
 //!
-//! This module defines the payload of `Graph<Stage>`.
+//! This module defines staged physical dataflow.
+//! `StageProgram` gives global semantic shapes and one staged graph.
 //! `Stage` gives the physical axes of one graph node.
 //! `Shape` values give local semantic buffer dimensions.
+//! `ShapeTable` values give program input shapes and stage output shapes.
 //! `Layout` values give input and output buffer dimensions.
 //!
 //! Invariants:
+//! - `StageProgram.graph` is ordered.
+//! - `StageProgram.shapes` is ordered.
+//! - `ShapeTable.inputs` is ordered.
+//! - `ShapeTable.nodes` is ordered with `StageProgram.graph.nodes`.
+//! - `ProgramShape` values preserve semantic dimension order.
+//! - `ShapeDim` values name dimensions of program input buffers.
 //! - `Stage.axes` is ordered.
 //! - `AxisId(i)` names `Stage.axes[i]`.
 //! - `AxisRef::Local(axis)` names one axis of the same `Stage`.
@@ -32,6 +40,38 @@
 //!
 
 use super::common::{ExtentKind, Index, Op};
+use super::graph::{Graph, InputId};
+
+/// One staged program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StageProgram {
+    /// Global semantic shapes.
+    pub shapes: ShapeTable,
+    /// Staged dataflow graph.
+    pub graph: Graph<Stage>,
+}
+
+/// Global semantic shapes for one staged program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShapeTable {
+    /// Program input shapes.
+    pub inputs: Vec<ProgramShape>,
+    /// Stage output shapes.
+    pub nodes: Vec<ProgramShape>,
+}
+
+/// One semantic buffer shape in terms of program inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProgramShape(pub Vec<ShapeDim>);
+
+/// Reference to one program input dimension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShapeDim {
+    /// Program input.
+    pub input: InputId,
+    /// Program input dimension.
+    pub dim: usize,
+}
 
 /// One physical stage.
 #[derive(Clone, Debug, Eq, PartialEq)]
