@@ -1,5 +1,6 @@
 pub mod common;
 pub mod component;
+pub mod exec_plan;
 pub mod expr;
 pub mod graph;
 pub mod iir;
