@@ -404,4 +404,83 @@ mod tests {
             "node 0: compute write references nonexistent loop 1"
         );
     }
+
+    #[test]
+    fn rejects_duplicate_loop_id() {
+        let mut program = program();
+        let Action::Loop { body, extent, .. } = &mut program.graph.nodes[0].inner.body.0[0] else {
+            unreachable!();
+        };
+        body.0.insert(
+            0,
+            Action::Loop {
+                id: LoopId(0),
+                extent: extent.clone(),
+                guard: TailGuard(false),
+                body: Block(vec![]),
+            },
+        );
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(error.to_string(), "node 0: loop id 0 is repeated");
+    }
+
+    #[test]
+    fn rejects_invalid_layout_dim_ref() {
+        let mut program = program();
+        program.buffers[1].layout.0[0].source = DimRef {
+            buffer: BufferId(1),
+            dim: 1,
+        };
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "buffer 1 layout references nonexistent dim 1 of buffer 1"
+        );
+    }
+
+    #[test]
+    fn rejects_kernel_graph_read_arity_mismatch() {
+        let mut program = program();
+        program.graph.nodes[0].inputs = vec![];
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 0: graph has 0 inputs for 1 kernel reads"
+        );
+    }
+
+    #[test]
+    fn rejects_read_access_outside_params() {
+        let mut program = program();
+        program.buffers.push(Buffer {
+            kind: BufferKind::Intermediate,
+            shape: BufferShape(vec![DimRef {
+                buffer: BufferId(0),
+                dim: 0,
+            }]),
+            layout: BufferLayout(vec![Extent {
+                source: DimRef {
+                    buffer: BufferId(2),
+                    dim: 0,
+                },
+                kind: ExtentKind::Semantic,
+            }]),
+        });
+        let Action::Loop { body, .. } = &mut program.graph.nodes[0].inner.body.0[0] else {
+            unreachable!();
+        };
+        let Action::Compute { reads, .. } = &mut body.0[0] else {
+            unreachable!();
+        };
+        reads[0].buffer = BufferId(2);
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 0: compute read 0 references buffer 2 outside params"
+        );
+    }
 }

@@ -815,6 +815,75 @@ mod tests {
     }
 
     #[test]
+    fn passes_through_program_input_output_without_kernel() {
+        let stage_program = crate::ir::stage::StageProgram {
+            shapes: crate::ir::stage::ShapeTable {
+                inputs: vec![crate::ir::stage::ProgramShape(vec![
+                    crate::ir::stage::ShapeDim {
+                        input: crate::ir::graph::InputId(0),
+                        dim: 0,
+                    },
+                ])],
+                nodes: vec![],
+            },
+            graph: crate::ir::graph::Graph {
+                inputs: vec![crate::ir::graph::Input],
+                nodes: vec![],
+                outputs: vec![Source::Input(crate::ir::graph::InputId(0))],
+            },
+        };
+
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        assert_eq!(program.buffers.len(), 1);
+        assert_eq!(
+            program.outputs,
+            vec![crate::ir::kernel_program::BufferId(0)]
+        );
+        assert!(program.graph.nodes.is_empty());
+        assert_eq!(
+            program.graph.outputs,
+            vec![Source::Input(crate::ir::graph::InputId(0))]
+        );
+    }
+
+    #[test]
+    fn keeps_materialized_producer_and_compute_at_duplicate() {
+        let producer = component::expr(front::parse_expr("ik*kj~ijk").unwrap());
+        let compute_consumer = component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap());
+        let materialized_consumer = component::expr(front::parse_expr("+ijk~ij").unwrap());
+        let component = producer.chain(compute_consumer.fanout(materialized_consumer));
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        let mut ops = Vec::new();
+        for node in &program.graph.nodes {
+            collect_compute_ops(&node.inner.body, &mut ops);
+        }
+
+        assert_eq!(program.graph.nodes.len(), 3);
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == crate::ir::common::Op::Mul)
+                .count(),
+            2
+        );
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == crate::ir::common::Op::Add)
+                .count(),
+            2
+        );
+        assert!(program
+            .graph
+            .nodes
+            .iter()
+            .any(|node| node.inner.writes.len() == 2));
+    }
+
+    #[test]
     fn absorbs_compute_at_producer_into_consumer_kernel() {
         let component = component::expr(front::parse_expr("ik*kj~ijk").unwrap())
             .chain(component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap()));
@@ -894,6 +963,21 @@ mod tests {
     }
 
     #[test]
+    fn emits_reduction_init_before_fused_reduction_loop() {
+        let component = component::expr(front::parse_expr("ik*kj~ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ijk~ij||ij0k").unwrap()));
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        let body = first_loop_body(&program.graph.nodes[0].inner.body);
+        let body = first_loop_body(body);
+        assert!(matches!(body.0[0], Action::Init { .. }));
+        assert!(matches!(body.0[1], Action::Loop { .. }));
+    }
+
+    #[test]
     fn emits_tail_guard_on_innermost_split_loop() {
         let program = lower_stage_program_to_kernel_program(&lower_expr("ik~ik|i:8|ii'k")).unwrap();
         let mut guards = Vec::new();
@@ -912,6 +996,22 @@ mod tests {
         assert!(matches!(reads[0].index[0], Iter::Reconstructed { .. }));
     }
 
+    #[test]
+    fn preserves_multi_factor_reconstruction_factors() {
+        let program =
+            lower_stage_program_to_kernel_program(&lower_expr("ik~ik|i:2:4|ii'i''k")).unwrap();
+        let compute = first_compute(&program.graph.nodes[0].inner.body).unwrap();
+        let Action::Compute { reads, .. } = compute else {
+            unreachable!();
+        };
+        let Iter::Reconstructed { loops, factors } = &reads[0].index[0] else {
+            unreachable!();
+        };
+
+        assert_eq!(loops.len(), 3);
+        assert_eq!(factors, &vec![2, 4]);
+    }
+
     fn collect_compute_writes(
         block: &crate::ir::kernel_program::Block,
         writes: &mut Vec<crate::ir::kernel_program::BufferId>,
@@ -920,6 +1020,19 @@ mod tests {
             match action {
                 Action::Loop { body, .. } => collect_compute_writes(body, writes),
                 Action::Compute { write, .. } => writes.push(write.buffer),
+                Action::Init { .. } => {}
+            }
+        }
+    }
+
+    fn collect_compute_ops(
+        block: &crate::ir::kernel_program::Block,
+        ops: &mut Vec<crate::ir::common::Op>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { body, .. } => collect_compute_ops(body, ops),
+                Action::Compute { op, .. } => ops.push(*op),
                 Action::Init { .. } => {}
             }
         }
@@ -949,5 +1062,16 @@ mod tests {
             }
         }
         None
+    }
+
+    fn first_loop_body(
+        block: &crate::ir::kernel_program::Block,
+    ) -> &crate::ir::kernel_program::Block {
+        for action in &block.0 {
+            if let Action::Loop { body, .. } = action {
+                return body;
+            }
+        }
+        panic!("expected loop action");
     }
 }
