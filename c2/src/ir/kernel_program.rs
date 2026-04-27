@@ -2,7 +2,7 @@
 //!
 //! This module defines planned kernel dataflow.
 //! `KernelProgram` gives logical buffers and an ordered graph of kernels.
-//! `Kernel` gives one kernel body over graph-local logical buffers.
+//! `Kernel` gives one kernel body over one buffer reference domain.
 //! `BufferShape` values give semantic buffer dimensions.
 //! `BufferLayout` values give physical buffer dimensions.
 //! `Block` values give ordered kernel statements.
@@ -22,6 +22,7 @@
 //! - `Buffer.layout` gives the allocation layout of one logical buffer.
 //! - `BufferShape` preserves semantic buffer dimension order.
 //! - `BufferLayout` preserves physical buffer dimension order.
+//! - `Kernel<B>` is parameterized by buffer reference type.
 //! - `Kernel.reads` is the ordered `readonlys` parameter list.
 //! - `Kernel.writes` is the ordered `writeables` parameter list.
 //! - Every buffer accessed by a kernel appears in `Kernel.reads` or
@@ -35,11 +36,11 @@
 //! - `Action::Loop` contains one nested loop body.
 //! - `Action::Init` initializes one scalar element of one write buffer.
 //! - `Action::Compute` computes one scalar element of one write buffer.
-//! - `Extent.source` names the semantic dimension supplying the loop bound.
-//! - `Extent.kind` gives the physical extent kind of the loop.
+//! - `Extent<B>.source` names the semantic dimension supplying the loop bound.
+//! - `Extent<B>.kind` gives the physical extent kind of the loop.
 //! - `TailGuard(true)` requests the canonical tail guard for a loop.
-//! - `DimRef { buffer, dim }` names dimension `dim` of `buffer`.
-//! - `Access.index` preserves buffer layout dimension order.
+//! - `DimRef<B> { buffer, dim }` names dimension `dim` of `buffer`.
+//! - `Access<B>.index` preserves buffer layout dimension order.
 //! - `Iter::Raw(loop_id)` uses one loop iterator directly.
 //! - `Iter::Reconstructed` composes one semantic iterator from physical loop
 //!   iterators.
@@ -63,13 +64,13 @@ pub struct KernelProgram {
 
 /// One planned kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Kernel {
+pub struct Kernel<B = BufferId> {
     /// Kernel `readonlys` parameter buffers.
-    pub reads: Vec<BufferId>,
+    pub reads: Vec<B>,
     /// Kernel `writeables` parameter buffers.
-    pub writes: Vec<BufferId>,
+    pub writes: Vec<B>,
     /// Kernel body.
-    pub body: Block,
+    pub body: Block<B>,
 }
 
 /// One logical buffer.
@@ -96,45 +97,45 @@ pub enum BufferKind {
 
 /// Semantic shape of one logical buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BufferShape(pub Vec<DimRef>);
+pub struct BufferShape(pub Vec<DimRef<BufferId>>);
 
 /// Physical allocation layout of one logical buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BufferLayout(pub Vec<Extent>);
+pub struct BufferLayout(pub Vec<Extent<BufferId>>);
 
 /// One ordered block of kernel statements.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Block(pub Vec<Action>);
+pub struct Block<B = BufferId>(pub Vec<Action<B>>);
 
 /// One kernel statement.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Action {
+pub enum Action<B = BufferId> {
     /// One counted loop.
     Loop {
         /// Loop identifier.
         id: LoopId,
         /// Loop extent.
-        extent: Extent,
+        extent: Extent<B>,
         /// Loop tail guard.
         guard: TailGuard,
         /// Loop body.
-        body: Block,
+        body: Block<B>,
     },
     /// One scalar initialization.
     Init {
         /// Reduction operator being initialized.
         op: Op,
         /// Write access being initialized.
-        write: Access,
+        write: Access<B>,
     },
     /// One scalar computation.
     Compute {
         /// Scalar operator being applied.
         op: Op,
         /// Write access being computed.
-        write: Access,
+        write: Access<B>,
         /// Read accesses used by the computation.
-        reads: Vec<Access>,
+        reads: Vec<Access<B>>,
     },
 }
 
@@ -152,27 +153,27 @@ pub struct TailGuard(pub bool);
 
 /// One loop extent.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Extent {
+pub struct Extent<B = BufferId> {
     /// Semantic dimension supplying this extent.
-    pub source: DimRef,
+    pub source: DimRef<B>,
     /// Physical extent kind.
     pub kind: ExtentKind,
 }
 
-/// Reference to one dimension of one logical buffer.
+/// Reference to one dimension of one buffer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DimRef {
-    /// Logical buffer.
-    pub buffer: BufferId,
+pub struct DimRef<B = BufferId> {
+    /// Buffer.
+    pub buffer: B,
     /// Buffer dimension.
     pub dim: usize,
 }
 
-/// One indexed logical buffer access.
+/// One indexed buffer access.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Access {
-    /// Logical buffer being accessed.
-    pub buffer: BufferId,
+pub struct Access<B = BufferId> {
+    /// Buffer being accessed.
+    pub buffer: B,
     /// Index expression for each layout dimension.
     pub index: Vec<Iter>,
 }
