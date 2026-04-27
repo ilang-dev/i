@@ -11,16 +11,23 @@
 //!
 //! Invariants:
 //! - `KernelProgram.buffers` is ordered.
+//! - `KernelProgram.outputs` is ordered.
 //! - `KernelProgram.graph` is ordered.
 //! - `BufferId(i)` names `KernelProgram.buffers[i]`.
 //! - `BufferId` values are graph-local.
+//! - `KernelProgram.outputs` gives program output buffers in user-visible
+//!   order.
 //! - `Buffer.kind` gives the graph boundary role of one logical buffer.
 //! - `Buffer.shape` gives the semantic shape of one logical buffer.
 //! - `Buffer.layout` gives the allocation layout of one logical buffer.
 //! - `BufferShape` preserves semantic buffer dimension order.
 //! - `BufferLayout` preserves physical buffer dimension order.
-//! - `Kernel.reads` is ordered.
-//! - `Kernel.writes` is ordered.
+//! - `Kernel.reads` is the ordered `readonlys` parameter list.
+//! - `Kernel.writes` is the ordered `writeables` parameter list.
+//! - Every buffer accessed by a kernel appears in `Kernel.reads` or
+//!   `Kernel.writes`.
+//! - `Action::Init.write` names one buffer in `Kernel.writes`.
+//! - `Action::Compute.write` names one buffer in `Kernel.writes`.
 //! - `LoopId` values are kernel-local.
 //! - `LoopId(i)` names one loop in the same `Kernel`.
 //! - `LoopId` values are unique within one `Kernel`.
@@ -48,6 +55,8 @@ use super::graph::Graph;
 pub struct KernelProgram {
     /// Logical buffers in graph order.
     pub buffers: Vec<Buffer>,
+    /// Program output buffers in user-visible order.
+    pub outputs: Vec<BufferId>,
     /// Kernel dataflow graph.
     pub graph: Graph<Kernel>,
 }
@@ -55,9 +64,9 @@ pub struct KernelProgram {
 /// One planned kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Kernel {
-    /// Logical buffers read by the kernel.
+    /// Kernel `readonlys` parameter buffers.
     pub reads: Vec<BufferId>,
-    /// Logical buffers written by the kernel.
+    /// Kernel `writeables` parameter buffers.
     pub writes: Vec<BufferId>,
     /// Kernel body.
     pub body: Block,
