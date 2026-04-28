@@ -128,7 +128,7 @@ pub struct Intermediate(pub usize);
 pub struct Output(pub usize);
 
 /// Kernel ABI argument bucket.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Arg {
     /// The `readonlys` argument.
     Readonly,
@@ -137,7 +137,7 @@ pub enum Arg {
 }
 
 /// Handle for one kernel ABI parameter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Param {
     /// ABI argument bucket.
     pub arg: Arg,
