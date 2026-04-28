@@ -3,12 +3,13 @@ use std::fmt;
 
 use crate::check::exec_plan::validate_exec_plan;
 use crate::check::kernel_program::validate_kernel_program;
+use crate::ir::common::{DimRef, Extent};
 use crate::ir::exec_plan::{
     Arg, BufferRef, Buffers, Exec, ExecPlan, Input, InputBuffer, Intermediate, IntermediateBuffer,
     KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, BufferKind, DimRef, Extent, Kernel, KernelProgram,
+    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram,
 };
 
 pub fn lower_kernel_program_to_exec_plan(program: &KernelProgram) -> Result<ExecPlan, LowerError> {
@@ -441,12 +442,11 @@ impl std::error::Error for LowerError {}
 mod tests {
     use super::lower_kernel_program_to_exec_plan;
     use crate::front::parse_expr;
-    use crate::ir::common::ExtentKind;
+    use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::exec_plan::{Arg, BufferRef, Input, Intermediate, Output, Param, Step};
     use crate::ir::graph::{Graph, Input as GraphInput};
     use crate::ir::kernel_program::{
-        Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, DimRef, Extent,
-        KernelProgram,
+        Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, KernelProgram,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -544,11 +544,11 @@ mod tests {
         assert_eq!(
             plan.shapes,
             vec![crate::ir::exec_plan::Shape(vec![
-                crate::ir::kernel_program::DimRef {
+                DimRef {
                     buffer: Input(0),
                     dim: 1
                 },
-                crate::ir::kernel_program::DimRef {
+                DimRef {
                     buffer: Input(0),
                     dim: 0
                 },
@@ -566,14 +566,14 @@ mod tests {
             output.layout,
             crate::ir::exec_plan::Layout(vec![
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: Input(0),
                         dim: 1
                     },
                     kind: ExtentKind::Base(vec![4])
                 },
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: Input(0),
                         dim: 1
                     },
@@ -583,7 +583,7 @@ mod tests {
                     }
                 },
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: Input(0),
                         dim: 0
                     },

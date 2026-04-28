@@ -3,13 +3,13 @@ use std::fmt;
 
 use crate::check::kernel_program::validate_kernel_program;
 use crate::check::stage::validate_stage_graph;
-use crate::ir::common::ExtentKind;
+use crate::ir::common::{DimRef, Extent, ExtentKind};
 use crate::ir::graph::{
     Graph, InputId, Node as GraphNode, NodeId, Output as GraphOutput, OutputId, Source,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, DimRef, Extent,
-    Iter, Kernel, KernelProgram, LoopId, TailGuard,
+    Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Iter, Kernel,
+    KernelProgram, LoopId, TailGuard,
 };
 use crate::ir::stage::{
     Axis, AxisId, AxisRef as StageAxisRef, Layout, LayoutDim, ProgramShape, ShapeDim, Site, Stage,
@@ -158,7 +158,7 @@ impl<'a> Builder<'a> {
         )
     }
 
-    fn lower_shape_dim(&self, dim: ShapeDim) -> DimRef {
+    fn lower_shape_dim(&self, dim: ShapeDim) -> DimRef<BufferId> {
         DimRef {
             buffer: self.input_buffers[dim.input.0],
             dim: dim.dim,
@@ -204,7 +204,7 @@ impl<'a> Builder<'a> {
         stage: &Stage,
         buffer: BufferId,
         index: crate::ir::common::Index,
-    ) -> Result<DimRef, LowerError> {
+    ) -> Result<DimRef<BufferId>, LowerError> {
         stage
             .output
             .shape
@@ -481,7 +481,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         stage: &Stage,
         axis: AxisId,
         info: LoopInfo,
-    ) -> Result<Extent, LowerError> {
+    ) -> Result<Extent<BufferId>, LowerError> {
         let source = self.semantic_dim_for_axis(stage_index, stage, info.index)?;
         self.record_access(source.buffer);
         let Axis::Live { kind, .. } = &stage.axes[axis.0] else {
@@ -498,7 +498,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         stage_index: usize,
         stage: &Stage,
         index: crate::ir::common::Index,
-    ) -> Result<DimRef, LowerError> {
+    ) -> Result<DimRef<BufferId>, LowerError> {
         if let Some(dim) = stage
             .output
             .shape
@@ -724,9 +724,9 @@ impl std::error::Error for LowerError {}
 mod tests {
     use super::lower_stage_program_to_kernel_program;
     use crate::front::parse_expr;
-    use crate::ir::common::ExtentKind;
+    use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
-    use crate::ir::kernel_program::{Action, BufferKind, BufferLayout, Extent, Iter};
+    use crate::ir::kernel_program::{Action, BufferKind, BufferLayout, Iter};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
@@ -774,21 +774,21 @@ mod tests {
             program.buffers[2].layout,
             BufferLayout(vec![
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: crate::ir::kernel_program::BufferId(2),
                         dim: 0
                     },
                     kind: ExtentKind::Semantic
                 },
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: crate::ir::kernel_program::BufferId(2),
                         dim: 1
                     },
                     kind: ExtentKind::Semantic
                 },
                 Extent {
-                    source: crate::ir::kernel_program::DimRef {
+                    source: DimRef {
                         buffer: crate::ir::kernel_program::BufferId(2),
                         dim: 2
                     },
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(
             program.buffers[2].layout,
             BufferLayout(vec![Extent {
-                source: crate::ir::kernel_program::DimRef {
+                source: DimRef {
                     buffer: crate::ir::kernel_program::BufferId(2),
                     dim: 2,
                 },

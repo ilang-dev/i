@@ -48,7 +48,7 @@
 //! - `Iter::Reconstructed.factors` is ordered by split level.
 //!
 
-use super::common::{ExtentKind, Op};
+use super::common::{DimRef, Extent, Op};
 use super::graph::Graph;
 
 /// One kernel-level program.
@@ -150,24 +150,6 @@ pub struct LoopId(pub usize);
 /// Whether a loop has the canonical tail guard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TailGuard(pub bool);
-
-/// One loop extent.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Extent<B = BufferId> {
-    /// Semantic dimension supplying this extent.
-    pub source: DimRef<B>,
-    /// Physical extent kind.
-    pub kind: ExtentKind,
-}
-
-/// Reference to one dimension of one buffer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DimRef<B = BufferId> {
-    /// Buffer.
-    pub buffer: B,
-    /// Buffer dimension.
-    pub dim: usize,
-}
 
 /// One indexed buffer access.
 #[derive(Clone, Debug, Eq, PartialEq)]

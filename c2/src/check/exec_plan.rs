@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use crate::ir::common::DimRef;
 use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Intermediate, KernelId, Param, Step};
 use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId};
 
@@ -358,7 +359,7 @@ fn validate_param_dim(
     plan: &ExecPlan,
     reads: &[BufferRef],
     writes: &[BufferRef],
-    dim: crate::ir::kernel_program::DimRef<Param>,
+    dim: DimRef<Param>,
 ) -> Result<(), String> {
     let buffer = resolve_param(dim.buffer, reads, writes)?;
     let shape_rank = buffer_shape_rank(plan, buffer)?;
@@ -522,14 +523,12 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::validate_exec_plan;
-    use crate::ir::common::{ExtentKind, Op};
+    use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
         Arg, BufferRef, Buffers, Exec, ExecPlan, Input, InputBuffer, Intermediate,
         IntermediateBuffer, KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{
-        Access, Action, Block, DimRef, Extent, Iter, Kernel, LoopId, TailGuard,
-    };
+    use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, TailGuard};
 
     fn dim(input: usize, dim: usize) -> DimRef<Input> {
         DimRef {

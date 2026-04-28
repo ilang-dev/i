@@ -38,7 +38,8 @@
 //! - `Step::Free` releases one intermediate buffer.
 //!
 
-use super::kernel_program::{DimRef, Extent, Kernel};
+use super::common::{DimRef, Extent};
+use super::kernel_program::Kernel;
 
 /// One public execution plan.
 #[derive(Clone, Debug, Eq, PartialEq)]

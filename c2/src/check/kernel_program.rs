@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::check::graph::validate_graph;
+use crate::ir::common::DimRef;
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, DimRef, Iter, Kernel, KernelProgram, LoopId,
+    Access, Action, Block, BufferId, Iter, Kernel, KernelProgram, LoopId,
 };
 
 pub fn validate_kernel_program(program: &KernelProgram) -> Result<(), ValidationError> {
@@ -231,7 +232,7 @@ fn validate_kernel_buffer(kernel: &Kernel, buffer: BufferId) -> Result<(), Strin
     Ok(())
 }
 
-fn validate_dim_ref(program: &KernelProgram, dim_ref: DimRef) -> Result<(), String> {
+fn validate_dim_ref(program: &KernelProgram, dim_ref: DimRef<BufferId>) -> Result<(), String> {
     validate_buffer_id(program, dim_ref.buffer)?;
     let shape_rank = program.buffers[dim_ref.buffer.0].shape.0.len();
     if dim_ref.dim >= shape_rank {
@@ -272,11 +273,11 @@ impl std::error::Error for ValidationError {}
 #[cfg(test)]
 mod tests {
     use super::validate_kernel_program;
-    use crate::ir::common::{ExtentKind, Op};
+    use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::graph::{Graph, Node, Output};
     use crate::ir::kernel_program::{
-        Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, DimRef,
-        Extent, Kernel, KernelProgram, LoopId, TailGuard,
+        Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Kernel,
+        KernelProgram, LoopId, TailGuard,
     };
 
     fn program() -> KernelProgram {

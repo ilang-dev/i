@@ -16,8 +16,20 @@ pub enum ExtentKind {
     Split { level: usize, factor: usize },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DimRef<B> {
+    pub buffer: B,
+    pub dim: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Extent {
+pub struct Extent<B> {
+    pub source: DimRef<B>,
+    pub kind: ExtentKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StaticExtent {
     Known(usize),
     Param(String),
 }
@@ -29,7 +41,7 @@ pub enum ExtentSource {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Shape(pub Vec<Extent>);
+pub struct Shape(pub Vec<StaticExtent>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Scalar {
@@ -49,7 +61,7 @@ pub struct Pattern(pub Vec<Axis>);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Split {
     pub axis: Axis,
-    pub factors: Vec<Extent>,
+    pub factors: Vec<StaticExtent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
