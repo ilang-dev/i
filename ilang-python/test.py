@@ -52,7 +52,7 @@ def make_attention_inputs():
 def i_matmul(A, B):
     f = i("ik*kj~ijk") | i("+ijk~ij")
     p = i("ik*kj~ijk|i:2,k:2|ii'jkk'")
-    a = i("+ijk~ij|i:2,k:2|ii'jkk'(0)")
+    a = i("+ijk~ij|i:2,k:2|ii'j!kk'0")
     f = a(p)
     return f.exec(A, B)
 
@@ -101,7 +101,7 @@ def np_mlp(x, w1, w2):
 
 def i_mlp(x, w1, w2):
     mvp = i("ij*j~ij") | i("+ij~i")
-    amvp = mvp | i("!i~i")
+    amvp = mvp | i(">i~i")
     I = i("ij~ij")
     f = (I @ amvp) | mvp
     return f.exec(w2, w1, x)
