@@ -2,13 +2,13 @@ use libloading::{Library, Symbol};
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyList, PyTuple};
+use std::io::Error;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use compiler::{
-    backend::{c::CBackend, Build, Render},
-    graph::Graph,
-    lowerer::lower,
-    parser::Parser,
-};
+use c2::ir::component::Component as C2Component;
+use c2::ir::module::Module;
 
 #[derive(Debug)]
 #[repr(C)]
@@ -31,7 +31,7 @@ pub struct TensorMut<'a> {
 #[pyclass]
 #[derive(Debug)]
 struct Component {
-    graph: Graph,
+    component: C2Component,
 }
 
 impl Component {
@@ -46,8 +46,8 @@ impl Component {
             })
             .collect::<Vec<_>>();
 
-        let block = lower(&self.graph);
-        let dylib_path = CBackend::build(&CBackend::render(&block)).unwrap();
+        let module = lower_component_to_module(&self.component).unwrap();
+        let dylib_path = build(&c2::backends::c::render(&module)).unwrap();
 
         let outputs: Vec<PyTensor> = unsafe {
             let dylib = Library::new(&dylib_path).unwrap();
@@ -107,23 +107,26 @@ impl Component {
 impl Component {
     #[new]
     fn new(src: String) -> PyResult<Self> {
-        let expr = Parser::new(&src).unwrap().parse().unwrap();
-        let graph = Graph::from_expr(&expr);
-        Ok(Component { graph })
+        let component = c2::front::parse_component(&src).unwrap();
+        Ok(Component { component })
     }
 
     fn __str__(&self) -> PyResult<String> {
-        Ok(format!("{:#?}", lower(&self.graph)))
+        Ok(format!(
+            "{:#?}",
+            lower_component_to_module(&self.component).unwrap()
+        ))
     }
 
     fn _code(&self) -> PyResult<String> {
-        Ok(format!("{}", &CBackend::render(&lower(&self.graph))))
+        let module = lower_component_to_module(&self.component).unwrap();
+        Ok(c2::backends::c::render(&module))
     }
 
     #[pyo3(name = "chain")]
     fn chain(&self, other: &Component) -> PyResult<Component> {
         Ok(Component {
-            graph: self.graph.chain(&other.graph),
+            component: self.component.clone().chain(other.component.clone()),
         })
     }
 
@@ -135,7 +138,7 @@ impl Component {
     #[pyo3(name = "compose")]
     fn compose(&self, other: &Component) -> PyResult<Component> {
         Ok(Component {
-            graph: self.graph.compose(&other.graph),
+            component: self.component.clone().compose(other.component.clone()),
         })
     }
 
@@ -147,7 +150,7 @@ impl Component {
     #[pyo3(name = "fanout")]
     fn fanout(&self, other: &Component) -> PyResult<Component> {
         Ok(Component {
-            graph: self.graph.fanout(&other.graph),
+            component: self.component.clone().fanout(other.component.clone()),
         })
     }
 
@@ -159,7 +162,7 @@ impl Component {
     #[pyo3(name = "pair")]
     fn pair(&self, other: &Component) -> PyResult<Component> {
         Ok(Component {
-            graph: self.graph.pair(&other.graph),
+            component: self.component.clone().pair(other.component.clone()),
         })
     }
 
@@ -171,7 +174,7 @@ impl Component {
     #[pyo3(name = "swap")]
     fn swap(&self) -> PyResult<Component> {
         Ok(Component {
-            graph: self.graph.swap(),
+            component: self.component.clone().swap(),
         })
     }
 
@@ -204,6 +207,46 @@ impl Component {
             Ok(obj)
         }
     }
+}
+
+fn lower_component_to_module(
+    component: &C2Component,
+) -> Result<Module, Box<dyn std::error::Error>> {
+    let node_graph = c2::lower::lower_component_to_graph(component)?;
+    let stage_program = c2::lower::lower_node_graph_to_stage_program(&node_graph)?;
+    let kernel_program = c2::lower::lower_stage_program_to_kernel_program(&stage_program)?;
+    let exec_plan = c2::lower::lower_kernel_program_to_exec_plan(&kernel_program)?;
+    Ok(c2::lower::lower_exec_plan_to_module(&exec_plan)?)
+}
+
+fn build(source: &str) -> Result<PathBuf, Error> {
+    let path_base = "/tmp/ilang";
+    let source_path = format!("{path_base}.c");
+    let dylib_path = format!("{path_base}_{}.so", unique_string());
+    std::fs::write(&source_path, source)?;
+    let exit = Command::new("cc")
+        .args([
+            "-O3",
+            "-shared",
+            "-fPIC",
+            &source_path,
+            "-o",
+            &dylib_path,
+            "-lm",
+        ])
+        .status()?;
+    if !exit.success() {
+        return Err(Error::last_os_error());
+    }
+    Ok(PathBuf::from(dylib_path))
+}
+
+fn unique_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string()
 }
 
 #[pyclass(name = "Tensor")]
