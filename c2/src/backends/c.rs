@@ -264,6 +264,8 @@ fn render_expr(expr: &Expr) -> String {
         Expr::Div(lhs, rhs) => render_infix("/", lhs, rhs),
         Expr::Rem(lhs, rhs) => render_infix("%", lhs, rhs),
         Expr::Lt(lhs, rhs) => render_infix("<", lhs, rhs),
+        Expr::Eq(lhs, rhs) => render_infix("==", lhs, rhs),
+        Expr::And(lhs, rhs) => render_infix("&&", lhs, rhs),
     }
 }
 
@@ -307,7 +309,13 @@ fn render_op(op: Op, args: &[Expr]) -> String {
         }
         Op::Max => render_call_fold("fmaxf", args),
         Op::Min => render_call_fold("fminf", args),
-        Op::Pow => render_call_fold("powf", args),
+        Op::Pow => {
+            if args.len() == 1 {
+                render_unary_call("expf", args)
+            } else {
+                render_call_fold("powf", args)
+            }
+        }
         Op::Log => render_unary_call("logf", args),
         Op::Gt => render_joined(">", args),
         Op::Ge => render_joined(">=", args),
@@ -515,6 +523,21 @@ mod tests {
         assert!(c.contains(".layout["));
         assert!(c.contains("= 0.0f;"));
         assert!(c.contains(" + "));
+    }
+
+    #[test]
+    fn renders_unary_pow_as_exp() {
+        let c = render_expr("^ij~ij");
+
+        assert!(c.contains("expf("));
+    }
+
+    #[test]
+    fn renders_zero_check_conjunction() {
+        let c = render_expr("+ijkl~ij||ijkl!");
+
+        assert!(c.contains(" == 0"));
+        assert!(c.contains(" && "));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::check::graph::validate_node_graph;
@@ -297,22 +297,26 @@ fn assign_layouts(
     axis_sources: &[AxisSource],
     output_layout: OutputLayout,
 ) -> Result<(), LowerError> {
-    stage.output.layout = lower_layout(stage, axis_sources, &node.output, output_layout, &[])?;
+    stage.output.layout =
+        lower_layout(stage, axis_sources, &node.output, output_layout, &[], false)?;
     for input_index in 0..stage.inputs.len() {
-        let (layout, excluded_axes) = if stage.inputs[input_index].compute.is_some() {
-            (
-                OutputLayout::Physical,
-                consumer_axis_prefix(stage, input_index)?,
-            )
-        } else {
-            (OutputLayout::Semantic, Vec::new())
-        };
+        let (layout, excluded_axes, include_consumer_axes) =
+            if stage.inputs[input_index].compute.is_some() {
+                (
+                    OutputLayout::Physical,
+                    consumer_axis_prefix(stage, input_index)?,
+                    true,
+                )
+            } else {
+                (OutputLayout::Semantic, Vec::new(), true)
+            };
         stage.inputs[input_index].layout = lower_layout(
             stage,
             axis_sources,
             &node.inputs[input_index],
             layout,
             excluded_axes.as_slice(),
+            include_consumer_axes,
         )?;
     }
     Ok(())
@@ -328,10 +332,17 @@ fn lower_layout(
     multi_index: &MultiIndex,
     layout: OutputLayout,
     excluded_axes: &[AxisId],
+    include_consumer_axes: bool,
 ) -> Result<Layout, LowerError> {
     match layout {
         OutputLayout::Semantic => semantic_layout(stage, axis_sources, multi_index),
-        OutputLayout::Physical => physical_layout(stage, axis_sources, multi_index, excluded_axes),
+        OutputLayout::Physical => physical_layout(
+            stage,
+            axis_sources,
+            multi_index,
+            excluded_axes,
+            include_consumer_axes,
+        ),
     }
 }
 
@@ -359,18 +370,43 @@ fn physical_layout(
     axis_sources: &[AxisSource],
     multi_index: &MultiIndex,
     excluded_axes: &[AxisId],
+    include_consumer_axes: bool,
 ) -> Result<Layout, LowerError> {
     let mut dims = Vec::new();
     for index in &multi_index.0 {
-        for axis_ref in axis_refs_for_index(stage, axis_sources, *index)? {
-            if let StageAxisRef::Local(axis) = axis_ref {
-                if !excluded_axes.contains(&axis) {
-                    dims.push(LayoutDim::Physical(axis_ref));
-                }
+        let mut refs = axis_sources
+            .iter()
+            .enumerate()
+            .filter(|(_, source)| source.index == *index)
+            .map(|(axis, source)| {
+                let axis_id = AxisId(axis);
+                let axis_ref = stage_axis_ref(stage, axis_id)?;
+                Ok((extent_order(&source.kind), axis_id, axis_ref))
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?;
+        refs.sort_by_key(|(order, _, _)| *order);
+        for (_, axis, axis_ref) in refs {
+            if excluded_axes.contains(&axis) {
+                continue;
             }
+            if matches!(axis_ref, StageAxisRef::Consumer(_)) && !include_consumer_axes {
+                continue;
+            }
+            dims.push(LayoutDim::Physical(axis_ref));
         }
     }
     Ok(Layout(dims))
+}
+
+fn stage_axis_ref(stage: &Stage, axis: AxisId) -> Result<StageAxisRef, LowerError> {
+    match stage.axes.get(axis.0) {
+        Some(Axis::Live { .. }) => Ok(StageAxisRef::Local(axis)),
+        Some(Axis::Pruned { by, .. }) => Ok(*by),
+        None => Err(LowerError::new(format!(
+            "axis {} does not exist while lowering layout",
+            axis.0
+        ))),
+    }
 }
 
 fn axis_refs_for_index(
@@ -386,7 +422,7 @@ fn axis_refs_for_index(
             let axis_id = AxisId(axis);
             let axis_ref = match stage.axes.get(axis) {
                 Some(Axis::Live { .. }) => StageAxisRef::Local(axis_id),
-                Some(Axis::Pruned { by }) => *by,
+                Some(Axis::Pruned { by, .. }) => *by,
                 None => {
                     return Err(LowerError::new(format!(
                         "axis {} does not exist while lowering layout",
@@ -466,27 +502,37 @@ pub(crate) fn prunable_axis_prefix(
 ) -> Result<Vec<AxisPrune>, LowerError> {
     let consumer_prefix = consumer_axis_prefix(consumer, input_index)?;
     let alignment = edge_axis_alignment(producer, consumer, input_index)?;
+    let consumer_prefix_set = consumer_prefix.iter().copied().collect::<BTreeSet<_>>();
+    let aligned_consumer_axes = alignment.values().copied().collect::<BTreeSet<_>>();
+    let expected = consumer_prefix
+        .iter()
+        .copied()
+        .filter(|axis| aligned_consumer_axes.contains(axis))
+        .collect::<Vec<_>>();
+    let mut actual = Vec::new();
     let mut pruned = Vec::new();
 
-    for (position, consumer_axis) in consumer_prefix.iter().enumerate() {
-        let producer_axis = AxisId(position);
-        let aligned_consumer_axis = alignment.get(&producer_axis).copied().ok_or_else(|| {
-            LowerError::new(format!(
-                "producer axis {} is not present in output shape",
-                producer_axis.0
-            ))
-        })?;
-        if aligned_consumer_axis != *consumer_axis {
-            return Err(LowerError::new(format!(
-                "producer axis {} aligns with consumer axis {}, expected {}",
-                producer_axis.0, aligned_consumer_axis.0, consumer_axis.0
-            )));
+    for producer_axis in 0..producer.axes.len() {
+        let producer_axis = AxisId(producer_axis);
+        let Some(aligned_consumer_axis) = alignment.get(&producer_axis).copied() else {
+            continue;
+        };
+        if !consumer_prefix_set.contains(&aligned_consumer_axis) {
+            continue;
         }
-        validate_prunable_axis_pair(producer, consumer, producer_axis, *consumer_axis)?;
+        actual.push(aligned_consumer_axis);
+        validate_prunable_axis_pair(producer, consumer, producer_axis, aligned_consumer_axis)?;
         pruned.push(AxisPrune {
             axis: producer_axis,
-            by: StageAxisRef::Consumer(*consumer_axis),
+            by: StageAxisRef::Consumer(aligned_consumer_axis),
         });
+    }
+
+    if actual != expected {
+        return Err(LowerError::new(format!(
+            "producer axes align with consumer axes {:?}, expected {:?}",
+            actual, expected
+        )));
     }
 
     Ok(pruned)
@@ -585,7 +631,14 @@ pub(crate) struct AxisPrune {
 
 pub(crate) fn apply_axis_pruning(producer: &mut Stage, axes: &[AxisPrune]) {
     for prune in axes {
-        producer.axes[prune.axis.0] = Axis::Pruned { by: prune.by };
+        let Axis::Live { index, kind } = producer.axes[prune.axis.0].clone() else {
+            continue;
+        };
+        producer.axes[prune.axis.0] = Axis::Pruned {
+            index,
+            kind,
+            by: prune.by,
+        };
     }
 }
 
@@ -596,7 +649,7 @@ fn validate_prunable_axis_pair(
     consumer_axis: AxisId,
 ) -> Result<(), LowerError> {
     let producer_axis = live_axis(producer, producer_axis)?;
-    let consumer_axis = live_axis(consumer, consumer_axis)?;
+    let consumer_axis = stage_axis(consumer, consumer_axis)?;
     if producer_axis.kind != consumer_axis.kind {
         return Err(LowerError::new(format!(
             "producer extent kind {:?} does not match consumer extent kind {:?}",
@@ -604,6 +657,18 @@ fn validate_prunable_axis_pair(
         )));
     }
     Ok(())
+}
+
+fn stage_axis(stage: &Stage, axis: AxisId) -> Result<LiveAxis<'_>, LowerError> {
+    match stage.axes.get(axis.0) {
+        Some(Axis::Live { index, kind }) | Some(Axis::Pruned { index, kind, .. }) => {
+            Ok(LiveAxis { index, kind })
+        }
+        None => Err(LowerError::new(format!(
+            "axis {} does not exist for pruning",
+            axis.0
+        ))),
+    }
 }
 
 fn live_axes_for_index(
@@ -620,6 +685,11 @@ fn live_axes_for_index(
                 kind,
             } if *axis_index == index => Some(Ok((AxisId(axis), kind.clone()))),
             Axis::Live { .. } => None,
+            Axis::Pruned {
+                index: axis_index,
+                kind,
+                ..
+            } if *axis_index == index => Some(Ok((AxisId(axis), kind.clone()))),
             Axis::Pruned { .. } => None,
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -715,6 +785,14 @@ mod tests {
         Axis::Live {
             index: Index(index),
             kind,
+        }
+    }
+
+    fn pruned(index: usize, kind: ExtentKind, by: usize) -> Axis {
+        Axis::Pruned {
+            index: Index(index),
+            kind,
+            by: StageAxisRef::Consumer(AxisId(by)),
         }
     }
 
@@ -911,12 +989,8 @@ mod tests {
         assert_eq!(
             stage_graph.nodes[0].inner.axes,
             vec![
-                Axis::Pruned {
-                    by: StageAxisRef::Consumer(AxisId(0))
-                },
-                Axis::Pruned {
-                    by: StageAxisRef::Consumer(AxisId(1))
-                },
+                pruned(0, ExtentKind::Semantic, 0),
+                pruned(1, ExtentKind::Semantic, 1),
                 live(2, ExtentKind::Semantic),
             ]
         );
@@ -980,6 +1054,23 @@ mod tests {
     }
 
     #[test]
+    fn lowers_nested_fanout_compute_at_with_pruned_consumer_axes() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
+        );
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0ji'k'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|ikji'k'0").unwrap()),
+        );
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'01").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+        let graph = lower_component_to_graph(&attention).unwrap();
+
+        lower_node_graph_to_stage_program(&graph).unwrap();
+    }
+
+    #[test]
     fn consumer_axis_prefix_stops_at_compute_site() {
         let consumer = Stage {
             op: Op::Add,
@@ -1039,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn prunable_prefix_rejects_mismatched_order() {
+    fn prunable_prefix_uses_axis_alignment_not_axis_position() {
         let producer = Stage {
             op: Op::Add,
             axes: vec![live(1, ExtentKind::Semantic), live(0, ExtentKind::Semantic)],
@@ -1065,10 +1156,13 @@ mod tests {
             }],
         };
 
-        let error = prunable_axis_prefix(&producer, &consumer, 0).unwrap_err();
+        let pruning = prunable_axis_prefix(&producer, &consumer, 0).unwrap();
         assert_eq!(
-            error.to_string(),
-            "producer axis 0 aligns with consumer axis 1, expected 0"
+            pruning,
+            vec![AxisPrune {
+                axis: AxisId(1),
+                by: StageAxisRef::Consumer(AxisId(0))
+            }]
         );
     }
 
@@ -1130,9 +1224,7 @@ mod tests {
             stage.axes,
             vec![
                 live(0, ExtentKind::Semantic),
-                Axis::Pruned {
-                    by: StageAxisRef::Consumer(AxisId(0))
-                }
+                pruned(1, ExtentKind::Semantic, 0)
             ]
         );
     }
@@ -1168,9 +1260,7 @@ mod tests {
         assert_eq!(
             producer.axes,
             vec![
-                Axis::Pruned {
-                    by: StageAxisRef::Consumer(AxisId(0))
-                },
+                pruned(0, ExtentKind::Semantic, 0),
                 live(1, ExtentKind::Semantic)
             ]
         );

@@ -129,9 +129,15 @@ fn validate_block(
                 child_scope.insert(id.0);
                 validate_block(program, kernel, loops, &child_scope, body)?;
             }
-            Action::Init { write, .. } => {
+            Action::Init {
+                write, zero_checks, ..
+            } => {
                 validate_write_access(program, kernel, loops, scope, write)
                     .map_err(|message| err(format!("init {}", message)))?;
+                for loop_id in zero_checks {
+                    validate_loop_ref(loops, scope, *loop_id)
+                        .map_err(|message| err(format!("init zero check {}", message)))?;
+                }
             }
             Action::Compute { write, reads, .. } => {
                 validate_write_access(program, kernel, loops, scope, write)

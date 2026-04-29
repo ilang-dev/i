@@ -305,9 +305,14 @@ impl<'a> Builder<'a> {
                 guard: *guard,
                 body: self.lower_block(kernel, body)?,
             }),
-            Action::Init { op, write } => Ok(Action::Init {
+            Action::Init {
+                op,
+                write,
+                zero_checks,
+            } => Ok(Action::Init {
                 op: *op,
                 write: self.lower_access(kernel, write)?,
+                zero_checks: zero_checks.clone(),
             }),
             Action::Compute { op, write, reads } => Ok(Action::Compute {
                 op: *op,
@@ -618,6 +623,36 @@ mod tests {
     }
 
     #[test]
+    fn preserves_init_zero_checks() {
+        let plan = lower_expr("+ijk~ij||ijk!");
+        let action = first_init(&plan.kernels[0].body);
+        let Action::Init { zero_checks, .. } = action else {
+            unreachable!();
+        };
+
+        assert_eq!(zero_checks, &vec![crate::ir::kernel_program::LoopId(2)]);
+    }
+
+    #[test]
+    fn lowers_nested_fanout_compute_at_with_pruned_consumer_axes() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
+        );
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0ji'k'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|ikji'k'0").unwrap()),
+        );
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'01").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+
+        let graph = lower_component_to_graph(&attention).unwrap();
+        let stage_program = lower_node_graph_to_stage_program(&graph).unwrap();
+        let kernel_program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        lower_kernel_program_to_exec_plan(&kernel_program).unwrap();
+    }
+
+    #[test]
     fn rejects_program_output_that_is_not_output_buffer() {
         let mut program = scalar_passthrough_program(BufferKind::Input);
 
@@ -766,6 +801,19 @@ mod tests {
                     return first_compute(body);
                 }
                 Action::Init { .. } => {}
+            }
+        }
+        unreachable!()
+    }
+
+    fn first_init(block: &Block<Param>) -> &Action<Param> {
+        for action in &block.0 {
+            match action {
+                Action::Init { .. } => return action,
+                Action::Loop { body, .. } => {
+                    return first_init(body);
+                }
+                Action::Compute { .. } => {}
             }
         }
         unreachable!()

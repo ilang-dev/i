@@ -312,20 +312,6 @@ fn validate_permutation(
                         ),
                     ));
                 }
-
-                if let Some(reduction) = seen
-                    .iter()
-                    .find(|axis_ref| !output_parts.contains(axis_ref))
-                {
-                    return Err(err(
-                        expr_index,
-                        format!(
-                            "output init cannot appear inside non-output loop `{}{}`",
-                            reduction.0,
-                            apostrophes(reduction.1)
-                        ),
-                    ));
-                }
             }
         }
     }
@@ -859,13 +845,9 @@ mod tests {
             "ij",
             vec![],
             vec![axis('i', 0), axis('j', 0), axis('k', 0), bang()],
-        )))
-        .unwrap_err();
+        )));
 
-        assert_eq!(
-            inside_reduction.to_string(),
-            "expr 0: output init cannot appear inside non-output loop `k`"
-        );
+        assert!(inside_reduction.is_ok());
 
         let pointwise = validate_component(&Component::Expr(make_expr(
             Op::Add,

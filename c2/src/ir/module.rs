@@ -31,6 +31,8 @@
 //! - `Expr::Op` is scalar 𝚒 computation.
 //! - Integer extent, index, and guard arithmetic is expressed with primitive
 //!   arithmetic expressions.
+//! - `Expr::Eq` gives integer equality.
+//! - `Expr::And` gives guard conjunction.
 //! - `Place` values are valid assignment destinations.
 //! - `Field` names one runtime buffer field.
 //! - `Cast` names one ABI conversion.
@@ -172,6 +174,10 @@ pub enum Expr {
     Rem(Box<Expr>, Box<Expr>),
     /// Integer less-than comparison.
     Lt(Box<Expr>, Box<Expr>),
+    /// Integer equality comparison.
+    Eq(Box<Expr>, Box<Expr>),
+    /// Guard conjunction.
+    And(Box<Expr>, Box<Expr>),
 }
 
 /// One assignable location.

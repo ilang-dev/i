@@ -374,7 +374,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                     local_loops.push((axis_id, info.clone()));
                     stage_axes.insert(axis_id, info);
                 }
-                Axis::Pruned { by } => {
+                Axis::Pruned { by, .. } => {
                     let info = resolve_parent_axis(parent_axes, *by)?;
                     stage_axes.insert(axis_id, info);
                 }
@@ -384,9 +384,11 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let mut actions = vec![Vec::new(); local_loops.len() + 1];
         if let Some(site) = stage.output.init {
             let depth = self.site_depth(stage, &local_loops, site)?;
+            self.validate_init_depth(stage, &local_loops, depth)?;
             actions[depth].push(Action::Init {
                 op: stage.op,
                 write: self.lower_access(output_buffer, &stage.output.layout, &stage_axes)?,
+                zero_checks: self.init_zero_checks(stage, &local_loops, &stage_axes, depth)?,
             });
         }
 
@@ -606,6 +608,77 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
     }
 
+    fn validate_init_depth(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        depth: usize,
+    ) -> Result<(), LowerError> {
+        let output_indexes = stage
+            .output
+            .shape
+            .0
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for (position, (_, info)) in local_loops.iter().enumerate() {
+            if output_indexes.contains(&info.index) && position >= depth {
+                return Err(LowerError::new(format!(
+                    "init site is outside output loop {}",
+                    info.index.0
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn init_zero_checks(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        axes: &BTreeMap<AxisId, LoopInfo>,
+        depth: usize,
+    ) -> Result<Vec<LoopId>, LowerError> {
+        let output_indexes = stage
+            .output
+            .shape
+            .0
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let local_positions = local_loops
+            .iter()
+            .enumerate()
+            .map(|(position, (axis, _))| (*axis, position))
+            .collect::<BTreeMap<_, _>>();
+        let mut checks = Vec::new();
+
+        for (axis_index, axis) in stage.axes.iter().enumerate() {
+            let axis_id = AxisId(axis_index);
+            let info = axes
+                .get(&axis_id)
+                .ok_or_else(|| LowerError::new(format!("axis {} is not available", axis_id.0)))?;
+            let index = match axis {
+                Axis::Live { index, .. } | Axis::Pruned { index, .. } => *index,
+            };
+            if output_indexes.contains(&index) {
+                continue;
+            }
+
+            let exterior = match axis {
+                Axis::Live { .. } => local_positions
+                    .get(&axis_id)
+                    .is_some_and(|position| *position < depth),
+                Axis::Pruned { .. } => true,
+            };
+            if exterior && !checks.contains(&info.id) {
+                checks.push(info.id);
+            }
+        }
+
+        Ok(checks)
+    }
+
     fn alloc_loop(&mut self) -> LoopId {
         let loop_id = LoopId(self.next_loop);
         self.next_loop += 1;
@@ -726,7 +799,7 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
-    use crate::ir::kernel_program::{Action, BufferKind, BufferLayout, Iter};
+    use crate::ir::kernel_program::{Action, BufferKind, BufferLayout, Iter, LoopId};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
@@ -978,6 +1051,65 @@ mod tests {
     }
 
     #[test]
+    fn emits_empty_zero_checks_for_init_before_reduction_loops() {
+        let program = lower_stage_program_to_kernel_program(&lower_expr("+ijk~ij||ij!k")).unwrap();
+        let init = first_init(&program.graph.nodes[0].inner.body).unwrap();
+        let Action::Init { zero_checks, .. } = init else {
+            unreachable!();
+        };
+
+        assert_eq!(zero_checks, &Vec::<LoopId>::new());
+    }
+
+    #[test]
+    fn emits_zero_checks_for_exterior_reduction_loops() {
+        let program = lower_stage_program_to_kernel_program(&lower_expr("+ijk~ij||ijk!")).unwrap();
+        let init = first_init(&program.graph.nodes[0].inner.body).unwrap();
+        let Action::Init { zero_checks, .. } = init else {
+            unreachable!();
+        };
+
+        assert_eq!(zero_checks, &vec![LoopId(2)]);
+    }
+
+    #[test]
+    fn does_not_zero_check_pruned_output_axis_under_consumer_reduction_axis() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
+        );
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0ji'k'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|ikji'k'0").unwrap()),
+        );
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'01").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut inits = Vec::new();
+        collect_inits(&program.graph.nodes[0].inner.body, &mut inits);
+
+        assert!(inits.iter().any(|action| matches!(
+            action,
+            Action::Init {
+                write,
+                zero_checks,
+                ..
+            } if write.index.is_empty() && zero_checks.is_empty()
+        )));
+        assert!(!inits.iter().any(|action| matches!(
+            action,
+            Action::Init {
+                write,
+                zero_checks,
+                ..
+            } if write.index.is_empty() && !zero_checks.is_empty()
+        )));
+    }
+
+    #[test]
     fn emits_tail_guard_on_innermost_split_loop() {
         let program = lower_stage_program_to_kernel_program(&lower_expr("ik~ik|i:8|ii'k")).unwrap();
         let mut guards = Vec::new();
@@ -1062,6 +1194,36 @@ mod tests {
             }
         }
         None
+    }
+
+    fn first_init(
+        block: &crate::ir::kernel_program::Block,
+    ) -> Option<&crate::ir::kernel_program::Action> {
+        for action in &block.0 {
+            match action {
+                Action::Init { .. } => return Some(action),
+                Action::Loop { body, .. } => {
+                    if let Some(action) = first_init(body) {
+                        return Some(action);
+                    }
+                }
+                Action::Compute { .. } => {}
+            }
+        }
+        None
+    }
+
+    fn collect_inits<'a>(
+        block: &'a crate::ir::kernel_program::Block,
+        inits: &mut Vec<&'a crate::ir::kernel_program::Action>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Init { .. } => inits.push(action),
+                Action::Loop { body, .. } => collect_inits(body, inits),
+                Action::Compute { .. } => {}
+            }
+        }
     }
 
     fn first_loop_body(

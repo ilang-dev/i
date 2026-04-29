@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::check::component::validate_component;
-use crate::check::node::{required_init_site_from_order, validate_node};
+use crate::check::node::{
+    required_init_site_from_order, validate_init_site_from_order, validate_node,
+};
 use crate::ir::common::Index;
 use crate::ir::component::Component;
 use crate::ir::expr::{Expr, PermutationAtom};
@@ -181,23 +183,13 @@ fn lower_schedule_from_permutation(
             ))
         }
         (Some(site), None) => Some(site),
-        (Some(expected), Some(actual)) if expected == actual => Some(actual),
-        (Some(expected), Some(_)) => {
-            return Err(LowerError::new(format!(
-                "output init directive must appear at {}",
-                format_site(expected)
-            )))
+        (Some(_), Some(actual)) => {
+            validate_init_site_from_order(&node.output, &order, actual).map_err(LowerError::new)?;
+            Some(actual)
         }
     };
 
     Ok((order, compute_sites, init_site))
-}
-
-fn format_site(site: Site) -> String {
-    match site {
-        Site::Root => "Root".to_string(),
-        Site::At(axis_ref) => format!("At({}{})", axis_ref.index.0, "'".repeat(axis_ref.level)),
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -452,6 +444,32 @@ mod tests {
     }
 
     #[test]
+    fn lowers_reduction_with_delayed_init() {
+        let node = lower("+ijk~ij||ijk!");
+
+        assert_eq!(
+            node.init_site,
+            Some(Site::At(AxisRef {
+                index: Index(2),
+                level: 0
+            }))
+        );
+    }
+
+    #[test]
+    fn lowers_reduction_with_reduction_before_output_loop() {
+        let node = lower("+ijk~ij||ikj");
+
+        assert_eq!(
+            node.init_site,
+            Some(Site::At(AxisRef {
+                index: Index(1),
+                level: 0
+            }))
+        );
+    }
+
+    #[test]
     fn lowers_scalar_reduction_with_explicit_root_bang() {
         let node = lower("+ij~||!ij");
 
@@ -517,17 +535,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "expr 0: output init directive is only valid for reductions"
-        );
-    }
-
-    #[test]
-    fn rejects_interleaved_reduction_order_without_init_site_boundary() {
-        let expr = parse_expr("+ijk~ij||ikj").unwrap();
-        let error = lower_expr_to_node(&expr).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "reduction loops cannot appear before output loops complete"
         );
     }
 

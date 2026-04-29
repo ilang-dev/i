@@ -255,10 +255,24 @@ impl KernelLowerer {
                     body,
                 })
             }
-            Action::Init { op, write } => Ok(Stmt::Set {
-                dst: self.lower_write(write)?,
-                value: init_value(*op)?,
-            }),
+            Action::Init {
+                op,
+                write,
+                zero_checks,
+            } => {
+                let init = Stmt::Set {
+                    dst: self.lower_write(write)?,
+                    value: init_value(*op)?,
+                };
+                if let Some(cond) = self.zero_check_condition(zero_checks)? {
+                    Ok(Stmt::If {
+                        cond,
+                        body: Block(vec![init]),
+                    })
+                } else {
+                    Ok(init)
+                }
+            }
             Action::Compute { op, write, reads } => {
                 let dst = self.lower_write(write)?;
                 let mut args = Vec::new();
@@ -364,6 +378,22 @@ impl KernelLowerer {
                     .collect()
             });
         Ok(reconstruct_index(iters, factors.as_slice()))
+    }
+
+    fn zero_check_condition(&self, loops: &[LoopId]) -> Result<Option<Expr>, LowerError> {
+        loops
+            .iter()
+            .map(|loop_id| {
+                let info = self.loops.get(loop_id).ok_or_else(|| {
+                    LowerError::new(format!("zero check references loop {}", loop_id.0))
+                })?;
+                Ok(Expr::Eq(
+                    Box::new(Expr::Ident(info.iter.clone())),
+                    Box::new(Expr::Usize(0)),
+                ))
+            })
+            .reduce(|lhs, rhs| Ok(Expr::And(Box::new(lhs?), Box::new(rhs?))))
+            .transpose()
     }
 }
 
@@ -786,6 +816,40 @@ mod tests {
     }
 
     #[test]
+    fn lowers_init_zero_checks_to_if() {
+        let module = lower_expr("+ijk~ij||ijk!");
+        let stmt = first_if(&module.kernels[0].body).unwrap();
+        let Stmt::If { cond, body } = stmt else {
+            unreachable!();
+        };
+
+        assert_eq!(
+            cond,
+            &Expr::Eq(Box::new(ident("i2")), Box::new(Expr::Usize(0)))
+        );
+        assert!(matches!(body.0[0], Stmt::Set { .. }));
+    }
+
+    #[test]
+    fn lowers_multiple_init_zero_checks_to_conjunction() {
+        let module = lower_expr("+ijkl~ij||ijkl!");
+        let stmt = first_if(&module.kernels[0].body).unwrap();
+        let Stmt::If { cond, .. } = stmt else {
+            unreachable!();
+        };
+
+        assert!(matches!(cond, Expr::And(_, _)));
+    }
+
+    #[test]
+    fn lowers_init_without_zero_checks_to_set() {
+        let module = lower_expr("+ijk~ij||ij!k");
+        let innermost = innermost_loop_body(&module.kernels[0].body);
+
+        assert!(matches!(innermost.0[0], Stmt::Set { .. }));
+    }
+
+    #[test]
     fn lowers_flat_data_access_with_layout_fields() {
         let module = lower_expr("ik*kj~ijk");
         let compute = first_set_with_op(&module.kernels[0].body);
@@ -853,7 +917,9 @@ mod tests {
             | Expr::Mul(lhs, rhs)
             | Expr::Div(lhs, rhs)
             | Expr::Rem(lhs, rhs)
-            | Expr::Lt(lhs, rhs) => contains_layout_field(lhs) || contains_layout_field(rhs),
+            | Expr::Lt(lhs, rhs)
+            | Expr::Eq(lhs, rhs)
+            | Expr::And(lhs, rhs) => contains_layout_field(lhs) || contains_layout_field(rhs),
             Expr::Usize(_) | Expr::Scalar(_) | Expr::Ident(_) => false,
         }
     }
@@ -865,6 +931,35 @@ mod tests {
                 Stmt::Loop { body, .. } | Stmt::If { body, .. } => collect_sets(body, sets),
                 _ => {}
             }
+        }
+    }
+
+    fn first_if(block: &Block) -> Option<&Stmt> {
+        for stmt in &block.0 {
+            match stmt {
+                Stmt::If { .. } => return Some(stmt),
+                Stmt::Loop { body, .. } => {
+                    if let Some(stmt) = first_if(body) {
+                        return Some(stmt);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn innermost_loop_body(block: &Block) -> &Block {
+        let mut current = block;
+        loop {
+            let Some(Stmt::Loop { body, .. }) = current
+                .0
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::Loop { .. }))
+            else {
+                return current;
+            };
+            current = body;
         }
     }
 }

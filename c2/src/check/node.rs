@@ -97,19 +97,18 @@ fn validate_schedule(node: &Node) -> Result<(), ValidationError> {
         }
     }
 
-    let required_init_site = required_init_site_from_order(
+    let default_init_site = required_init_site_from_order(
         node.rank,
         &node.output,
         node.splits.as_slice(),
         &node.order,
     )?;
-    match (required_init_site, node.init_site) {
+    match (default_init_site, node.init_site) {
         (None, None) => Ok(()),
         (None, Some(_)) => Err(err("pointwise node cannot have an init site")),
         (Some(_), None) => Err(err("reduction node must have an init site")),
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
-        (Some(expected), Some(_)) => {
-            Err(err(format!("init site must be {}", format_site(expected))))
+        (Some(_), Some(actual)) => {
+            validate_init_site_from_order(&node.output, &node.order, actual).map_err(err)
         }
     }
 }
@@ -139,31 +138,66 @@ pub(crate) fn required_init_site_from_order(
         return Ok(Some(Site::Root));
     }
 
-    let mut seen_output_levels = 0usize;
-    let mut saw_reduction = false;
-    let mut last_output = None;
+    let mut last_output_position = None;
 
-    for axis_ref in order {
+    for (position, axis_ref) in order.iter().enumerate() {
         if output_indexes.contains(&axis_ref.index.0) {
-            if saw_reduction {
-                return Err(err(
-                    "reduction loops cannot appear before output loops complete",
-                ));
-            }
-            seen_output_levels += 1;
-            last_output = Some(*axis_ref);
-        } else {
-            saw_reduction = true;
+            last_output_position = Some(position);
         }
     }
 
+    let seen_output_levels = order
+        .iter()
+        .filter(|axis_ref| output_indexes.contains(&axis_ref.index.0))
+        .count();
     if seen_output_levels != output_levels {
         return Err(err("order does not contain every output loop level"));
     }
 
-    Ok(Some(Site::At(last_output.expect(
-        "reduction with output levels must see one output loop level",
-    ))))
+    Ok(Some(Site::At(
+        order[*last_output_position
+            .as_ref()
+            .expect("reduction with output levels must see one output loop level")],
+    )))
+}
+
+pub(crate) fn validate_init_site_from_order(
+    output: &MultiIndex,
+    order: &[AxisRef],
+    site: Site,
+) -> Result<(), String> {
+    let output_indexes = output
+        .0
+        .iter()
+        .map(|index| index.0)
+        .collect::<BTreeSet<_>>();
+    let min_depth = order
+        .iter()
+        .enumerate()
+        .filter(|(_, axis_ref)| output_indexes.contains(&axis_ref.index.0))
+        .map(|(position, _)| position + 1)
+        .max()
+        .unwrap_or(0);
+    let depth = match site {
+        Site::Root => 0,
+        Site::At(axis_ref) => order
+            .iter()
+            .position(|candidate| *candidate == axis_ref)
+            .map(|position| position + 1)
+            .ok_or_else(|| "init site is outside loop order".to_string())?,
+    };
+
+    if depth < min_depth {
+        return Err(format!(
+            "init site must be at or inside {}",
+            format_site(if min_depth == 0 {
+                Site::Root
+            } else {
+                Site::At(order[min_depth - 1])
+            })
+        ));
+    }
+    Ok(())
 }
 
 fn expected_axis_refs(splits: &[SplitList]) -> Vec<AxisRef> {
@@ -484,8 +518,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_interleaved_reduction_order() {
-        let error = validate_node(&Node {
+    fn accepts_reduction_before_output_loop() {
+        assert!(validate_node(&Node {
             op: Op::Add,
             rank: 3,
             inputs: vec![MultiIndex(vec![Index(0), Index(1), Index(2)])],
@@ -511,11 +545,39 @@ mod tests {
                 level: 0,
             })),
         })
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_init_before_output_loops_complete() {
+        let error = validate_node(&Node {
+            op: Op::Add,
+            rank: 3,
+            inputs: vec![MultiIndex(vec![Index(0), Index(1), Index(2)])],
+            output: MultiIndex(vec![Index(0), Index(2)]),
+            splits: vec![SplitList(vec![]), SplitList(vec![]), SplitList(vec![])],
+            order: vec![
+                AxisRef {
+                    index: Index(0),
+                    level: 0,
+                },
+                AxisRef {
+                    index: Index(1),
+                    level: 0,
+                },
+                AxisRef {
+                    index: Index(2),
+                    level: 0,
+                },
+            ],
+            compute_sites: vec![None],
+            init_site: Some(Site::At(AxisRef {
+                index: Index(0),
+                level: 0,
+            })),
+        })
         .unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "reduction loops cannot appear before output loops complete"
-        );
+        assert_eq!(error.to_string(), "init site must be at or inside At(2)");
     }
 }

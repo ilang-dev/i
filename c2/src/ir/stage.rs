@@ -20,7 +20,8 @@
 //! - `AxisRef::Consumer(axis)` names one axis of the consuming `Stage`.
 //! - `AxisRef::Consumer(_)` appears only in stages placed under a consumer.
 //! - `Axis::Live` carries one semantic index source and one extent kind.
-//! - `Axis::Pruned` carries the consumer axis supplying that axis.
+//! - `Axis::Pruned` carries one semantic index source, one extent kind, and
+//!   the consumer axis supplying that axis.
 //! - Every pruned axis is resolved through graph edges by aligning output
 //!   shape with consumer input shape.
 //! - `Shape` values preserve semantic dimension order.
@@ -98,6 +99,10 @@ pub enum Axis {
     },
     /// One pruned physical axis.
     Pruned {
+        /// Semantic index source of this axis.
+        index: Index,
+        /// Physical extent kind of this axis.
+        kind: ExtentKind,
         /// Consumer axis supplying this axis.
         by: AxisRef,
     },

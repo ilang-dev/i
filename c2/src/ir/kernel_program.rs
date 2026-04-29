@@ -28,6 +28,7 @@
 //! - Every buffer accessed by a kernel appears in `Kernel.reads` or
 //!   `Kernel.writes`.
 //! - `Action::Init.write` names one buffer in `Kernel.writes`.
+//! - `Action::Init.zero_checks` names reduction loops exterior to the init.
 //! - `Action::Compute.write` names one buffer in `Kernel.writes`.
 //! - `LoopId` values are kernel-local.
 //! - `LoopId(i)` names one loop in the same `Kernel`.
@@ -35,6 +36,8 @@
 //! - `Block` statements execute in order.
 //! - `Action::Loop` contains one nested loop body.
 //! - `Action::Init` initializes one scalar element of one write buffer.
+//! - `Action::Init` executes iff every loop in `zero_checks` is zero.
+//! - Empty `Action::Init.zero_checks` gives unconditional initialization.
 //! - `Action::Compute` computes one scalar element of one write buffer.
 //! - `Extent<B>.source` names the semantic dimension supplying the loop bound.
 //! - `Extent<B>.kind` gives the physical extent kind of the loop.
@@ -127,6 +130,8 @@ pub enum Action<B = BufferId> {
         op: Op,
         /// Write access being initialized.
         write: Access<B>,
+        /// Reduction loops that must be zero.
+        zero_checks: Vec<LoopId>,
     },
     /// One scalar computation.
     Compute {

@@ -196,7 +196,9 @@ fn validate_expr(scope: &BTreeSet<String>, expr: &Expr) -> Result<(), String> {
         | Expr::Mul(lhs, rhs)
         | Expr::Div(lhs, rhs)
         | Expr::Rem(lhs, rhs)
-        | Expr::Lt(lhs, rhs) => {
+        | Expr::Lt(lhs, rhs)
+        | Expr::Eq(lhs, rhs)
+        | Expr::And(lhs, rhs) => {
             validate_expr(scope, lhs)?;
             validate_expr(scope, rhs)
         }

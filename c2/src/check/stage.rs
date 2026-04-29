@@ -141,6 +141,7 @@ fn consumer_axis_refs(stage: &Stage) -> BTreeSet<AxisId> {
     for axis in &stage.axes {
         if let Axis::Pruned {
             by: AxisRef::Consumer(axis),
+            ..
         } = axis
         {
             refs.insert(*axis);
@@ -176,9 +177,11 @@ fn validate_axis(stage: &Stage, axis: &Axis) -> Result<(), String> {
         Axis::Live { .. } => Ok(()),
         Axis::Pruned {
             by: AxisRef::Consumer(_),
+            ..
         } => Ok(()),
         Axis::Pruned {
             by: AxisRef::Local(axis),
+            ..
         } => {
             validate_axis_id(stage, *axis)?;
             Err(format!("is pruned by local axis {}", axis.0))
@@ -436,6 +439,8 @@ mod tests {
             op: Op::Mul,
             axes: vec![
                 Axis::Pruned {
+                    index: Index(0),
+                    kind: ExtentKind::Semantic,
                     by: AxisRef::Consumer(AxisId(0)),
                 },
                 Axis::Live {
@@ -506,6 +511,8 @@ mod tests {
     fn rejects_consumer_scoped_graph_output() {
         let mut stage = pointwise_stage();
         stage.axes[0] = Axis::Pruned {
+            index: Index(0),
+            kind: ExtentKind::Semantic,
             by: AxisRef::Consumer(AxisId(0)),
         };
         let graph = Graph {
