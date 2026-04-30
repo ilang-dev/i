@@ -172,6 +172,7 @@ impl<'a> Builder<'a> {
         let initialized = initialized_buffers(&kernel.body);
         let mut lower = KernelLowerer {
             initialized,
+            param_dims: self.kernel_param_dims(kernel_index)?,
             loops: BTreeMap::new(),
         };
         let body = lower.lower_block(&kernel.body)?;
@@ -180,6 +181,48 @@ impl<'a> Builder<'a> {
             signature: Signature::Kernel,
             body,
         })
+    }
+
+    fn kernel_param_dims(&self, kernel_index: usize) -> Result<ParamDims, LowerError> {
+        for step in &self.plan.exec.0 {
+            let Step::Dispatch {
+                kernel,
+                reads,
+                writes,
+            } = step
+            else {
+                continue;
+            };
+            if kernel.0 != kernel_index {
+                continue;
+            }
+
+            return Ok(ParamDims {
+                reads: reads
+                    .iter()
+                    .map(|buffer| self.buffer_shape(*buffer).0.clone())
+                    .collect(),
+                writes: writes
+                    .iter()
+                    .map(|buffer| self.buffer_shape(*buffer).0.clone())
+                    .collect(),
+            });
+        }
+
+        Err(LowerError::new(format!(
+            "kernel {} has no dispatch binding",
+            kernel_index
+        )))
+    }
+
+    fn buffer_shape(&self, buffer: BufferRef) -> &crate::ir::exec_plan::Shape {
+        match buffer {
+            BufferRef::Input(input) => &self.plan.buffers.inputs[input.0].shape,
+            BufferRef::Intermediate(intermediate) => {
+                &self.plan.buffers.intermediates[intermediate.0].shape
+            }
+            BufferRef::Output(output) => &self.plan.buffers.outputs[output.0].shape,
+        }
     }
 
     fn input_dim(&self, dim: DimRef<Input>) -> Expr {
@@ -207,7 +250,34 @@ impl<'a> Builder<'a> {
 
 struct KernelLowerer {
     initialized: BTreeSet<Param>,
+    param_dims: ParamDims,
     loops: BTreeMap<LoopId, LoopInfo>,
+}
+
+struct ParamDims {
+    reads: Vec<Vec<DimRef<Input>>>,
+    writes: Vec<Vec<DimRef<Input>>>,
+}
+
+impl ParamDims {
+    fn dim(&self, source: DimRef<Param>) -> Result<DimRef<Input>, LowerError> {
+        let shapes = match source.buffer.arg {
+            Arg::Readonly => &self.reads,
+            Arg::Writeable => &self.writes,
+        };
+        let shape = shapes.get(source.buffer.ind).ok_or_else(|| {
+            LowerError::new(format!(
+                "{:?} param {} is not bound",
+                source.buffer.arg, source.buffer.ind
+            ))
+        })?;
+        shape.get(source.dim).copied().ok_or_else(|| {
+            LowerError::new(format!(
+                "{:?} param {} has no shape dim {}",
+                source.buffer.arg, source.buffer.ind, source.dim
+            ))
+        })
+    }
 }
 
 impl KernelLowerer {
@@ -229,11 +299,12 @@ impl KernelLowerer {
                 body,
             } => {
                 let iter = loop_ident(*id);
+                let semantic_source = self.param_dims.dim(extent.source)?;
                 self.loops.insert(
                     *id,
                     LoopInfo {
                         iter: iter.clone(),
-                        source: extent.source,
+                        semantic_source,
                         kind: extent.kind.clone(),
                     },
                 );
@@ -241,7 +312,7 @@ impl KernelLowerer {
                 if guard.0 {
                     body = Block(vec![Stmt::If {
                         cond: Expr::Lt(
-                            Box::new(self.reconstruct_extent_index(extent.source)?),
+                            Box::new(self.reconstruct_extent_index(semantic_source)?),
                             Box::new(param_dim(extent.source)),
                         ),
                         body,
@@ -350,11 +421,11 @@ impl KernelLowerer {
             .ok_or_else(|| LowerError::new(format!("loop {} is not in scope", loop_id.0)))
     }
 
-    fn reconstruct_extent_index(&self, source: DimRef<Param>) -> Result<Expr, LowerError> {
+    fn reconstruct_extent_index(&self, source: DimRef<Input>) -> Result<Expr, LowerError> {
         let mut infos = self
             .loops
             .values()
-            .filter(|info| info.source == source)
+            .filter(|info| info.semantic_source == source)
             .cloned()
             .collect::<Vec<_>>();
         infos.sort_by_key(|info| extent_order(&info.kind));
@@ -400,7 +471,7 @@ impl KernelLowerer {
 #[derive(Clone)]
 struct LoopInfo {
     iter: Ident,
-    source: DimRef<Param>,
+    semantic_source: DimRef<Input>,
     kind: ExtentKind,
 }
 
@@ -656,6 +727,13 @@ mod tests {
         }
     }
 
+    fn param_shape_dim(arg: &str, param: usize, dim: usize) -> Expr {
+        index(
+            field(index(ident(arg), Expr::Usize(param)), Field::Shape),
+            Expr::Usize(dim),
+        )
+    }
+
     #[test]
     fn lowers_public_abi_functions() {
         let module = lower_expr("ik*kj~ijk");
@@ -816,6 +894,33 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_fused_tail_guard_from_equivalent_param_dims() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
+        );
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0ji'k'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|ikji'k'0").unwrap()),
+        );
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'1").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+        let module = lower_component(&attention);
+
+        let mut guards = Vec::new();
+        collect_lt_conditions(&module.kernels[0].body, &mut guards);
+
+        assert!(guards.iter().any(|cond| {
+            let Expr::Lt(lhs, rhs) = cond else {
+                return false;
+            };
+            **rhs == param_shape_dim("writeables", 2, 0)
+                && contains_ident(lhs, "i0")
+                && contains_ident(lhs, "i5")
+        }));
+    }
+
+    #[test]
     fn lowers_init_zero_checks_to_if() {
         let module = lower_expr("+ijk~ij||ijk!");
         let stmt = first_if(&module.kernels[0].body).unwrap();
@@ -921,6 +1026,51 @@ mod tests {
             | Expr::Eq(lhs, rhs)
             | Expr::And(lhs, rhs) => contains_layout_field(lhs) || contains_layout_field(rhs),
             Expr::Usize(_) | Expr::Scalar(_) | Expr::Ident(_) => false,
+        }
+    }
+
+    fn contains_ident(expr: &Expr, name: &str) -> bool {
+        match expr {
+            Expr::Ident(ident) => ident == &id(name),
+            Expr::Index { base, index } => {
+                contains_ident(base, name) || contains_ident(index, name)
+            }
+            Expr::Field { base, .. } => contains_ident(base, name),
+            Expr::Cast { value, .. } => contains_ident(value, name),
+            Expr::Op { args, .. } => args.iter().any(|arg| contains_ident(arg, name)),
+            Expr::Add(lhs, rhs)
+            | Expr::Sub(lhs, rhs)
+            | Expr::Mul(lhs, rhs)
+            | Expr::Div(lhs, rhs)
+            | Expr::Rem(lhs, rhs)
+            | Expr::Lt(lhs, rhs)
+            | Expr::Eq(lhs, rhs)
+            | Expr::And(lhs, rhs) => contains_ident(lhs, name) || contains_ident(rhs, name),
+            Expr::Usize(_) | Expr::Scalar(_) => false,
+        }
+    }
+
+    fn collect_lt_conditions<'a>(block: &'a Block, conditions: &mut Vec<&'a Expr>) {
+        for stmt in &block.0 {
+            match stmt {
+                Stmt::If { cond, body } => {
+                    collect_lt_conditions_from_expr(cond, conditions);
+                    collect_lt_conditions(body, conditions);
+                }
+                Stmt::Loop { body, .. } => collect_lt_conditions(body, conditions),
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_lt_conditions_from_expr<'a>(expr: &'a Expr, conditions: &mut Vec<&'a Expr>) {
+        match expr {
+            Expr::Lt(_, _) => conditions.push(expr),
+            Expr::And(lhs, rhs) => {
+                collect_lt_conditions_from_expr(lhs, conditions);
+                collect_lt_conditions_from_expr(rhs, conditions);
+            }
+            _ => {}
         }
     }
 
