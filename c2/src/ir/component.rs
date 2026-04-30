@@ -9,7 +9,7 @@
 //! - Child order is explicit and preserved.
 //! - Combinator structure is explicit and preserved.
 //!
-pub use super::expr::{Expr, PermutationAtom};
+pub use super::expr::{Expr, Operand, PermutationAtom};
 
 /// One component tree.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -643,7 +643,7 @@ mod tests {
         );
         let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
         let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
-        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'01").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'1").unwrap());
         let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
 
         let graph = lower_component_to_graph(&attention).unwrap();

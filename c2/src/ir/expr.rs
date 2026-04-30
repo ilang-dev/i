@@ -11,7 +11,7 @@
 //! - `Expr.splits` preserves source split order.
 //! - `Expr.permutation` preserves source permutation order.
 //! - Axis names are expression-local source chars.
-//! - `PermutationAtom::Input(i)` names input `i` of the same `Expr`.
+//! - `PermutationAtom::Input(operand)` names one operand of the same `Expr`.
 //!
 use super::common::Op;
 
@@ -41,8 +41,17 @@ pub struct Expr {
 pub enum PermutationAtom {
     /// A loop over one axis part.
     Axis { axis: char, part: usize },
-    /// A marker indicating where one input is computed.
-    Input(usize),
+    /// A marker indicating where one operand is computed.
+    Input(Operand),
     /// A marker indicating where the output is initialized.
     Bang,
+}
+
+/// One input operand of an expression.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Operand {
+    /// Left operand.
+    Left,
+    /// Right operand.
+    Right,
 }

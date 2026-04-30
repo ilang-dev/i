@@ -336,7 +336,14 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         if stage_index != self.root {
             return Err(LowerError::new("root stage mismatch"));
         }
-        self.emit_stage(stage_index, &BTreeMap::new())
+        let emitted = self.emit_stage(stage_index, &BTreeMap::new())?;
+        if let Some(hoisted) = emitted.hoisted.first() {
+            return Err(LowerError::new(format!(
+                "stage {} left fused actions hoisted to unavailable consumer axis {}",
+                stage_index, hoisted.after.0
+            )));
+        }
+        Ok(emitted.block)
     }
 
     fn params(mut self) -> (Vec<BufferId>, Vec<BufferId>) {
@@ -353,7 +360,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         &mut self,
         stage_index: usize,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
-    ) -> Result<Block, LowerError> {
+    ) -> Result<EmittedStage, LowerError> {
         let graph_node = &self.builder.program.graph.nodes[stage_index];
         let stage = &graph_node.inner;
         let output_buffer = self.builder.stage_buffers[stage_index];
@@ -382,6 +389,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
 
         let mut actions = vec![Vec::new(); local_loops.len() + 1];
+        let mut hoisted = Vec::new();
         if let Some(site) = stage.output.init {
             let depth = self.site_depth(stage, &local_loops, site)?;
             self.validate_init_depth(stage, &local_loops, depth)?;
@@ -394,7 +402,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
 
         for (input_index, input) in stage.inputs.iter().enumerate() {
             if let Some(site) = input.compute {
-                let depth = self.site_depth(stage, &local_loops, site)?;
                 let source = graph_node.inputs[input_index];
                 let Source::Node(producer, OutputId(0)) = source else {
                     return Err(LowerError::new(format!(
@@ -403,7 +410,20 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                     )));
                 };
                 let fused = self.emit_stage(producer.0, &stage_axes)?;
-                actions[depth].extend(fused.0);
+                self.place_hoisted(
+                    stage,
+                    &local_loops,
+                    &mut actions,
+                    &mut hoisted,
+                    fused.hoisted,
+                )?;
+                match self.compute_placement(stage, &local_loops, site)? {
+                    Placement::Local(depth) => actions[depth].extend(fused.block.0),
+                    Placement::Hoist(after) => hoisted.push(HoistedBlock {
+                        after,
+                        block: fused.block,
+                    }),
+                }
             }
         }
 
@@ -423,7 +443,16 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             reads,
         };
 
-        self.build_loop_block(stage_index, stage, local_loops.as_slice(), actions, compute)
+        Ok(EmittedStage {
+            block: self.build_loop_block(
+                stage_index,
+                stage,
+                local_loops.as_slice(),
+                actions,
+                compute,
+            )?,
+            hoisted,
+        })
     }
 
     fn build_loop_block(
@@ -608,6 +637,67 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
     }
 
+    fn compute_placement(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        site: Site,
+    ) -> Result<Placement, LowerError> {
+        match site {
+            Site::Root => Ok(Placement::Local(0)),
+            Site::At(axis) => self.axis_placement(stage, local_loops, axis),
+        }
+    }
+
+    fn axis_placement(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        axis: AxisId,
+    ) -> Result<Placement, LowerError> {
+        match stage.axes.get(axis.0) {
+            Some(Axis::Live { .. }) => local_loops
+                .iter()
+                .position(|(candidate, _)| *candidate == axis)
+                .map(|position| Placement::Local(position + 1))
+                .ok_or_else(|| {
+                    LowerError::new(format!("site references nonlocal axis {}", axis.0))
+                }),
+            Some(Axis::Pruned {
+                by: StageAxisRef::Consumer(axis),
+                ..
+            }) => Ok(Placement::Hoist(*axis)),
+            Some(Axis::Pruned {
+                by: StageAxisRef::Local(axis),
+                ..
+            }) => self.axis_placement(stage, local_loops, *axis),
+            None => Err(LowerError::new(format!(
+                "site references nonexistent axis {}",
+                axis.0
+            ))),
+        }
+    }
+
+    fn place_hoisted(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        actions: &mut [Vec<Action>],
+        propagated: &mut Vec<HoistedBlock>,
+        hoisted: Vec<HoistedBlock>,
+    ) -> Result<(), LowerError> {
+        for hoist in hoisted {
+            match self.axis_placement(stage, local_loops, hoist.after)? {
+                Placement::Local(depth) => actions[depth].extend(hoist.block.0),
+                Placement::Hoist(after) => propagated.push(HoistedBlock {
+                    after,
+                    block: hoist.block,
+                }),
+            }
+        }
+        Ok(())
+    }
+
     fn validate_init_depth(
         &self,
         stage: &Stage,
@@ -758,6 +848,21 @@ struct LoopInfo {
     kind: ExtentKind,
 }
 
+struct EmittedStage {
+    block: Block,
+    hoisted: Vec<HoistedBlock>,
+}
+
+struct HoistedBlock {
+    after: AxisId,
+    block: Block,
+}
+
+enum Placement {
+    Local(usize),
+    Hoist(AxisId),
+}
+
 #[derive(Clone)]
 struct LiveAxis {
     index: crate::ir::common::Index,
@@ -799,7 +904,7 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
-    use crate::ir::kernel_program::{Action, BufferKind, BufferLayout, Iter, LoopId};
+    use crate::ir::kernel_program::{Action, BufferId, BufferKind, BufferLayout, Iter, LoopId};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
@@ -1082,7 +1187,7 @@ mod tests {
         );
         let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
         let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
-        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'01").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'1").unwrap());
         let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
         let stage_program =
             lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
@@ -1107,6 +1212,44 @@ mod tests {
                 ..
             } if write.index.is_empty() && !zero_checks.is_empty()
         )));
+    }
+
+    #[test]
+    fn hoists_transitive_fused_producer_to_pruned_consumer_axis() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|jii'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|jii'j'k0").unwrap()),
+        );
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ki0i'k'j").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|kii'k'j0").unwrap()),
+        );
+        let component = mm_t.chain(mm);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        let mut computes = Vec::new();
+        collect_compute_paths(
+            &program.graph.nodes[0].inner.body,
+            &mut Vec::new(),
+            &mut computes,
+        );
+        let output = program.outputs[0];
+        let final_add_path = computes
+            .iter()
+            .find_map(|(op, write, path)| {
+                (*op == crate::ir::common::Op::Add && *write == output).then_some(path)
+            })
+            .unwrap();
+        let producer_add_path = computes
+            .iter()
+            .find_map(|(op, write, path)| {
+                (*op == crate::ir::common::Op::Add && *write != output).then_some(path)
+            })
+            .unwrap();
+
+        assert_eq!(&producer_add_path[..2], &final_add_path[..2]);
+        assert!(!producer_add_path.starts_with(final_add_path));
     }
 
     #[test]
@@ -1165,6 +1308,26 @@ mod tests {
             match action {
                 Action::Loop { body, .. } => collect_compute_ops(body, ops),
                 Action::Compute { op, .. } => ops.push(*op),
+                Action::Init { .. } => {}
+            }
+        }
+    }
+
+    fn collect_compute_paths(
+        block: &crate::ir::kernel_program::Block,
+        path: &mut Vec<LoopId>,
+        computes: &mut Vec<(crate::ir::common::Op, BufferId, Vec<LoopId>)>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { id, body, .. } => {
+                    path.push(*id);
+                    collect_compute_paths(body, path, computes);
+                    path.pop();
+                }
+                Action::Compute { op, write, .. } => {
+                    computes.push((*op, write.buffer, path.clone()));
+                }
                 Action::Init { .. } => {}
             }
         }

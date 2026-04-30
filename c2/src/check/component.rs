@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::ir::common::{Axis, AxisRef, Op};
-use crate::ir::component::{Component, Expr, PermutationAtom};
+use crate::ir::component::{Component, Expr, Operand, PermutationAtom};
 
 pub fn validate_component(component: &Component) -> Result<(), ValidationError> {
     let mut next_expr = 0usize;
@@ -268,10 +268,11 @@ fn validate_permutation(
                 last_axis_ref = Some(axis_ref);
             }
             PermutationAtom::Input(input) => {
-                if *input >= expr.inputs.len() {
+                let input_index = operand_index(*input);
+                if input_index >= expr.inputs.len() {
                     return Err(err(
                         expr_index,
-                        format!("permutation references nonexistent input {}", input),
+                        format!("permutation references nonexistent input {}", input_index),
                     ));
                 }
                 if last_axis_ref.is_none() {
@@ -279,14 +280,14 @@ fn validate_permutation(
                         expr_index,
                         format!(
                             "input {} cannot appear before any loop in permutation",
-                            input
+                            input_index
                         ),
                     ));
                 }
                 if !seen_inputs.insert(*input) {
                     return Err(err(
                         expr_index,
-                        format!("duplicate compute directive for input {}", input),
+                        format!("duplicate compute directive for input {}", input_index),
                     ));
                 }
             }
@@ -420,6 +421,13 @@ fn is_reducible(op: Op) -> bool {
     )
 }
 
+fn operand_index(operand: Operand) -> usize {
+    match operand {
+        Operand::Left => 0,
+        Operand::Right => 1,
+    }
+}
+
 fn apostrophes(part: usize) -> String {
     "'".repeat(part)
 }
@@ -464,7 +472,7 @@ impl fmt::Display for PatternKind {
 mod tests {
     use super::validate_component;
     use crate::ir::common::Op;
-    use crate::ir::component::{Component, PermutationAtom};
+    use crate::ir::component::{Component, Operand, PermutationAtom};
     use crate::ir::expr::Expr;
     #[test]
     fn accepts_binary_pointwise_with_broadcast_and_permutation() {
@@ -920,7 +928,11 @@ mod tests {
     }
 
     fn input(index: usize) -> PermutationAtom {
-        PermutationAtom::Input(index)
+        match index {
+            0 => PermutationAtom::Input(Operand::Left),
+            1 => PermutationAtom::Input(Operand::Right),
+            _ => panic!("invalid operand index"),
+        }
     }
 
     fn bang() -> PermutationAtom {

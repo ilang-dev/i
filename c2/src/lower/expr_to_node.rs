@@ -7,7 +7,7 @@ use crate::check::node::{
 };
 use crate::ir::common::Index;
 use crate::ir::component::Component;
-use crate::ir::expr::{Expr, PermutationAtom};
+use crate::ir::expr::{Expr, Operand, PermutationAtom};
 use crate::ir::node::{AxisRef, MultiIndex, Node, Site, SplitFactor, SplitList};
 
 pub fn lower_expr_to_node(expr: &Expr) -> Result<Node, LowerError> {
@@ -126,6 +126,13 @@ fn default_order(splits: &[SplitList]) -> Vec<AxisRef> {
     order
 }
 
+fn operand_index(operand: Operand) -> usize {
+    match operand {
+        Operand::Left => 0,
+        Operand::Right => 1,
+    }
+}
+
 fn lower_schedule_from_permutation(
     expr: &Expr,
     node: &Node,
@@ -151,17 +158,18 @@ fn lower_schedule_from_permutation(
                 last_axis_ref = Some(axis_ref);
             }
             PermutationAtom::Input(input) => {
+                let input_index = operand_index(*input);
                 let axis_ref = last_axis_ref.ok_or_else(|| {
                     LowerError::new(format!(
                         "input {} cannot be computed before any loop",
-                        input
+                        input_index
                     ))
                 })?;
                 let site = Site::At(axis_ref);
-                let slot = compute_sites.get_mut(*input).ok_or_else(|| {
+                let slot = compute_sites.get_mut(input_index).ok_or_else(|| {
                     LowerError::new(format!(
                         "permutation references nonexistent input {}",
-                        input
+                        input_index
                     ))
                 })?;
                 *slot = Some(site);
@@ -411,6 +419,25 @@ mod tests {
             ]
         );
         assert_eq!(node.init_site, None);
+    }
+
+    #[test]
+    fn lowers_adjacent_operand_compute_sites() {
+        let node = lower("ij/i~ij|i:2,j:2|iji'j'01");
+
+        assert_eq!(
+            node.compute_sites,
+            vec![
+                Some(Site::At(AxisRef {
+                    index: Index(1),
+                    level: 1,
+                })),
+                Some(Site::At(AxisRef {
+                    index: Index(1),
+                    level: 1,
+                })),
+            ]
+        );
     }
 
     #[test]

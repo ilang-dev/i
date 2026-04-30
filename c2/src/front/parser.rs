@@ -3,7 +3,7 @@ use std::fmt;
 use crate::component;
 use crate::ir::common::Op;
 use crate::ir::component::Component;
-use crate::ir::expr::{Expr, PermutationAtom};
+use crate::ir::expr::{Expr, Operand, PermutationAtom};
 
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     Parser::new(src).parse_top_level_expr()
@@ -163,11 +163,12 @@ impl<'a> Parser<'a> {
             }
 
             if matches!(self.peek_byte(), Some(byte) if byte.is_ascii_digit()) {
-                let input = self.parse_usize()?;
+                let input = self.parse_operand()?;
                 if seen_inputs.contains(&input) {
-                    return Err(
-                        self.error(format!("duplicate compute directive for input {input}"))
-                    );
+                    return Err(self.error(format!(
+                        "duplicate compute directive for input {}",
+                        operand_index(input)
+                    )));
                 }
                 seen_inputs.push(input);
                 permutation.push(PermutationAtom::Input(input));
@@ -183,10 +184,26 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            return Err(self.error("expected axis, `!`, or input index in permutation"));
+            return Err(self.error("expected axis, `!`, or operand in permutation"));
         }
 
         Ok(permutation)
+    }
+
+    fn parse_operand(&mut self) -> Result<Operand, ParseError> {
+        self.skip_ws();
+        match self.peek_byte() {
+            Some(b'0') => {
+                self.pos += 1;
+                Ok(Operand::Left)
+            }
+            Some(b'1') => {
+                self.pos += 1;
+                Ok(Operand::Right)
+            }
+            Some(byte) if byte.is_ascii_digit() => Err(self.error("expected operand `0` or `1`")),
+            _ => Err(self.error("expected operand")),
+        }
     }
 
     fn parse_pattern(&mut self, allow_empty: bool) -> Result<Vec<char>, ParseError> {
@@ -312,6 +329,13 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn operand_index(operand: Operand) -> usize {
+    match operand {
+        Operand::Left => 0,
+        Operand::Right => 1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,10 +435,10 @@ mod tests {
             vec![
                 PermutationAtom::Axis { axis: 'i', part: 0 },
                 PermutationAtom::Axis { axis: 'k', part: 0 },
-                PermutationAtom::Input(0),
+                PermutationAtom::Input(Operand::Left),
                 PermutationAtom::Axis { axis: 'i', part: 1 },
                 PermutationAtom::Axis { axis: 'k', part: 1 },
-                PermutationAtom::Input(1),
+                PermutationAtom::Input(Operand::Right),
                 PermutationAtom::Axis { axis: 'j', part: 0 },
             ]
         );
@@ -432,7 +456,7 @@ mod tests {
                 PermutationAtom::Bang,
                 PermutationAtom::Axis { axis: 'k', part: 0 },
                 PermutationAtom::Axis { axis: 'k', part: 1 },
-                PermutationAtom::Input(0),
+                PermutationAtom::Input(Operand::Left),
             ]
         );
     }
@@ -456,7 +480,24 @@ mod tests {
             vec![
                 PermutationAtom::Axis { axis: 'i', part: 0 },
                 PermutationAtom::Axis { axis: 'j', part: 0 },
-                PermutationAtom::Input(1),
+                PermutationAtom::Input(Operand::Right),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_adjacent_operand_directives() {
+        let expr = parse("ij/i~ij|i:2,j:2|iji'j'01");
+
+        assert_eq!(
+            expr.permutation,
+            vec![
+                PermutationAtom::Axis { axis: 'i', part: 0 },
+                PermutationAtom::Axis { axis: 'j', part: 0 },
+                PermutationAtom::Axis { axis: 'i', part: 1 },
+                PermutationAtom::Axis { axis: 'j', part: 1 },
+                PermutationAtom::Input(Operand::Left),
+                PermutationAtom::Input(Operand::Right),
             ]
         );
     }
@@ -514,7 +555,7 @@ mod tests {
     #[test]
     fn rejects_invalid_permutation_token() {
         let err = parse_component("+ij~i||i?").unwrap_err();
-        assert!(err.message.contains("expected axis, `!`, or input index"));
+        assert!(err.message.contains("expected axis, `!`, or operand"));
     }
 
     #[test]
