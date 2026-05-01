@@ -135,10 +135,10 @@ fn render_stmt(stmt: &Stmt, env: &mut Env) -> String {
             writes,
         } => {
             format!(
-                "{}({}, {});",
+                "{}(\n{},\n{}\n);",
                 render_ident(kernel),
-                render_readonly_array(reads, env),
-                render_writeable_array(writes, env)
+                indent(&render_readonly_array(reads, env)),
+                indent(&render_writeable_array(writes, env))
             )
         }
         Stmt::Loop { iter, bound, body } => {
@@ -147,7 +147,7 @@ fn render_stmt(stmt: &Stmt, env: &mut Env) -> String {
             let mut child = env.clone();
             child.insert(iter_ident.clone(), Type::Usize);
             format!(
-                "for (size_t {iter} = 0; {iter} < ({}); ++{iter}) {{\n{}\n}}",
+                "for (size_t {iter} = 0; {iter} < {}; ++{iter}) {{\n{}\n}}",
                 render_expr(bound),
                 indent(&render_block(body, &mut child))
             )
@@ -195,36 +195,32 @@ fn render_array_decl(ident: &str, values: &[Expr]) -> String {
         format!("const size_t* {ident} = NULL;")
     } else {
         format!(
-            "const size_t {ident}[] = {{ {} }};",
-            values
-                .iter()
-                .map(render_expr)
-                .collect::<Vec<_>>()
-                .join(", ")
+            "const size_t {ident}[] = {{\n{}\n}};",
+            indent(&render_initializer_items(values.iter().map(render_expr)))
         )
     }
 }
 
 fn render_readonly_array(reads: &[Ident], env: &Env) -> String {
     format!(
-        "(const View[]){{ {} }}",
-        reads
-            .iter()
-            .map(|ident| render_readonly_arg(ident, env))
-            .collect::<Vec<_>>()
-            .join(", ")
+        "(const View[]){{\n{}\n}}",
+        indent(&render_initializer_items(
+            reads.iter().map(|ident| render_readonly_arg(ident, env))
+        ))
     )
 }
 
 fn render_writeable_array(writes: &[Ident], env: &Env) -> String {
     format!(
-        "(ViewMut[]){{ {} }}",
-        writes
-            .iter()
-            .map(|ident| render_writeable_arg(ident, env))
-            .collect::<Vec<_>>()
-            .join(", ")
+        "(ViewMut[]){{\n{}\n}}",
+        indent(&render_initializer_items(
+            writes.iter().map(|ident| render_writeable_arg(ident, env))
+        ))
     )
+}
+
+fn render_initializer_items(items: impl Iterator<Item = String>) -> String {
+    items.collect::<Vec<_>>().join(",\n")
 }
 
 fn render_readonly_arg(ident: &Ident, env: &Env) -> String {
@@ -246,38 +242,12 @@ fn render_writeable_arg(ident: &Ident, env: &Env) -> String {
 }
 
 fn render_expr(expr: &Expr) -> String {
-    match expr {
-        Expr::Usize(value) => value.to_string(),
-        Expr::Scalar(value) => render_scalar(*value),
-        Expr::Ident(ident) => render_ident(ident),
-        Expr::Index { base, index } => {
-            format!("{}[{}]", render_expr(base), render_expr(index))
-        }
-        Expr::Field { base, field } => {
-            format!("{}.{}", render_expr(base), render_field(*field))
-        }
-        Expr::Cast { kind, value } => render_cast(*kind, value),
-        Expr::Op { op, args } => render_op(*op, args),
-        Expr::Add(lhs, rhs) => render_infix("+", lhs, rhs),
-        Expr::Sub(lhs, rhs) => render_infix("-", lhs, rhs),
-        Expr::Mul(lhs, rhs) => render_infix("*", lhs, rhs),
-        Expr::Div(lhs, rhs) => render_infix("/", lhs, rhs),
-        Expr::Rem(lhs, rhs) => render_infix("%", lhs, rhs),
-        Expr::Lt(lhs, rhs) => render_infix("<", lhs, rhs),
-        Expr::Eq(lhs, rhs) => render_infix("==", lhs, rhs),
-        Expr::And(lhs, rhs) => render_infix("&&", lhs, rhs),
-    }
+    render_expr_in(expr, Context::default()).source
 }
 
 fn render_place(place: &Place) -> String {
-    match place {
-        Place::Ident(ident) => render_ident(ident),
-        Place::Index { base, index } => {
-            format!("{}[{}]", render_place(base), render_expr(index))
-        }
-        Place::Field { base, field } => {
-            format!("{}.{}", render_place(base), render_field(*field))
-        }
+    match render_place_raw(place) {
+        Rendered { source, .. } => source,
     }
 }
 
@@ -289,55 +259,367 @@ fn render_cast(kind: Cast, value: &Expr) -> String {
     }
 }
 
-fn render_op(op: Op, args: &[Expr]) -> String {
+fn render_op(op: Op, args: &[Expr], context: Context) -> Rendered {
     match op {
-        Op::Add => render_joined("+", args),
-        Op::Mul => render_joined("*", args),
+        Op::Add => render_joined(Operator::Add, args, context),
+        Op::Mul => render_joined(Operator::Mul, args, context),
         Op::Div => {
             if args.len() == 1 {
-                format!("(1.0f / {})", render_expr(&args[0]))
+                render_prefix_binary("1.0f", Operator::Div, &args[0], context)
             } else {
-                render_joined("/", args)
+                render_joined(Operator::Div, args, context)
             }
         }
         Op::Sub => {
             if args.len() == 1 {
-                format!("(-{})", render_expr(&args[0]))
+                render_unary("-", &args[0], context)
             } else {
-                render_joined("-", args)
+                render_joined(Operator::Sub, args, context)
             }
         }
-        Op::Max => render_call_fold("fmaxf", args),
-        Op::Min => render_call_fold("fminf", args),
+        Op::Max => Rendered::primary(render_call_fold("fmaxf", args)),
+        Op::Min => Rendered::primary(render_call_fold("fminf", args)),
         Op::Pow => {
             if args.len() == 1 {
-                render_unary_call("expf", args)
+                Rendered::primary(render_unary_call("expf", args))
             } else {
-                render_call_fold("powf", args)
+                Rendered::primary(render_call_fold("powf", args))
             }
         }
-        Op::Log => render_unary_call("logf", args),
-        Op::Gt => render_joined(">", args),
-        Op::Ge => render_joined(">=", args),
-        Op::Lt => render_joined("<", args),
-        Op::Le => render_joined("<=", args),
-        Op::Eq => render_joined("==", args),
-        Op::Ne => render_joined("!=", args),
-        Op::And => render_joined("&&", args),
-        Op::Or => render_joined("||", args),
-        Op::Xor => render_xor(args),
-        Op::Not => format!("(!{})", render_expr(&args[0])),
+        Op::Log => Rendered::primary(render_unary_call("logf", args)),
+        Op::Gt => render_joined(Operator::Gt, args, context),
+        Op::Ge => render_joined(Operator::Ge, args, context),
+        Op::Lt => render_joined(Operator::Lt, args, context),
+        Op::Le => render_joined(Operator::Le, args, context),
+        Op::Eq => render_joined(Operator::Eq, args, context),
+        Op::Ne => render_joined(Operator::Ne, args, context),
+        Op::And => render_joined(Operator::And, args, context),
+        Op::Or => render_joined(Operator::Or, args, context),
+        Op::Xor => Rendered::primary(render_xor(args)),
+        Op::Not => render_unary("!", &args[0], context),
     }
 }
 
-fn render_joined(op: &str, args: &[Expr]) -> String {
-    format!(
-        "({})",
-        args.iter()
-            .map(render_expr)
-            .collect::<Vec<_>>()
-            .join(&format!(" {op} "))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Operator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Ne,
+    And,
+    Or,
+}
+
+impl Operator {
+    fn symbol(self) -> &'static str {
+        match self {
+            Operator::Add => "+",
+            Operator::Sub => "-",
+            Operator::Mul => "*",
+            Operator::Div => "/",
+            Operator::Rem => "%",
+            Operator::Lt => "<",
+            Operator::Gt => ">",
+            Operator::Le => "<=",
+            Operator::Ge => ">=",
+            Operator::Eq => "==",
+            Operator::Ne => "!=",
+            Operator::And => "&&",
+            Operator::Or => "||",
+        }
+    }
+
+    fn precedence(self) -> u8 {
+        match self {
+            Operator::Mul | Operator::Div | Operator::Rem => 70,
+            Operator::Add | Operator::Sub => 60,
+            Operator::Lt | Operator::Gt | Operator::Le | Operator::Ge => 50,
+            Operator::Eq | Operator::Ne => 45,
+            Operator::And => 40,
+            Operator::Or => 30,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Context {
+    parent: Option<Operator>,
+    side: Option<Side>,
+}
+
+#[derive(Clone, Debug)]
+struct Rendered {
+    source: String,
+    precedence: u8,
+    operator: Option<Operator>,
+}
+
+impl Rendered {
+    fn primary(source: String) -> Self {
+        Self {
+            source,
+            precedence: 100,
+            operator: None,
+        }
+    }
+}
+
+fn render_expr_in(expr: &Expr, context: Context) -> Rendered {
+    let rendered = match expr {
+        Expr::Usize(value) => Rendered::primary(value.to_string()),
+        Expr::Scalar(value) => Rendered::primary(render_scalar(*value)),
+        Expr::Ident(ident) => Rendered::primary(render_ident(ident)),
+        Expr::Index { base, index } => render_index_expr(base, index),
+        Expr::Field { base, field } => {
+            let base = render_expr_in(
+                base,
+                Context {
+                    parent: None,
+                    side: None,
+                },
+            );
+            Rendered::primary(format!("{}.{}", base.source, render_field(*field)))
+        }
+        Expr::Cast { kind, value } => Rendered::primary(render_cast(*kind, value)),
+        Expr::Op { op, args } => return render_op(*op, args, context),
+        Expr::Add(lhs, rhs) => render_binary(Operator::Add, lhs, rhs),
+        Expr::Sub(lhs, rhs) => render_binary(Operator::Sub, lhs, rhs),
+        Expr::Mul(lhs, rhs) => render_binary(Operator::Mul, lhs, rhs),
+        Expr::Div(lhs, rhs) => render_binary(Operator::Div, lhs, rhs),
+        Expr::Rem(lhs, rhs) => render_binary(Operator::Rem, lhs, rhs),
+        Expr::Lt(lhs, rhs) => render_binary(Operator::Lt, lhs, rhs),
+        Expr::Eq(lhs, rhs) => render_binary(Operator::Eq, lhs, rhs),
+        Expr::And(lhs, rhs) => render_binary(Operator::And, lhs, rhs),
+    };
+    apply_context(rendered, context)
+}
+
+fn render_place_raw(place: &Place) -> Rendered {
+    match place {
+        Place::Ident(ident) => Rendered::primary(render_ident(ident)),
+        Place::Index { base, index } => render_index_place(base, index),
+        Place::Field { base, field } => {
+            let base = render_place_raw(base);
+            Rendered::primary(format!("{}.{}", base.source, render_field(*field)))
+        }
+    }
+}
+
+fn render_index_expr(base: &Expr, index: &Expr) -> Rendered {
+    let multiline_affine = expr_is_data_field(base);
+    let base = render_expr_in(base, Context::default());
+    Rendered::primary(render_index(base.source, index, multiline_affine))
+}
+
+fn render_index_place(base: &Place, index: &Expr) -> Rendered {
+    let multiline_affine = place_is_data_field(base);
+    let base = render_place_raw(base);
+    Rendered::primary(render_index(base.source, index, multiline_affine))
+}
+
+fn render_index(base: String, index: &Expr, multiline_affine: bool) -> String {
+    if multiline_affine && is_affine_sum(index) {
+        format!("{base}[\n{}\n]", indent(&render_affine_index(index)))
+    } else {
+        format!(
+            "{base}[{}]",
+            render_expr_in(
+                index,
+                Context {
+                    parent: None,
+                    side: None
+                }
+            )
+            .source
+        )
+    }
+}
+
+fn expr_is_data_field(base: &Expr) -> bool {
+    matches!(
+        base,
+        Expr::Field {
+            field: Field::Data,
+            ..
+        }
     )
+}
+
+fn place_is_data_field(base: &Place) -> bool {
+    matches!(
+        base,
+        Place::Field {
+            field: Field::Data,
+            ..
+        }
+    )
+}
+
+fn render_binary(operator: Operator, lhs: &Expr, rhs: &Expr) -> Rendered {
+    let lhs = render_expr_in(
+        lhs,
+        Context {
+            parent: Some(operator),
+            side: Some(Side::Left),
+        },
+    );
+    let rhs = render_expr_in(
+        rhs,
+        Context {
+            parent: Some(operator),
+            side: Some(Side::Right),
+        },
+    );
+    Rendered {
+        source: format!("{} {} {}", lhs.source, operator.symbol(), rhs.source),
+        precedence: operator.precedence(),
+        operator: Some(operator),
+    }
+}
+
+fn render_prefix_binary(lhs: &str, operator: Operator, rhs: &Expr, context: Context) -> Rendered {
+    let rhs = render_expr_in(
+        rhs,
+        Context {
+            parent: Some(operator),
+            side: Some(Side::Right),
+        },
+    );
+    let rendered = Rendered {
+        source: format!("{lhs} {} {}", operator.symbol(), rhs.source),
+        precedence: operator.precedence(),
+        operator: Some(operator),
+    };
+    apply_context(rendered, context)
+}
+
+fn render_joined(operator: Operator, args: &[Expr], context: Context) -> Rendered {
+    let Some((first, rest)) = args.split_first() else {
+        return Rendered::primary("0.0f".to_string());
+    };
+    let mut rendered = render_expr_in(
+        first,
+        Context {
+            parent: Some(operator),
+            side: Some(Side::Left),
+        },
+    )
+    .source;
+    for arg in rest {
+        let arg = render_expr_in(
+            arg,
+            Context {
+                parent: Some(operator),
+                side: Some(Side::Right),
+            },
+        );
+        rendered.push_str(&format!(" {} {}", operator.symbol(), arg.source));
+    }
+    apply_context(
+        Rendered {
+            source: rendered,
+            precedence: operator.precedence(),
+            operator: Some(operator),
+        },
+        context,
+    )
+}
+
+fn render_unary(operator: &str, value: &Expr, context: Context) -> Rendered {
+    let value = render_expr_in(
+        value,
+        Context {
+            parent: None,
+            side: None,
+        },
+    );
+    let rendered = Rendered {
+        source: format!(
+            "{operator}{}",
+            parenthesize_if(value.source, value.precedence < 80)
+        ),
+        precedence: 80,
+        operator: None,
+    };
+    apply_context(rendered, context)
+}
+
+fn apply_context(rendered: Rendered, context: Context) -> Rendered {
+    let Some(parent) = context.parent else {
+        return rendered;
+    };
+    let parent_precedence = parent.precedence();
+    let needs_parens = rendered.precedence < parent_precedence
+        || (rendered.precedence == parent_precedence
+            && context.side == Some(Side::Right)
+            && !right_child_can_drop_parens(parent, rendered.operator));
+    Rendered {
+        source: parenthesize_if(rendered.source, needs_parens),
+        ..rendered
+    }
+}
+
+fn right_child_can_drop_parens(parent: Operator, child: Option<Operator>) -> bool {
+    matches!(
+        (parent, child),
+        (Operator::Add, Some(Operator::Add))
+            | (Operator::Mul, Some(Operator::Mul))
+            | (Operator::And, Some(Operator::And))
+            | (Operator::Or, Some(Operator::Or))
+    )
+}
+
+fn parenthesize_if(source: String, condition: bool) -> String {
+    if condition {
+        format!("({source})")
+    } else {
+        source
+    }
+}
+
+fn is_affine_sum(expr: &Expr) -> bool {
+    matches!(expr, Expr::Add(_, _))
+}
+
+fn render_affine_index(expr: &Expr) -> String {
+    let mut terms = Vec::new();
+    collect_add_terms(expr, &mut terms);
+    terms
+        .iter()
+        .enumerate()
+        .map(|(index, term)| {
+            let rendered = render_expr_in(term, Context::default()).source;
+            if index + 1 == terms.len() {
+                rendered
+            } else {
+                format!("{rendered} +")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collect_add_terms<'a>(expr: &'a Expr, terms: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Add(lhs, rhs) => {
+            collect_add_terms(lhs, terms);
+            collect_add_terms(rhs, terms);
+        }
+        _ => terms.push(expr),
+    }
 }
 
 fn render_unary_call(function: &str, args: &[Expr]) -> String {
@@ -360,10 +642,6 @@ fn render_xor(args: &[Expr]) -> String {
     iter.fold(first, |acc, arg| {
         format!("((({acc}) != 0.0f) != (({arg}) != 0.0f))")
     })
-}
-
-fn render_infix(op: &str, lhs: &Expr, rhs: &Expr) -> String {
-    format!("({} {op} {})", render_expr(lhs), render_expr(rhs))
 }
 
 fn render_field(field: Field) -> &'static str {
@@ -483,7 +761,9 @@ mod tests {
 
         assert!(c.contains("const View in0 = as_view(&inputs[0]);"));
         assert!(c.contains("ViewMut out0 = as_view_mut(&outputs[0]);"));
-        assert!(c.contains("f0((const View[]){ in0, in1 }, (ViewMut[]){ out0 });"));
+        assert!(c.contains(
+            "f0(\n    (const View[]){\n      in0,\n      in1\n    },\n    (ViewMut[]){\n      out0\n    }\n  );"
+        ));
     }
 
     #[test]
@@ -498,7 +778,9 @@ mod tests {
         let c = render(&module);
 
         assert!(c.contains("ViewMut s0 = alloc_view_mut("));
-        assert!(c.contains("f1((const View[]){ view_mut_as_view(&s0) }, (ViewMut[]){ out0 });"));
+        assert!(c.contains(
+            "f1(\n    (const View[]){\n      view_mut_as_view(&s0)\n    },\n    (ViewMut[]){\n      out0\n    }\n  );"
+        ));
         assert!(c.contains("free(s0.data);"));
     }
 
@@ -513,13 +795,14 @@ mod tests {
         assert!(c.contains("i0 * 8"));
         assert!(c.contains("i1"));
         assert!(c.contains("< writeables[0].shape[0]"));
+        assert!(!c.contains("((((writeables"));
     }
 
     #[test]
     fn renders_data_access_and_ops() {
         let c = render_expr("+ijk~ij");
 
-        assert!(c.contains(".data["));
+        assert!(c.contains(".data[\n"));
         assert!(c.contains(".layout["));
         assert!(c.contains("= 0.0f;"));
         assert!(c.contains(" + "));
@@ -577,8 +860,8 @@ mod tests {
         };
         let c = render(&module);
 
-        assert!(
-            c.contains("f0((const View[]){ view_mut_as_view(&source) }, (ViewMut[]){ source });")
-        );
+        assert!(c.contains(
+            "f0(\n    (const View[]){\n      view_mut_as_view(&source)\n    },\n    (ViewMut[]){\n      source\n    }\n  );"
+        ));
     }
 }
