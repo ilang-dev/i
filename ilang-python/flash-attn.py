@@ -22,8 +22,9 @@ def assert_allclose(name, got, ref, rtol=1e-4, atol=1e-5):
         )
 
 def make_attention_inputs():
-    q_len, k_len, d = 64, 64, 4096
+    #q_len, k_len, d = 64, 64, 4096
     #q_len, k_len, d = 4, 4, 32
+    q_len, k_len, d = 32, 32, 1024
     q = rand((q_len, d), seed=1)
     k = rand((k_len, d), seed=2)
     v = rand((k_len, d), seed=3)
@@ -36,20 +37,52 @@ def np_attention(q, k, v):
     weights = weights / weights.sum(axis=-1, keepdims=True)
     return weights @ v
 
-def i_attention(q, k, v):
-    #mm_t = i("ik*jk~ijk") | i("+ijk~ij")
-    #mm = i("ik*kj~ijk") | i("+ijk~ij")
-
+def _i_attention(q, k, v):
     mm_t = i("ik*jk~ijk|i:2,j:2|iji'j'k") | i("+ijk~ij|i:2,j:2|iji'j'k0")
     mm = i("ik*kj~ijk|i:2,k:2|ik0ji'k'") | i("+ijk~ij|i:2,k:2|ikji'k'0")
+    exp = i("^ij~ij|i:2,j:2|iji'j'0")
+    row_sum = i("+ij~i|i:2,j:2|iji'j'0")
+    #row_div = i("ij/i~ij|i:2,j:2|iji'j'01")
+    row_div = i("ij/i~ij|i:2,j:2|ij1i'j'0")
+    attn = mm_t | exp | (mm & row_sum) | row_div
+    return attn.exec(q, k, v)
+
+def i_attention_outer_loops_permuted(q, k, v):
+    mm_t = i("ik*jk~ijk|i:2,j:2|iji'j'k") | i("+ijk~ij|i:2,j:2|iji'j'k0")
+    mm = i("ik*kj~ijk|i:2,k:2|ik0i'jk'") | i("+ijk~ij|i:2,k:2|iki'jk'0")
+    exp = i("^ij~ij|i:2,j:2|iji'j'0")
+    row_sum = i("+ij~i|i:2,j:2|iji'j'0")
+    row_div = i("ij/i~ij|i:2|i01i'j")
+    attn = mm_t | exp | (mm & row_sum) | row_div
+    print(attn._code())
+    return attn.exec(q, k, v)
+
+def i_attention(q, k, v):
+    mm_t = i("ik*jk~ijk|i:2,j:2|iji'j'k") | i("+ijk~ij|i:2,j:2|iji'j'k0")
+    mm = i("ik*kj~ijk|i:2,k:2|ik0i'jk'") | i("+ijk~ij|i:2,k:2|iki'jk'0")
+    exp = i("^ij~ij|i:2,j:2|iji'j'0")
+    row_sum = i("+ij~i|i:2,j:2|iji'j'0")
+    row_div = i("ij/i~ij|i:2|i01i'j")
+    attn = mm_t | exp | (mm & row_sum) | row_div
+    print(attn._code())
+    return attn.exec(q, k, v)
+
+def codex_i_attention(q, k, v):
+    mm_t = (
+        i("ik*jk~ijk|i:2,j:2|iji'j'k")
+        | i("+ijk~ij|i:2,j:2|iji'j'k0")
+    )
+
+    mm = (
+        i("ik*kj~ijk|i:2,j:2,k:2|ik0ji'j'k'")
+        | i("+ijk~ij|i:2,j:2,k:2|ikji'j'k'0")
+    )
 
     exp = i("^ij~ij|i:2,j:2|iji'j'0")
     row_sum = i("+ij~i|i:2,j:2|iji'j'0")
-    row_div = i("ij/i~ij|i:2,j:2|iji'j'01") # TODO need to fuse both inputs
+    row_div = i("ij/i~ij|i:2,j:2|iji'j'01")
 
-    #attn = mm_t | sm | mm
     attn = mm_t | exp | (mm & row_sum) | row_div
-    #attn = mm_t | exp | mm
     return attn.exec(q, k, v)
 
 def i_attuntion(q, k, v):
@@ -76,12 +109,12 @@ import time
 
 t = time.time()
 i_out = as_numpy(i_attention(q,k,v))
-print(f"{time.time() - t}")
+print(f"flash-attn: {time.time() - t}")
 assert_allclose("attn", i_out, np_out)
 
 t = time.time()
 i_uut = as_numpy(i_attuntion(q,k,v))
-print(f"{time.time() - t}")
+print(f"attn: {time.time() - t}")
 assert_allclose("attn", i_uut, np_out)
 
 print("looks good.")
