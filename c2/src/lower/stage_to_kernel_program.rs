@@ -68,7 +68,7 @@ impl<'a> Builder<'a> {
     fn lower(mut self) -> Result<KernelProgram, LowerError> {
         let outputs = self.lower_outputs()?;
         for stage_index in 0..self.program.graph.nodes.len() {
-            if self.is_consumer_scoped_stage(stage_index) {
+            if self.is_fused_only_stage(stage_index) {
                 continue;
             }
             self.lower_kernel(stage_index)?;
@@ -300,12 +300,17 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn is_consumer_scoped_stage(&self, stage_index: usize) -> bool {
-        self.program.graph.nodes[stage_index]
-            .inner
-            .axes
-            .iter()
-            .any(|axis| matches!(axis, Axis::Pruned { .. }))
+    fn is_fused_only_stage(&self, stage_index: usize) -> bool {
+        let stage_id = NodeId(stage_index);
+        self.program.graph.nodes.iter().any(|node| {
+            node.inputs
+                .iter()
+                .copied()
+                .zip(node.inner.inputs.iter())
+                .any(|(source, input)| {
+                    input.compute.is_some() && source == Source::Node(stage_id, OutputId(0))
+                })
+        })
     }
 }
 
@@ -317,6 +322,8 @@ struct KernelBuilder<'a, 'b> {
     writes: Vec<BufferId>,
     accessed: Vec<BufferId>,
     written: Vec<BufferId>,
+    stage_aliases: BTreeMap<usize, usize>,
+    emitted_stages: Vec<EmittedStageKey>,
 }
 
 impl<'a, 'b> KernelBuilder<'a, 'b> {
@@ -329,6 +336,8 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             writes: Vec::new(),
             accessed: Vec::new(),
             written: Vec::new(),
+            stage_aliases: BTreeMap::new(),
+            emitted_stages: Vec::new(),
         }
     }
 
@@ -339,21 +348,45 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let emitted = self.emit_stage(stage_index, &BTreeMap::new())?;
         if let Some(hoisted) = emitted.hoisted.first() {
             return Err(LowerError::new(format!(
-                "stage {} left fused actions hoisted to unavailable consumer axis {}",
-                stage_index, hoisted.after.0
+                "stage {} left fused actions hoisted to unavailable {}",
+                stage_index,
+                format_hoist_site(hoisted.site)
             )));
         }
         Ok(emitted.block)
     }
 
     fn params(mut self) -> (Vec<BufferId>, Vec<BufferId>) {
-        let written = self.written.iter().copied().collect::<BTreeSet<_>>();
-        for buffer in self.accessed {
+        let writes = self
+            .writes
+            .iter()
+            .copied()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect::<Vec<_>>();
+        let written = self
+            .written
+            .iter()
+            .copied()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect::<BTreeSet<_>>();
+        let accessed = self
+            .accessed
+            .iter()
+            .copied()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect::<Vec<_>>();
+        self.reads = self
+            .reads
+            .iter()
+            .copied()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect();
+        for buffer in accessed {
             if !written.contains(&buffer) && !self.reads.contains(&buffer) {
                 self.reads.push(buffer);
             }
         }
-        (self.reads, self.writes)
+        (self.reads, writes)
     }
 
     fn emit_stage(
@@ -364,7 +397,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let graph_node = &self.builder.program.graph.nodes[stage_index];
         let stage = &graph_node.inner;
         let output_buffer = self.builder.stage_buffers[stage_index];
-        self.record_write(output_buffer);
 
         let mut local_loops = Vec::new();
         let mut stage_axes = BTreeMap::new();
@@ -419,13 +451,42 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 )?;
                 match self.compute_placement(stage, &local_loops, site)? {
                     Placement::Local(depth) => actions[depth].extend(fused.block.0),
-                    Placement::Hoist(after) => hoisted.push(HoistedBlock {
-                        after,
+                    Placement::Hoist(site) => hoisted.push(HoistedBlock {
+                        site,
                         block: fused.block,
                     }),
                 }
             }
         }
+
+        if stage_index != self.root {
+            let key = self.stage_key(stage_index, stage, &graph_node.inputs);
+            if let Some(existing) = self
+                .emitted_stages
+                .iter()
+                .find(|existing| existing.stage == *stage && existing.inputs == key.inputs)
+            {
+                if stage
+                    .axes
+                    .iter()
+                    .any(|axis| matches!(axis, Axis::Pruned { .. }))
+                    && !stage.output.layout.0.is_empty()
+                {
+                    return Err(LowerError::new(format!(
+                        "shared non-root compute-at placement for stage {} is not supported",
+                        stage_index
+                    )));
+                }
+                self.stage_aliases.insert(stage_index, existing.stage_index);
+                return Ok(EmittedStage {
+                    block: Block(Vec::new()),
+                    hoisted: Vec::new(),
+                });
+            }
+            self.emitted_stages.push(key);
+        }
+
+        self.record_write(output_buffer);
 
         let reads = graph_node
             .inputs
@@ -433,7 +494,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             .copied()
             .zip(stage.inputs.iter())
             .map(|(source, input)| {
-                let buffer = self.builder.source_buffer(source)?;
+                let buffer = self.source_buffer(source)?;
                 self.lower_access(buffer, &input.layout, &stage_axes)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -552,7 +613,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             {
                 let source = self.builder.program.graph.nodes[stage_index].inputs[input_index];
                 return Ok(DimRef {
-                    buffer: self.builder.source_buffer(source)?,
+                    buffer: self.source_buffer(source)?,
                     dim,
                 });
             }
@@ -590,6 +651,54 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 .map(|dim| self.lower_iter(dim, axes))
                 .collect::<Result<Vec<_>, _>>()?,
         })
+    }
+
+    fn source_buffer(&self, source: Source) -> Result<BufferId, LowerError> {
+        match source {
+            Source::Node(node, output) => {
+                let canonical = self.canonical_stage(node);
+                self.builder.source_buffer(Source::Node(canonical, output))
+            }
+            Source::Input(_) => self.builder.source_buffer(source),
+        }
+    }
+
+    fn canonical_stage(&self, node: NodeId) -> NodeId {
+        let mut index = node.0;
+        while let Some(next) = self.stage_aliases.get(&index).copied() {
+            if next == index {
+                break;
+            }
+            index = next;
+        }
+        NodeId(index)
+    }
+
+    fn canonical_buffer(&self, buffer: BufferId) -> BufferId {
+        let Some(stage_index) = self
+            .builder
+            .stage_buffers
+            .iter()
+            .position(|candidate| *candidate == buffer)
+        else {
+            return buffer;
+        };
+        self.builder.stage_buffers[self.canonical_stage(NodeId(stage_index)).0]
+    }
+
+    fn stage_key(&self, stage_index: usize, stage: &Stage, inputs: &[Source]) -> EmittedStageKey {
+        EmittedStageKey {
+            stage_index,
+            stage: stage.clone(),
+            inputs: inputs
+                .iter()
+                .copied()
+                .map(|source| match source {
+                    Source::Node(node, output) => Source::Node(self.canonical_stage(node), output),
+                    Source::Input(_) => source,
+                })
+                .collect(),
+        }
     }
 
     fn lower_iter(
@@ -644,9 +753,26 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         site: Site,
     ) -> Result<Placement, LowerError> {
         match site {
-            Site::Root => Ok(Placement::Local(0)),
+            Site::Root => self.root_placement(stage),
             Site::At(axis) => self.axis_placement(stage, local_loops, axis),
         }
+    }
+
+    fn root_placement(&self, stage: &Stage) -> Result<Placement, LowerError> {
+        for axis in &stage.axes {
+            match axis {
+                Axis::Live { .. } => return Ok(Placement::Local(0)),
+                Axis::Pruned {
+                    by: StageAxisRef::Consumer(axis),
+                    ..
+                } => return Ok(Placement::Hoist(HoistSite::Before(*axis))),
+                Axis::Pruned {
+                    by: StageAxisRef::Local(_),
+                    ..
+                } => {}
+            }
+        }
+        Ok(Placement::Local(0))
     }
 
     fn axis_placement(
@@ -666,7 +792,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             Some(Axis::Pruned {
                 by: StageAxisRef::Consumer(axis),
                 ..
-            }) => Ok(Placement::Hoist(*axis)),
+            }) => Ok(Placement::Hoist(HoistSite::After(*axis))),
             Some(Axis::Pruned {
                 by: StageAxisRef::Local(axis),
                 ..
@@ -687,15 +813,56 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         hoisted: Vec<HoistedBlock>,
     ) -> Result<(), LowerError> {
         for hoist in hoisted {
-            match self.axis_placement(stage, local_loops, hoist.after)? {
+            match self.hoist_placement(stage, local_loops, hoist.site)? {
                 Placement::Local(depth) => actions[depth].extend(hoist.block.0),
-                Placement::Hoist(after) => propagated.push(HoistedBlock {
-                    after,
+                Placement::Hoist(site) => propagated.push(HoistedBlock {
+                    site,
                     block: hoist.block,
                 }),
             }
         }
         Ok(())
+    }
+
+    fn hoist_placement(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        site: HoistSite,
+    ) -> Result<Placement, LowerError> {
+        match site {
+            HoistSite::Before(axis) => self.axis_before_placement(stage, local_loops, axis),
+            HoistSite::After(axis) => self.axis_placement(stage, local_loops, axis),
+        }
+    }
+
+    fn axis_before_placement(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        axis: AxisId,
+    ) -> Result<Placement, LowerError> {
+        match stage.axes.get(axis.0) {
+            Some(Axis::Live { .. }) => local_loops
+                .iter()
+                .position(|(candidate, _)| *candidate == axis)
+                .map(Placement::Local)
+                .ok_or_else(|| {
+                    LowerError::new(format!("site references nonlocal axis {}", axis.0))
+                }),
+            Some(Axis::Pruned {
+                by: StageAxisRef::Consumer(axis),
+                ..
+            }) => Ok(Placement::Hoist(HoistSite::Before(*axis))),
+            Some(Axis::Pruned {
+                by: StageAxisRef::Local(axis),
+                ..
+            }) => self.axis_before_placement(stage, local_loops, *axis),
+            None => Err(LowerError::new(format!(
+                "site references nonexistent axis {}",
+                axis.0
+            ))),
+        }
     }
 
     fn validate_init_depth(
@@ -853,14 +1020,33 @@ struct EmittedStage {
     hoisted: Vec<HoistedBlock>,
 }
 
+struct EmittedStageKey {
+    stage_index: usize,
+    stage: Stage,
+    inputs: Vec<Source>,
+}
+
 struct HoistedBlock {
-    after: AxisId,
+    site: HoistSite,
     block: Block,
 }
 
 enum Placement {
     Local(usize),
-    Hoist(AxisId),
+    Hoist(HoistSite),
+}
+
+#[derive(Clone, Copy)]
+enum HoistSite {
+    Before(AxisId),
+    After(AxisId),
+}
+
+fn format_hoist_site(site: HoistSite) -> String {
+    match site {
+        HoistSite::Before(axis) => format!("consumer axis {} before site", axis.0),
+        HoistSite::After(axis) => format!("consumer axis {} after site", axis.0),
+    }
 }
 
 #[derive(Clone)]
@@ -908,6 +1094,7 @@ mod tests {
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
+    use std::collections::BTreeSet;
 
     fn lower_expr(src: &str) -> crate::ir::stage::StageProgram {
         lower_node_graph_to_stage_program(
@@ -1079,11 +1266,37 @@ mod tests {
             ]
         );
         assert_eq!(
-            program.graph.nodes[0].inner.writes,
-            vec![
-                crate::ir::kernel_program::BufferId(3),
+            program.graph.nodes[0]
+                .inner
+                .writes
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
                 crate::ir::kernel_program::BufferId(2),
-            ]
+                crate::ir::kernel_program::BufferId(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn absorbs_root_compute_at_producer_into_consumer_kernel() {
+        let component = component::expr(front::parse_expr("i+i~i||i").unwrap())
+            .chain(component::expr(front::parse_expr("i-i~i||0i").unwrap()));
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        let mut ops = Vec::new();
+        for node in &program.graph.nodes {
+            collect_compute_ops(&node.inner.body, &mut ops);
+        }
+
+        assert_eq!(program.graph.nodes.len(), 1);
+        assert_eq!(
+            ops,
+            vec![crate::ir::common::Op::Add, crate::ir::common::Op::Sub]
         );
     }
 
@@ -1250,6 +1463,107 @@ mod tests {
 
         assert_eq!(&producer_add_path[..2], &final_add_path[..2]);
         assert!(!producer_add_path.starts_with(final_add_path));
+    }
+
+    #[test]
+    fn hoists_nested_root_compute_before_pruned_consumer_axis() {
+        let component = component::expr(front::parse_expr("^i~i||i").unwrap())
+            .chain(component::expr(front::parse_expr("i*i~i||0i").unwrap()))
+            .chain(component::expr(front::parse_expr("i+i~i||i0").unwrap()));
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+
+        let mut computes = Vec::new();
+        collect_compute_paths(
+            &program.graph.nodes[0].inner.body,
+            &mut Vec::new(),
+            &mut computes,
+        );
+        let output = program.outputs[0];
+        let pow_path = computes
+            .iter()
+            .find_map(|(op, _, path)| (*op == crate::ir::common::Op::Pow).then_some(path))
+            .unwrap();
+        let final_add_path = computes
+            .iter()
+            .find_map(|(op, write, path)| {
+                (*op == crate::ir::common::Op::Add && *write == output).then_some(path)
+            })
+            .unwrap();
+
+        assert_eq!(program.graph.nodes.len(), 1);
+        assert!(!pow_path.starts_with(final_add_path));
+    }
+
+    #[test]
+    fn shares_root_compute_at_transitive_producer_in_common_sibling_placement() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk||ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ijk~ij||ijk0").unwrap()));
+        let exp = component::expr(front::parse_expr("^ij~ij||ij0").unwrap());
+        let mm = component::expr(front::parse_expr("ij*jk~ikj||0ijk").unwrap())
+            .chain(component::expr(front::parse_expr("+ikj~ik||ijk0").unwrap()));
+        let row_sum = component::expr(front::parse_expr("+ij~i||0ij").unwrap());
+        let row_div = component::expr(front::parse_expr("ik/i~ik||i01k").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
+                .unwrap();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut ops = Vec::new();
+        for node in &program.graph.nodes {
+            collect_compute_ops(&node.inner.body, &mut ops);
+        }
+        let mut computes = Vec::new();
+        collect_compute_paths(
+            &program.graph.nodes[0].inner.body,
+            &mut Vec::new(),
+            &mut computes,
+        );
+        let output = program.outputs[0];
+        let pow_path = computes
+            .iter()
+            .find_map(|(op, _, path)| (*op == crate::ir::common::Op::Pow).then_some(path))
+            .unwrap();
+        let final_div_path = computes
+            .iter()
+            .find_map(|(op, write, path)| {
+                (*op == crate::ir::common::Op::Div && *write == output).then_some(path)
+            })
+            .unwrap();
+
+        assert_eq!(program.graph.nodes.len(), 1);
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == crate::ir::common::Op::Pow)
+                .count(),
+            1
+        );
+        assert!(!pow_path.starts_with(&final_div_path[..1]));
+    }
+
+    #[test]
+    fn rejects_shared_non_root_transitive_compute_at() {
+        let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
+        );
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0i'jk'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij|i:2,k:2|iki'jk'0").unwrap()),
+        );
+        let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|ij0i'j'").unwrap());
+        let row_div = component::expr(front::parse_expr("ij/i~ij|i:2|i01i'j").unwrap());
+        let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
+                .unwrap();
+        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "shared non-root compute-at placement for stage 7 is not supported"
+        );
     }
 
     #[test]

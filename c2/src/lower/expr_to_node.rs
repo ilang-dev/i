@@ -159,13 +159,7 @@ fn lower_schedule_from_permutation(
             }
             PermutationAtom::Input(input) => {
                 let input_index = operand_index(*input);
-                let axis_ref = last_axis_ref.ok_or_else(|| {
-                    LowerError::new(format!(
-                        "input {} cannot be computed before any loop",
-                        input_index
-                    ))
-                })?;
-                let site = Site::At(axis_ref);
+                let site = last_axis_ref.map(Site::At).unwrap_or(Site::Root);
                 let slot = compute_sites.get_mut(input_index).ok_or_else(|| {
                     LowerError::new(format!(
                         "permutation references nonexistent input {}",
@@ -438,6 +432,14 @@ mod tests {
                 })),
             ]
         );
+    }
+
+    #[test]
+    fn lowers_root_operand_compute_site() {
+        let node = lower("ij~ij||0ij");
+
+        assert_eq!(node.order.len(), 2);
+        assert_eq!(node.compute_sites, vec![Some(Site::Root)]);
     }
 
     #[test]

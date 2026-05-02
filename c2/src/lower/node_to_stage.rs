@@ -47,6 +47,10 @@ struct Builder<'a> {
     shapes: Vec<ProgramShape>,
     input_ranks: Vec<usize>,
     materialized: Vec<Option<NodeId>>,
+    scopes: BTreeMap<(ScopeId, ScopeSite), ScopeId>,
+    scope_sites: BTreeMap<ScopeId, ScopeSite>,
+    next_scope: usize,
+    duplicates: Vec<DuplicateStage>,
 }
 
 impl<'a> Builder<'a> {
@@ -57,6 +61,10 @@ impl<'a> Builder<'a> {
             shapes: Vec::new(),
             input_ranks: vec![0; graph.inputs.len()],
             materialized: vec![None; graph.nodes.len()],
+            scopes: BTreeMap::new(),
+            scope_sites: BTreeMap::new(),
+            next_scope: 0,
+            duplicates: Vec::new(),
         }
     }
 
@@ -71,7 +79,8 @@ impl<'a> Builder<'a> {
         if let Some(stage) = self.materialized[node.0] {
             return Ok(stage);
         }
-        let stage = self.instantiate_stage(node, OutputLayout::Semantic, None)?;
+        let scope = self.new_scope();
+        let stage = self.instantiate_stage(node, OutputLayout::Semantic, None, scope)?;
         self.materialized[node.0] = Some(stage);
         Ok(stage)
     }
@@ -81,15 +90,35 @@ impl<'a> Builder<'a> {
         node: NodeId,
         consumer: &Stage,
         input_index: usize,
+        scope: ScopeId,
     ) -> Result<NodeId, LowerError> {
-        self.instantiate_stage(
-            node,
+        let graph_node = &self.graph.nodes[node.0];
+        let axis_sources = axis_sources(&graph_node.inner);
+        let mut stage = lower_node_to_stage_skeleton(&graph_node.inner);
+
+        prune_producer_for_consumer(&mut stage, consumer, input_index)?;
+        assign_layouts(
+            &mut stage,
+            &graph_node.inner,
+            &axis_sources,
             OutputLayout::Physical,
-            Some(PruneContext {
-                consumer,
-                input_index,
-            }),
-        )
+        )?;
+
+        if let Some(cached) = self
+            .duplicates
+            .iter()
+            .find(|cached| cached.node == node && cached.scope == scope && cached.stage == stage)
+        {
+            if self.scope_site(scope)? != ScopeSite::Root {
+                return Err(LowerError::new(format!(
+                    "shared non-root compute-at placement for node {} is not supported",
+                    node.0
+                )));
+            }
+            return Ok(cached.stage_id);
+        }
+
+        self.instantiate_lowered_stage(node, stage, scope, Some((node, scope)))
     }
 
     fn instantiate_stage(
@@ -97,6 +126,7 @@ impl<'a> Builder<'a> {
         node_id: NodeId,
         output_layout: OutputLayout,
         prune_context: Option<PruneContext<'_>>,
+        scope: ScopeId,
     ) -> Result<NodeId, LowerError> {
         let graph_node = &self.graph.nodes[node_id.0];
         let axis_sources = axis_sources(&graph_node.inner);
@@ -107,10 +137,28 @@ impl<'a> Builder<'a> {
         }
 
         assign_layouts(&mut stage, &graph_node.inner, &axis_sources, output_layout)?;
+        self.instantiate_lowered_stage(node_id, stage, scope, None)
+    }
 
-        let inputs = self.lower_stage_inputs(node_id, &stage)?;
+    fn instantiate_lowered_stage(
+        &mut self,
+        node_id: NodeId,
+        stage: Stage,
+        scope: ScopeId,
+        duplicate: Option<(NodeId, ScopeId)>,
+    ) -> Result<NodeId, LowerError> {
+        let graph_node = &self.graph.nodes[node_id.0];
+        let inputs = self.lower_stage_inputs(node_id, &stage, scope)?;
         let shape = self.lower_stage_shape(&stage, inputs.as_slice())?;
         let stage_id = NodeId(self.nodes.len());
+        if let Some((node, scope)) = duplicate {
+            self.duplicates.push(DuplicateStage {
+                node,
+                scope,
+                stage: stage.clone(),
+                stage_id,
+            });
+        }
         self.nodes.push(GraphNode {
             inner: stage,
             inputs,
@@ -124,6 +172,7 @@ impl<'a> Builder<'a> {
         &mut self,
         node_id: NodeId,
         stage: &Stage,
+        scope: ScopeId,
     ) -> Result<Vec<Source>, LowerError> {
         self.graph.nodes[node_id.0]
             .inputs
@@ -148,8 +197,12 @@ impl<'a> Builder<'a> {
                         )));
                     }
                     if stage.inputs[input_index].compute.is_some() {
+                        let compute = stage.inputs[input_index]
+                            .compute
+                            .expect("compute site should be present");
+                        let child_scope = self.child_scope(scope, compute);
                         Ok(Source::Node(
-                            self.duplicate_stage(producer, stage, input_index)?,
+                            self.duplicate_stage(producer, stage, input_index, child_scope)?,
                             OutputId(0),
                         ))
                     } else {
@@ -161,6 +214,32 @@ impl<'a> Builder<'a> {
                 }
             })
             .collect()
+    }
+
+    fn new_scope(&mut self) -> ScopeId {
+        let scope = ScopeId(self.next_scope);
+        self.next_scope += 1;
+        self.scope_sites.insert(scope, ScopeSite::Root);
+        scope
+    }
+
+    fn child_scope(&mut self, parent: ScopeId, site: StageSite) -> ScopeId {
+        let scope_site = ScopeSite::from_site(site);
+        let key = (parent, scope_site);
+        if let Some(scope) = self.scopes.get(&key).copied() {
+            return scope;
+        }
+        let scope = self.new_scope();
+        self.scope_sites.insert(scope, scope_site);
+        self.scopes.insert(key, scope);
+        scope
+    }
+
+    fn scope_site(&self, scope: ScopeId) -> Result<ScopeSite, LowerError> {
+        self.scope_sites
+            .get(&scope)
+            .copied()
+            .ok_or_else(|| LowerError::new(format!("scope {} has no placement site", scope.0)))
     }
 
     fn lower_stage_shape(
@@ -248,6 +327,31 @@ impl<'a> Builder<'a> {
 struct PruneContext<'a> {
     consumer: &'a Stage,
     input_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct ScopeId(usize);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum ScopeSite {
+    Root,
+    At(usize),
+}
+
+impl ScopeSite {
+    fn from_site(site: StageSite) -> Self {
+        match site {
+            StageSite::Root => ScopeSite::Root,
+            StageSite::At(axis) => ScopeSite::At(axis.0),
+        }
+    }
+}
+
+struct DuplicateStage {
+    node: NodeId,
+    scope: ScopeId,
+    stage: Stage,
+    stage_id: NodeId,
 }
 
 #[derive(Clone, Copy)]

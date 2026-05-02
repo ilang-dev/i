@@ -237,7 +237,6 @@ fn validate_permutation(
     let expected = expected_axis_refs(local_axes, split_parts);
     let output_parts = expected_axis_refs(output_axes, split_parts);
     let mut seen = BTreeSet::new();
-    let mut last_axis_ref = None;
     let mut seen_inputs = BTreeSet::new();
     let mut seen_bang = false;
 
@@ -265,7 +264,6 @@ fn validate_permutation(
                         ),
                     ));
                 }
-                last_axis_ref = Some(axis_ref);
             }
             PermutationAtom::Input(input) => {
                 let input_index = operand_index(*input);
@@ -273,15 +271,6 @@ fn validate_permutation(
                     return Err(err(
                         expr_index,
                         format!("permutation references nonexistent input {}", input_index),
-                    ));
-                }
-                if last_axis_ref.is_none() {
-                    return Err(err(
-                        expr_index,
-                        format!(
-                            "input {} cannot appear before any loop in permutation",
-                            input_index
-                        ),
                     ));
                 }
                 if !seen_inputs.insert(*input) {
@@ -771,19 +760,15 @@ mod tests {
             "expr 0: duplicate compute directive for input 0"
         );
 
-        let no_loop = validate_component(&Component::Expr(make_expr(
+        let root = validate_component(&Component::Expr(make_expr(
             Op::Add,
             &["ij"],
             "ij",
             vec![],
             vec![input(0), axis('i', 0), axis('j', 0)],
-        )))
-        .unwrap_err();
+        )));
 
-        assert_eq!(
-            no_loop.to_string(),
-            "expr 0: input 0 cannot appear before any loop in permutation"
-        );
+        assert!(root.is_ok());
 
         let nonexistent = validate_component(&Component::Expr(make_expr(
             Op::Add,
