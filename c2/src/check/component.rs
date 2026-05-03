@@ -14,6 +14,7 @@ fn validate_component_inner(
     next_expr: &mut usize,
 ) -> Result<(), ValidationError> {
     match component {
+        Component::Identity => Ok(()),
         Component::Expr(expr) => {
             let expr_index = *next_expr;
             *next_expr += 1;

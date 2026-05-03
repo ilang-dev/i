@@ -4,7 +4,8 @@
 //! `Component` combines expression leaves with combinator nodes.
 //!
 //! Invariants:
-//! - Every leaf is an 𝚒 expression (`Expr` variant).
+//! - Every computational leaf is an 𝚒 expression (`Expr` variant).
+//! - Zero-cost leaves carry only wiring structure.
 //! - Every interior node is a combinator (non-`Expr` variant).
 //! - Child order is explicit and preserved.
 //! - Combinator structure is explicit and preserved.
@@ -14,6 +15,8 @@ pub use super::expr::{Expr, Operand, PermutationAtom};
 /// One component tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
+    /// One input forwarded to one output without compute.
+    Identity,
     /// One atomic 𝚒 expression.
     Expr(Expr),
     /// Wires the leaves of the left component to the roots of the right.

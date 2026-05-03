@@ -1,4 +1,10 @@
+use std::ops::{BitAnd, BitOr};
+
 use crate::ir::component::{Component, Expr};
+
+pub fn identity() -> Component {
+    Component::Identity
+}
 
 pub fn expr(expr: Expr) -> Component {
     Component::Expr(expr)
@@ -37,6 +43,10 @@ impl From<Expr> for Component {
 }
 
 impl Component {
+    pub fn identity() -> Self {
+        identity()
+    }
+
     pub fn compose(self, other: Self) -> Self {
         compose(self, other)
     }
@@ -62,9 +72,25 @@ impl Component {
     }
 }
 
+impl BitAnd for Component {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        fanout(self, rhs)
+    }
+}
+
+impl BitOr for Component {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        chain(self, rhs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{chain, compose, expr, fanout, finalize, pair, renumber_expr_ids, swap};
+    use super::{chain, compose, expr, fanout, finalize, identity, pair, renumber_expr_ids, swap};
     use crate::ir::common::Op;
     use crate::ir::component::Component;
     use crate::ir::expr::Expr;
@@ -76,6 +102,12 @@ mod tests {
             lifted,
             Component::Expr(make_expr(7, Op::Add, &["i", "i"], "i"))
         );
+    }
+
+    #[test]
+    fn builds_identity_component() {
+        assert_eq!(identity(), Component::Identity);
+        assert_eq!(Component::identity(), Component::Identity);
     }
 
     #[test]
@@ -96,7 +128,15 @@ mod tests {
             Component::Chain(_, _)
         ));
         assert!(matches!(
+            left.clone() | right.clone(),
+            Component::Chain(_, _)
+        ));
+        assert!(matches!(
             fanout(left.clone(), right.clone()),
+            Component::Fanout(_, _)
+        ));
+        assert!(matches!(
+            left.clone() & right.clone(),
             Component::Fanout(_, _)
         ));
         assert!(matches!(

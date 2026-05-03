@@ -123,6 +123,14 @@ impl Component {
         Ok(c2::backends::c::render(&module))
     }
 
+    #[classattr]
+    #[pyo3(name = "I")]
+    fn identity() -> Component {
+        Component {
+            component: c2::component::identity(),
+        }
+    }
+
     #[pyo3(name = "chain")]
     fn chain(&self, other: &Component) -> PyResult<Component> {
         Ok(Component {
@@ -348,5 +356,11 @@ impl PyTensor {
 fn ilang(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
     m.add_class::<Component>()?;
+    m.add(
+        "I",
+        Component {
+            component: c2::component::identity(),
+        },
+    )?;
     Ok(())
 }

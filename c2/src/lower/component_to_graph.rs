@@ -22,6 +22,11 @@ pub fn lower_component_to_graph(component: &Component) -> Result<Graph<IrNode>, 
 
 fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, LowerError> {
     match component {
+        Component::Identity => Ok(PartialGraph {
+            inputs: 1,
+            nodes: Vec::new(),
+            outputs: vec![Source::Input(InputId(0))],
+        }),
         Component::Expr(expr) => {
             let node = lower_expr_to_node_unchecked(expr).map_err(LowerError::from_expr)?;
             Ok(PartialGraph {
@@ -251,6 +256,15 @@ mod tests {
     }
 
     #[test]
+    fn lowers_identity_as_direct_input_output() {
+        let graph = lower_component_to_graph(&component::identity()).unwrap();
+
+        assert_eq!(graph.inputs.len(), 1);
+        assert!(graph.nodes.is_empty());
+        assert_eq!(graph.outputs, vec![Source::Input(InputId(0))]);
+    }
+
+    #[test]
     fn lowers_single_expr_component() {
         let graph = lower_component_to_graph(&parse_component_expr("ij+i~ij")).unwrap();
 
@@ -440,6 +454,26 @@ mod tests {
                 Source::Node(NodeId(2), OutputId(0)),
             ]
         );
+    }
+
+    #[test]
+    fn lowers_identity_fanout_for_normalization_shape() {
+        let row_sum = parse_component_expr("+ij~i");
+        let row_div = parse_component_expr("ij/i~ij");
+        let component = (component::identity() & row_sum) | row_div;
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs.len(), 1);
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(
+            graph.nodes[1].inputs,
+            vec![
+                Source::Input(InputId(0)),
+                Source::Node(NodeId(0), OutputId(0))
+            ]
+        );
+        assert_eq!(graph.outputs, vec![Source::Node(NodeId(1), OutputId(0))]);
     }
 
     #[test]
