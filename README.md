@@ -90,6 +90,10 @@ example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
 associative and have an identity value can be used as reductions, e.g.,
 `+ij~i`.
 
+A scalar input is written as `.` inside an input pattern. For example,
+`.*i~i` is scalar-vector multiplication and `i/.~i` is vector-scalar division.
+A scalar output is also written as `.`.
+
 All reducible ops have default value equal to their identity. Non-reducible ops
 have a default value chosen to result in sane unary behavior. For example,
 `pow` and `log` have default value `e` so that `pow(base, x)` becomes `exp(x)`
@@ -235,4 +239,3 @@ NOTE
   description from scheduling, search for fast kernels)
 - [tinygrad](https://github.com/tinygrad/tinygrad) (simple good, search for
   fast kernels)
-

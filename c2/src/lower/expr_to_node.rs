@@ -306,6 +306,19 @@ mod tests {
     }
 
     #[test]
+    fn lowers_scalar_inputs_as_empty_multiindex() {
+        let node = lower(".*i~i");
+
+        assert_eq!(node.rank, 1);
+        assert_eq!(
+            node.inputs,
+            vec![MultiIndex(vec![]), MultiIndex(vec![Index(0)])]
+        );
+        assert_eq!(node.output, MultiIndex(vec![Index(0)]));
+        assert_eq!(node.init_site, None);
+    }
+
+    #[test]
     fn lowers_axes_in_output_first_order() {
         let node = lower("ji+i~ji");
 
@@ -355,7 +368,7 @@ mod tests {
 
     #[test]
     fn lowers_scalar_reduction_with_root_init_site() {
-        let node = lower("+ij~");
+        let node = lower("+ij~.");
 
         assert_eq!(node.rank, 2);
         assert_eq!(node.output, MultiIndex(vec![]));
@@ -500,7 +513,7 @@ mod tests {
 
     #[test]
     fn lowers_scalar_reduction_with_explicit_root_bang() {
-        let node = lower("+ij~||!ij");
+        let node = lower("+ij~.||!ij");
 
         assert_eq!(
             node.order,

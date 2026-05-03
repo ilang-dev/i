@@ -206,8 +206,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_pattern(&mut self, allow_empty: bool) -> Result<Vec<char>, ParseError> {
+    fn parse_pattern(&mut self, _allow_empty: bool) -> Result<Vec<char>, ParseError> {
         self.skip_ws();
+
+        if self.peek_byte() == Some(b'.') {
+            self.pos += 1;
+            if matches!(self.peek_byte(), Some(byte) if byte.is_ascii_lowercase() || byte == b'.') {
+                return Err(self.error("scalar pattern must be `.`"));
+            }
+            return Ok(Vec::new());
+        }
 
         let mut axes = Vec::new();
         while let Some(byte) = self.peek_byte() {
@@ -218,7 +226,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
 
-        if axes.is_empty() && !allow_empty {
+        if axes.is_empty() {
             return Err(self.error("expected pattern"));
         }
 
@@ -414,16 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_scalar_inputs_with_single_dot() {
+        let expr = parse(".*i~i");
+        assert_eq!(expr.op, Op::Mul);
+        assert_eq!(expr.inputs, vec![Vec::<char>::new(), vec!['i']]);
+        assert_eq!(expr.output, vec!['i']);
+
+        let expr = parse("i/.~i");
+        assert_eq!(expr.op, Op::Div);
+        assert_eq!(expr.inputs, vec![vec!['i'], Vec::<char>::new()]);
+        assert_eq!(expr.output, vec!['i']);
+    }
+
+    #[test]
     fn parses_reduction_and_scalar_output() {
         let expr = parse("+ijk~ij");
         assert_eq!(expr.op, Op::Add);
         assert_eq!(expr.inputs, vec![vec!['i', 'j', 'k']]);
         assert_eq!(expr.output, vec!['i', 'j']);
 
-        let scalar = parse("+ij~");
+        let scalar = parse("+ij~.");
         assert_eq!(scalar.op, Op::Add);
         assert_eq!(scalar.inputs, vec![vec!['i', 'j']]);
         assert_eq!(scalar.output, Vec::<char>::new());
+    }
+
+    #[test]
+    fn rejects_mixed_scalar_input_patterns() {
+        let err = parse_component(".i+i~i").unwrap_err();
+        assert!(err.message.contains("scalar pattern"));
+
+        let err = parse_component("i+.j~i").unwrap_err();
+        assert!(err.message.contains("scalar pattern"));
+    }
+
+    #[test]
+    fn rejects_empty_scalar_output() {
+        let err = parse_component("+ij~").unwrap_err();
+        assert!(err.message.contains("expected pattern"));
     }
 
     #[test]
