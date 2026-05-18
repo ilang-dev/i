@@ -398,6 +398,10 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let stage = &graph_node.inner;
         let output_buffer = self.builder.stage_buffers[stage_index];
 
+        if stage_index != self.root {
+            self.reject_unimplemented_online_reduction(stage_index, stage)?;
+        }
+
         let mut local_loops = Vec::new();
         let mut stage_axes = BTreeMap::new();
         for (axis_index, axis) in stage.axes.iter().enumerate() {
@@ -889,6 +893,37 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         Ok(())
     }
 
+    fn reject_unimplemented_online_reduction(
+        &self,
+        stage_index: usize,
+        stage: &Stage,
+    ) -> Result<(), LowerError> {
+        if stage.output.init.is_none() {
+            return Ok(());
+        }
+
+        let output_indexes = stage
+            .output
+            .shape
+            .0
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let needs_online = stage.axes.iter().any(|axis| match axis {
+            Axis::Pruned { index, .. } => !output_indexes.contains(index),
+            Axis::Live { .. } => false,
+        });
+
+        if needs_online {
+            return Err(LowerError::new(format!(
+                "stage {} requires online reduction lowering: fused reduction axis is consumed before completion",
+                stage_index
+            )));
+        }
+
+        Ok(())
+    }
+
     fn init_zero_checks(
         &self,
         stage: &Stage,
@@ -1095,6 +1130,10 @@ mod tests {
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
     use std::collections::BTreeSet;
+
+    fn parse_component(src: &str) -> crate::ir::component::Component {
+        front::parse_component(src).unwrap()
+    }
 
     fn lower_expr(src: &str) -> crate::ir::stage::StageProgram {
         lower_node_graph_to_stage_program(
@@ -1391,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_zero_check_pruned_output_axis_under_consumer_reduction_axis() {
+    fn rejects_rowwise_fused_reduction_axis_that_requires_online_lowering() {
         let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
             component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
         );
@@ -1405,26 +1444,30 @@ mod tests {
         let stage_program =
             lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
                 .unwrap();
-        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
-        let mut inits = Vec::new();
-        collect_inits(&program.graph.nodes[0].inner.body, &mut inits);
+        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
 
-        assert!(inits.iter().any(|action| matches!(
-            action,
-            Action::Init {
-                write,
-                zero_checks,
-                ..
-            } if write.index.is_empty() && zero_checks.is_empty()
-        )));
-        assert!(!inits.iter().any(|action| matches!(
-            action,
-            Action::Init {
-                write,
-                zero_checks,
-                ..
-            } if write.index.is_empty() && !zero_checks.is_empty()
-        )));
+        assert_eq!(
+            error.to_string(),
+            "stage 8 requires online reduction lowering: fused reduction axis is consumed before completion"
+        );
+    }
+
+    #[test]
+    fn rejects_fused_reduction_axis_that_requires_online_lowering() {
+        let normalize = crate::ir::component::Component::Identity
+            .pair(parse_component("+i~. | i:8 | ii'"))
+            .chain(parse_component("i/.~i | i:8 | i1i'"));
+        let dot = parse_component("i*i~i | i:8 | i0i'").chain(parse_component("+i~. | i:8 | ii'0"));
+        let component = normalize.chain(dot);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+
+        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "stage 0 requires online reduction lowering: fused reduction axis is consumed before completion"
+        );
     }
 
     #[test]
@@ -1688,19 +1731,6 @@ mod tests {
             }
         }
         None
-    }
-
-    fn collect_inits<'a>(
-        block: &'a crate::ir::kernel_program::Block,
-        inits: &mut Vec<&'a crate::ir::kernel_program::Action>,
-    ) {
-        for action in &block.0 {
-            match action {
-                Action::Init { .. } => inits.push(action),
-                Action::Loop { body, .. } => collect_inits(body, inits),
-                Action::Compute { .. } => {}
-            }
-        }
     }
 
     fn first_loop_body(

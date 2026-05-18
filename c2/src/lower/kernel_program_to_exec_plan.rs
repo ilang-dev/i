@@ -634,19 +634,35 @@ mod tests {
     }
 
     #[test]
-    fn lowers_nested_fanout_compute_at_with_pruned_consumer_axes() {
+    fn rejects_nested_fanout_compute_at_that_requires_online_lowering() {
         let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
             component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
         );
         let mm = component::expr(front::parse_expr("ik*kj~ijk|i:2,k:2|ik0ji'k'").unwrap()).chain(
             component::expr(front::parse_expr("+ijk~ij|i:2,k:2|ikji'k'0").unwrap()),
         );
-        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'0").unwrap());
+        let exp = component::expr(front::parse_expr("^ij~ij|i:2,j:2|iji'j'").unwrap());
         let row_sum = component::expr(front::parse_expr("+ij~i|i:2,j:2|iji'j'0").unwrap());
         let row_div = component::expr(front::parse_expr("ij/i~ij|i:2,j:2|iji'j'1").unwrap());
         let attention = mm_t.chain(exp).chain(mm.fanout(row_sum)).chain(row_div);
 
         let graph = lower_component_to_graph(&attention).unwrap();
+        let stage_program = lower_node_graph_to_stage_program(&graph).unwrap();
+        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("requires online reduction lowering: fused reduction axis is consumed before completion"));
+    }
+
+    #[test]
+    fn lowers_fanout_compute_at_with_pointwise_pruned_producer_axes() {
+        let exp = component::expr(front::parse_expr("^ij~ij").unwrap());
+        let row_sum = component::expr(front::parse_expr("+ij~i||ij0").unwrap());
+        let row_max = component::expr(front::parse_expr(">ij~i||ij0").unwrap());
+        let component = exp.chain(row_sum.fanout(row_max));
+
+        let graph = lower_component_to_graph(&component).unwrap();
         let stage_program = lower_node_graph_to_stage_program(&graph).unwrap();
         let kernel_program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
         lower_kernel_program_to_exec_plan(&kernel_program).unwrap();

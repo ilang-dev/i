@@ -36,7 +36,7 @@ pub fn validate_stage(stage: &Stage) -> Result<(), ValidationError> {
         .collect::<BTreeSet<_>>();
     let has_reduction = stage.axes.iter().any(|axis| match axis {
         Axis::Live { index, .. } => !output_indexes.contains(&index.0),
-        Axis::Pruned { .. } => false,
+        Axis::Pruned { index, .. } => !output_indexes.contains(&index.0),
     });
     match (has_reduction, stage.output.init) {
         (false, None) => Ok(()),

@@ -692,6 +692,7 @@ pub(crate) fn edge_axis_alignment(
     }
 
     let mut alignment = BTreeMap::new();
+    let mut aligned_consumer_axes = BTreeSet::new();
     for (producer_index, consumer_index) in producer
         .output
         .shape
@@ -721,6 +722,41 @@ pub(crate) fn edge_axis_alignment(
                 )));
             }
             alignment.insert(producer_axis, consumer_axis);
+            aligned_consumer_axes.insert(consumer_axis);
+        }
+    }
+
+    let output_indexes = producer
+        .output
+        .shape
+        .0
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for (producer_axis, producer_index, producer_kind) in
+        reduced_live_axes(producer, &output_indexes)?
+    {
+        if alignment.contains_key(&producer_axis) {
+            continue;
+        }
+        let candidates = live_axes_for_index(consumer, producer_index)?
+            .into_iter()
+            .filter(|(consumer_axis, consumer_kind)| {
+                !aligned_consumer_axes.contains(consumer_axis) && *consumer_kind == producer_kind
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [(consumer_axis, _)] => {
+                alignment.insert(producer_axis, *consumer_axis);
+                aligned_consumer_axes.insert(*consumer_axis);
+            }
+            [] => {}
+            _ => {
+                return Err(LowerError::new(format!(
+                    "producer reduced axis {} ambiguously aligns with consumer index {}",
+                    producer_axis.0, producer_index.0
+                )));
+            }
         }
     }
 
@@ -798,6 +834,26 @@ fn live_axes_for_index(
         })
         .collect::<Result<Vec<_>, _>>()?;
     axes.sort_by_key(|(_, kind)| extent_order(kind));
+    Ok(axes)
+}
+
+fn reduced_live_axes(
+    stage: &Stage,
+    output_indexes: &BTreeSet<Index>,
+) -> Result<Vec<(AxisId, Index, ExtentKind)>, LowerError> {
+    let mut axes = stage
+        .axes
+        .iter()
+        .enumerate()
+        .filter_map(|(axis, value)| match value {
+            Axis::Live { index, kind } if !output_indexes.contains(index) => {
+                Some(Ok((AxisId(axis), *index, kind.clone())))
+            }
+            Axis::Live { .. } => None,
+            Axis::Pruned { .. } => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    axes.sort_by_key(|(_, _, kind)| extent_order(kind));
     Ok(axes)
 }
 
@@ -1265,6 +1321,47 @@ mod tests {
             pruning,
             vec![AxisPrune {
                 axis: AxisId(1),
+                by: StageAxisRef::Consumer(AxisId(0))
+            }]
+        );
+    }
+
+    #[test]
+    fn prunable_prefix_aligns_reduced_producer_axis_by_index_and_kind() {
+        let producer = Stage {
+            op: Op::Add,
+            axes: vec![live(0, ExtentKind::Semantic)],
+            output: StageOutput {
+                shape: Shape(vec![]),
+                layout: Layout(vec![]),
+                init: Some(StageSite::Root),
+            },
+            inputs: vec![StageInput {
+                shape: Shape(vec![Index(0)]),
+                layout: Layout(vec![semantic(0, vec![0])]),
+                compute: None,
+            }],
+        };
+        let consumer = Stage {
+            op: Op::Div,
+            axes: vec![live(0, ExtentKind::Semantic)],
+            output: StageOutput {
+                shape: Shape(vec![Index(0)]),
+                layout: Layout(vec![semantic(0, vec![0])]),
+                init: None,
+            },
+            inputs: vec![StageInput {
+                shape: Shape(vec![]),
+                layout: Layout(vec![]),
+                compute: Some(StageSite::At(AxisId(0))),
+            }],
+        };
+
+        let pruning = prunable_axis_prefix(&producer, &consumer, 0).unwrap();
+        assert_eq!(
+            pruning,
+            vec![AxisPrune {
+                axis: AxisId(0),
                 by: StageAxisRef::Consumer(AxisId(0))
             }]
         );
