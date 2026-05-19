@@ -9,7 +9,7 @@ use crate::ir::exec_plan::{
     KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram,
+    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram, ScaleExpr,
 };
 
 pub fn lower_kernel_program_to_exec_plan(program: &KernelProgram) -> Result<ExecPlan, LowerError> {
@@ -321,6 +321,33 @@ impl<'a> Builder<'a> {
                     .iter()
                     .map(|access| self.lower_access(kernel, access))
                     .collect::<Result<Vec<_>, _>>()?,
+            }),
+            Action::Snapshot { write, read } => Ok(Action::Snapshot {
+                write: self.lower_access(kernel, write)?,
+                read: self.lower_access(kernel, read)?,
+            }),
+            Action::Scale {
+                write,
+                numerator,
+                denominator,
+            } => Ok(Action::Scale {
+                write: self.lower_access(kernel, write)?,
+                numerator: self.lower_scale_expr(kernel, numerator)?,
+                denominator: self.lower_scale_expr(kernel, denominator)?,
+            }),
+        }
+    }
+
+    fn lower_scale_expr(
+        &self,
+        kernel: &Kernel<BufferId>,
+        expr: &ScaleExpr<BufferId>,
+    ) -> Result<ScaleExpr<Param>, LowerError> {
+        match expr {
+            ScaleExpr::Access(access) => Ok(ScaleExpr::Access(self.lower_access(kernel, access)?)),
+            ScaleExpr::Unary { op, arg } => Ok(ScaleExpr::Unary {
+                op: *op,
+                arg: self.lower_access(kernel, arg)?,
             }),
         }
     }
@@ -816,7 +843,7 @@ mod tests {
                 Action::Loop { body, .. } => {
                     return first_compute(body);
                 }
-                Action::Init { .. } => {}
+                Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
         unreachable!()
@@ -829,7 +856,7 @@ mod tests {
                 Action::Loop { body, .. } => {
                     return first_init(body);
                 }
-                Action::Compute { .. } => {}
+                Action::Compute { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
         unreachable!()

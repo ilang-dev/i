@@ -5,7 +5,9 @@ use crate::check::exec_plan::validate_exec_plan;
 use crate::check::module::validate_module;
 use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
 use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Param, Step};
-use crate::ir::kernel_program::{Access, Action, Block as KernelBlock, Iter, Kernel, LoopId};
+use crate::ir::kernel_program::{
+    Access, Action, Block as KernelBlock, Iter, Kernel, LoopId, ScaleExpr,
+};
 use crate::ir::module::{
     Block, Cast, Expr, Field, Fn, Ident, Module, Place, Signature, Stmt, Type,
 };
@@ -287,6 +289,34 @@ impl KernelLowerer {
                     value: Expr::Op { op: *op, args },
                 })
             }
+            Action::Snapshot { write, read } => Ok(Stmt::Set {
+                dst: self.lower_write(write)?,
+                value: self.lower_read(read)?,
+            }),
+            Action::Scale {
+                write,
+                numerator,
+                denominator,
+            } => {
+                let dst = self.lower_write(write)?;
+                Ok(Stmt::Set {
+                    dst: dst.clone(),
+                    value: div(
+                        mul(place_expr(dst), self.lower_scale_expr(numerator)?),
+                        self.lower_scale_expr(denominator)?,
+                    ),
+                })
+            }
+        }
+    }
+
+    fn lower_scale_expr(&self, expr: &ScaleExpr<Param>) -> Result<Expr, LowerError> {
+        match expr {
+            ScaleExpr::Access(access) => self.lower_read(access),
+            ScaleExpr::Unary { op, arg } => Ok(Expr::Op {
+                op: *op,
+                args: vec![self.lower_read(arg)?],
+            }),
         }
     }
 
@@ -417,7 +447,7 @@ fn collect_initialized(block: &KernelBlock<Param>, initialized: &mut BTreeSet<Pa
             Action::Init { write, .. } => {
                 initialized.insert(write.buffer);
             }
-            Action::Compute { .. } => {}
+            Action::Compute { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
         }
     }
 }
@@ -614,6 +644,10 @@ mod tests {
     use super::lower_exec_plan_to_module;
     use crate::front::parse_expr;
     use crate::ir::common::Op;
+    use crate::ir::exec_plan::{
+        Arg, BufferRef, Buffers, Exec, ExecPlan, KernelId, Output, OutputBuffer, Param, Shape, Step,
+    };
+    use crate::ir::kernel_program::{Access, Action, Kernel, ScaleExpr};
     use crate::ir::module::{Block, Cast, Expr, Field, Ident, Place, Signature, Stmt, Type};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::kernel_program_to_exec_plan::lower_kernel_program_to_exec_plan;
@@ -653,6 +687,75 @@ mod tests {
         Expr::Field {
             base: Box::new(base),
             field,
+        }
+    }
+
+    fn online_action_module(action: Action<Param>) -> crate::ir::module::Module {
+        lower_exec_plan_to_module(&ExecPlan {
+            kernels: vec![Kernel {
+                reads: vec![],
+                writes: vec![write_param(0), write_param(1), write_param(2)],
+                body: crate::ir::kernel_program::Block(vec![action]),
+            }],
+            buffers: Buffers {
+                inputs: vec![],
+                intermediates: vec![],
+                outputs: vec![scalar_output(), scalar_output(), scalar_output()],
+            },
+            count: 3,
+            ranks: vec![0, 0, 0],
+            shapes: vec![Shape(vec![]), Shape(vec![]), Shape(vec![])],
+            exec: Exec(vec![Step::Dispatch {
+                kernel: KernelId(0),
+                reads: vec![],
+                writes: vec![
+                    BufferRef::Output(Output(0)),
+                    BufferRef::Output(Output(1)),
+                    BufferRef::Output(Output(2)),
+                ],
+            }]),
+        })
+        .unwrap()
+    }
+
+    fn scalar_output() -> OutputBuffer {
+        OutputBuffer {
+            shape: Shape(vec![]),
+            layout: crate::ir::exec_plan::Layout(vec![]),
+        }
+    }
+
+    fn write_param(ind: usize) -> Param {
+        Param {
+            arg: Arg::Writeable,
+            ind,
+        }
+    }
+
+    fn scalar_access(param: Param) -> Access<Param> {
+        Access {
+            buffer: param,
+            index: vec![],
+        }
+    }
+
+    fn data_expr(bucket: &str, ind: usize) -> Expr {
+        index(
+            field(index(ident(bucket), Expr::Usize(ind)), Field::Data),
+            Expr::Usize(0),
+        )
+    }
+
+    fn data_place(bucket: &str, ind: usize) -> Place {
+        Place::Index {
+            base: Box::new(Place::Field {
+                base: Box::new(Place::Index {
+                    base: Box::new(Place::Ident(id(bucket))),
+                    index: Expr::Usize(ind),
+                }),
+                field: Field::Data,
+            }),
+            index: Expr::Usize(0),
         }
     }
 
@@ -884,6 +987,84 @@ mod tests {
                 ..
             } if args.len() == 2)
         }));
+    }
+
+    #[test]
+    fn lowers_snapshot_action_to_assignment() {
+        let module = online_action_module(Action::Snapshot {
+            write: scalar_access(write_param(2)),
+            read: scalar_access(write_param(1)),
+        });
+
+        assert_eq!(
+            module.kernels[0].body.0[0],
+            Stmt::Set {
+                dst: data_place("writeables", 2),
+                value: data_expr("writeables", 1)
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_scale_action_to_accumulator_ratio_update() {
+        let module = online_action_module(Action::Scale {
+            write: scalar_access(write_param(0)),
+            numerator: ScaleExpr::Access(scalar_access(write_param(2))),
+            denominator: ScaleExpr::Access(scalar_access(write_param(1))),
+        });
+
+        assert_eq!(
+            module.kernels[0].body.0[0],
+            Stmt::Set {
+                dst: data_place("writeables", 0),
+                value: Expr::Div(
+                    Box::new(Expr::Mul(
+                        Box::new(data_expr("writeables", 0)),
+                        Box::new(data_expr("writeables", 2))
+                    )),
+                    Box::new(data_expr("writeables", 1))
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_scale_action_with_unary_terms() {
+        let module = online_action_module(Action::Scale {
+            write: scalar_access(write_param(0)),
+            numerator: ScaleExpr::Unary {
+                op: Op::Pow,
+                arg: scalar_access(write_param(2)),
+            },
+            denominator: ScaleExpr::Unary {
+                op: Op::Pow,
+                arg: scalar_access(write_param(1)),
+            },
+        });
+        let Stmt::Set { value, .. } = &module.kernels[0].body.0[0] else {
+            unreachable!();
+        };
+        let Expr::Div(numerator, denominator) = value else {
+            unreachable!();
+        };
+        let Expr::Mul(_, correction) = numerator.as_ref() else {
+            unreachable!();
+        };
+
+        assert_eq!(
+            correction.as_ref(),
+            &Expr::Op {
+                op: Op::Pow,
+                args: vec![data_expr("writeables", 2)]
+            }
+        );
+        assert_eq!(
+            denominator.as_ref(),
+            &Expr::Op {
+                op: Op::Pow,
+                args: vec![data_expr("writeables", 1)]
+            }
+        );
     }
 
     fn first_set_with_op(block: &Block) -> &Stmt {

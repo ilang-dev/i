@@ -39,6 +39,10 @@
 //! - `Action::Init` executes iff every loop in `zero_checks` is zero.
 //! - Empty `Action::Init.zero_checks` gives unconditional initialization.
 //! - `Action::Compute` computes one scalar element of one write buffer.
+//! - `Action::Snapshot` copies one scalar element from a kernel buffer to a
+//!   write buffer.
+//! - `Action::Scale` multiplies one scalar accumulator element by a numerator
+//!   expression divided by a denominator expression.
 //! - `Extent<B>.source` names the semantic dimension supplying the loop bound.
 //! - `Extent<B>.kind` gives the physical extent kind of the loop.
 //! - `TailGuard(true)` requests the canonical tail guard for a loop.
@@ -141,6 +145,36 @@ pub enum Action<B = BufferId> {
         write: Access<B>,
         /// Read accesses used by the computation.
         reads: Vec<Access<B>>,
+    },
+    /// One scalar snapshot.
+    Snapshot {
+        /// Snapshot destination.
+        write: Access<B>,
+        /// Snapshot source.
+        read: Access<B>,
+    },
+    /// One scalar accumulator scale correction.
+    Scale {
+        /// Accumulator access being scaled.
+        write: Access<B>,
+        /// Multiplicative numerator.
+        numerator: ScaleExpr<B>,
+        /// Multiplicative denominator.
+        denominator: ScaleExpr<B>,
+    },
+}
+
+/// One scalar expression usable as a scale factor term.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScaleExpr<B = BufferId> {
+    /// One buffer access.
+    Access(Access<B>),
+    /// One unary scalar operation applied to a buffer access.
+    Unary {
+        /// Unary scalar operator.
+        op: Op,
+        /// Operand access.
+        arg: Access<B>,
     },
 }
 

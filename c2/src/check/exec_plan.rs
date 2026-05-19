@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::ir::common::DimRef;
 use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Intermediate, KernelId, Param, Step};
-use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId};
+use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, ScaleExpr};
 
 pub fn validate_exec_plan(plan: &ExecPlan) -> Result<(), ValidationError> {
     validate_metadata(plan)?;
@@ -275,9 +275,41 @@ fn validate_block(
                         .map_err(|message| format!("compute read {} {}", read_index, message))?;
                 }
             }
+            Action::Snapshot { write, read } => {
+                validate_write_access(plan, reads, writes, loops, scope, write)
+                    .map_err(|message| format!("snapshot write {}", message))?;
+                validate_access(plan, reads, writes, loops, scope, read)
+                    .map_err(|message| format!("snapshot read {}", message))?;
+            }
+            Action::Scale {
+                write,
+                numerator,
+                denominator,
+            } => {
+                validate_write_access(plan, reads, writes, loops, scope, write)
+                    .map_err(|message| format!("scale write {}", message))?;
+                validate_scale_expr(plan, reads, writes, loops, scope, numerator)
+                    .map_err(|message| format!("scale numerator {}", message))?;
+                validate_scale_expr(plan, reads, writes, loops, scope, denominator)
+                    .map_err(|message| format!("scale denominator {}", message))?;
+            }
         }
     }
     Ok(())
+}
+
+fn validate_scale_expr(
+    plan: &ExecPlan,
+    reads: &[BufferRef],
+    writes: &[BufferRef],
+    loops: &BTreeSet<usize>,
+    scope: &BTreeSet<usize>,
+    expr: &ScaleExpr<Param>,
+) -> Result<(), String> {
+    match expr {
+        ScaleExpr::Access(access) => validate_access(plan, reads, writes, loops, scope, access),
+        ScaleExpr::Unary { arg, .. } => validate_access(plan, reads, writes, loops, scope, arg),
+    }
 }
 
 fn validate_write_access(

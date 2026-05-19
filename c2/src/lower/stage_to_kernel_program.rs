@@ -1652,7 +1652,7 @@ mod tests {
             match action {
                 Action::Loop { body, .. } => collect_compute_writes(body, writes),
                 Action::Compute { write, .. } => writes.push(write.buffer),
-                Action::Init { .. } => {}
+                Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
     }
@@ -1665,7 +1665,7 @@ mod tests {
             match action {
                 Action::Loop { body, .. } => collect_compute_ops(body, ops),
                 Action::Compute { op, .. } => ops.push(*op),
-                Action::Init { .. } => {}
+                Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
     }
@@ -1685,7 +1685,7 @@ mod tests {
                 Action::Compute { op, write, .. } => {
                     computes.push((*op, write.buffer, path.clone()));
                 }
-                Action::Init { .. } => {}
+                Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
     }
@@ -1710,7 +1710,7 @@ mod tests {
                         return Some(action);
                     }
                 }
-                Action::Init { .. } => {}
+                Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
         None
@@ -1727,7 +1727,7 @@ mod tests {
                         return Some(action);
                     }
                 }
-                Action::Compute { .. } => {}
+                Action::Compute { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
             }
         }
         None
