@@ -92,6 +92,10 @@ mod tests {
 
     fn render_expr(src: &str) -> String {
         let component = component::expr(parse_expr(src).unwrap());
+        render_component(&component)
+    }
+
+    fn render_component(component: &crate::ir::component::Component) -> String {
         let graph = lower_component_to_graph(&component).unwrap();
         let stage_program = lower_node_graph_to_stage_program(&graph).unwrap();
         let kernel_program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
@@ -154,13 +158,32 @@ mod tests {
         let c = render_expr("ik*kj~ijk|i:8|ii'jk");
 
         assert!(c.contains("for (size_t i0 = 0; i0 <"));
-        assert!(c.contains("writeables[0].shape[0] + 8"));
+        assert!(c.contains("readonlys[0].shape[0] + 8"));
         assert!(c.contains("- 1) / 8"));
         assert!(c.contains("if ("));
         assert!(c.contains("i0 * 8"));
         assert!(c.contains("i1"));
-        assert!(c.contains("< writeables[0].shape[0]"));
+        assert!(c.contains("< readonlys[0].shape[0]"));
         assert!(!c.contains("((((writeables"));
+    }
+
+    #[test]
+    fn renders_fused_fanout_tail_guards_with_outer_tile_index() {
+        let identity = crate::ir::component::Component::Identity;
+        let normalize = identity
+            .fanout(component::expr(
+                front::parse_expr("+i~. | i:8 | ii'").unwrap(),
+            ))
+            .chain(component::expr(
+                front::parse_expr("i/.~i | i:8 | i1i'").unwrap(),
+            ));
+        let dot = component::expr(front::parse_expr("i*i~i | i:8 | i0i'").unwrap()).chain(
+            component::expr(front::parse_expr("+i~. | i:8 | ii'0").unwrap()),
+        );
+        let c = render_component(&normalize.chain(dot));
+
+        assert!(c.contains("if (i0 * 8 + i3 < readonlys[0].shape[0])"));
+        assert!(!c.contains("if (i3 * 8 < readonlys[0].shape[0])"));
     }
 
     #[test]

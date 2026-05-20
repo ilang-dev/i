@@ -175,6 +175,7 @@ impl<'a> Builder<'a> {
         let mut lower = KernelLowerer {
             initialized,
             loops: BTreeMap::new(),
+            semantic_dims: self.kernel_semantic_dims(kernel_index)?,
         };
         let body = lower.lower_block(&kernel.body)?;
         Ok(Fn {
@@ -182,6 +183,80 @@ impl<'a> Builder<'a> {
             signature: Signature::Kernel,
             body,
         })
+    }
+
+    fn kernel_semantic_dims(
+        &self,
+        kernel_index: usize,
+    ) -> Result<Vec<(DimRef<Param>, DimRef<Input>)>, LowerError> {
+        let dispatch = self
+            .plan
+            .exec
+            .0
+            .iter()
+            .find_map(|step| match step {
+                Step::Dispatch {
+                    kernel,
+                    reads,
+                    writes,
+                } if kernel.0 == kernel_index => Some((reads, writes)),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                LowerError::new(format!("kernel {} is never dispatched", kernel_index))
+            })?;
+
+        let mut dims = Vec::new();
+        for (ind, buffer) in dispatch.0.iter().copied().enumerate() {
+            self.extend_param_semantic_dims(&mut dims, Arg::Readonly, ind, buffer)?;
+        }
+        for (ind, buffer) in dispatch.1.iter().copied().enumerate() {
+            self.extend_param_semantic_dims(&mut dims, Arg::Writeable, ind, buffer)?;
+        }
+        Ok(dims)
+    }
+
+    fn extend_param_semantic_dims(
+        &self,
+        dims: &mut Vec<(DimRef<Param>, DimRef<Input>)>,
+        arg: Arg,
+        ind: usize,
+        buffer: BufferRef,
+    ) -> Result<(), LowerError> {
+        for (dim, source) in self.buffer_shape(buffer)?.0.iter().copied().enumerate() {
+            dims.push((
+                DimRef {
+                    buffer: Param { arg, ind },
+                    dim,
+                },
+                source,
+            ));
+        }
+        Ok(())
+    }
+
+    fn buffer_shape(&self, buffer: BufferRef) -> Result<&crate::ir::exec_plan::Shape, LowerError> {
+        match buffer {
+            BufferRef::Input(input) => self
+                .plan
+                .buffers
+                .inputs
+                .get(input.0)
+                .map(|buffer| &buffer.shape),
+            BufferRef::Intermediate(intermediate) => self
+                .plan
+                .buffers
+                .intermediates
+                .get(intermediate.0)
+                .map(|buffer| &buffer.shape),
+            BufferRef::Output(output) => self
+                .plan
+                .buffers
+                .outputs
+                .get(output.0)
+                .map(|buffer| &buffer.shape),
+        }
+        .ok_or_else(|| LowerError::new("dispatch references nonexistent buffer"))
     }
 
     fn input_dim(&self, dim: DimRef<Input>) -> Expr {
@@ -210,6 +285,7 @@ impl<'a> Builder<'a> {
 struct KernelLowerer {
     initialized: BTreeSet<Param>,
     loops: BTreeMap<LoopId, LoopInfo>,
+    semantic_dims: Vec<(DimRef<Param>, DimRef<Input>)>,
 }
 
 impl KernelLowerer {
@@ -381,10 +457,17 @@ impl KernelLowerer {
     }
 
     fn reconstruct_extent_index(&self, source: DimRef<Param>) -> Result<Expr, LowerError> {
+        let semantic_source = self.semantic_dim(source);
         let mut infos = self
             .loops
             .values()
-            .filter(|info| info.source == source)
+            .filter(|info| {
+                if let Some(source) = semantic_source {
+                    self.semantic_dim(info.source) == Some(source)
+                } else {
+                    info.source == source
+                }
+            })
             .cloned()
             .collect::<Vec<_>>();
         infos.sort_by_key(|info| extent_order(&info.kind));
@@ -408,6 +491,12 @@ impl KernelLowerer {
                     .collect()
             });
         Ok(reconstruct_index(iters, factors.as_slice()))
+    }
+
+    fn semantic_dim(&self, source: DimRef<Param>) -> Option<DimRef<Input>> {
+        self.semantic_dims
+            .iter()
+            .find_map(|(param, input)| (*param == source).then_some(*input))
     }
 
     fn zero_check_condition(&self, loops: &[LoopId]) -> Result<Option<Expr>, LowerError> {
@@ -890,7 +979,7 @@ mod tests {
                 Box::new(Expr::Sub(
                     Box::new(Expr::Add(
                         Box::new(index(
-                            field(index(ident("writeables"), Expr::Usize(0)), Field::Shape),
+                            field(index(ident("readonlys"), Expr::Usize(0)), Field::Shape),
                             Expr::Usize(0)
                         )),
                         Box::new(Expr::Usize(8))

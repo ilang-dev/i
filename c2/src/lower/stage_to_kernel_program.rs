@@ -9,7 +9,7 @@ use crate::ir::graph::{
 };
 use crate::ir::kernel_program::{
     Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Iter, Kernel,
-    KernelProgram, LoopId, TailGuard,
+    KernelProgram, LoopId, ScaleExpr, TailGuard,
 };
 use crate::ir::stage::{
     Axis, AxisId, AxisRef as StageAxisRef, Layout, LayoutDim, ProgramShape, ShapeDim, Site, Stage,
@@ -283,6 +283,23 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    fn add_intermediate_like(&mut self, source: BufferId) -> Result<BufferId, LowerError> {
+        let buffer = self.buffers.get(source.0).cloned().ok_or_else(|| {
+            LowerError::new(format!(
+                "snapshot source buffer {} does not exist",
+                source.0
+            ))
+        })?;
+        let id = BufferId(self.buffers.len());
+        self.buffer_sources.push(None);
+        self.buffers.push(Buffer {
+            kind: BufferKind::Intermediate,
+            shape: buffer.shape,
+            layout: buffer.layout,
+        });
+        Ok(id)
+    }
+
     fn source_buffer(&self, source: Source) -> Result<BufferId, LowerError> {
         match source {
             Source::Input(input) => self.input_buffers.get(input.0).copied().ok_or_else(|| {
@@ -315,7 +332,7 @@ impl<'a> Builder<'a> {
 }
 
 struct KernelBuilder<'a, 'b> {
-    builder: &'b Builder<'a>,
+    builder: &'b mut Builder<'a>,
     root: usize,
     next_loop: usize,
     reads: Vec<BufferId>,
@@ -327,7 +344,7 @@ struct KernelBuilder<'a, 'b> {
 }
 
 impl<'a, 'b> KernelBuilder<'a, 'b> {
-    fn new(builder: &'b Builder<'a>, root: usize) -> Self {
+    fn new(builder: &'b mut Builder<'a>, root: usize) -> Self {
         Self {
             builder,
             root,
@@ -398,10 +415,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let stage = &graph_node.inner;
         let output_buffer = self.builder.stage_buffers[stage_index];
 
-        if stage_index != self.root {
-            self.reject_unimplemented_online_reduction(stage_index, stage)?;
-        }
-
         let mut local_loops = Vec::new();
         let mut stage_axes = BTreeMap::new();
         for (axis_index, axis) in stage.axes.iter().enumerate() {
@@ -426,6 +439,8 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
 
         let mut actions = vec![Vec::new(); local_loops.len() + 1];
         let mut hoisted = Vec::new();
+        let online_correction =
+            self.online_correction(stage_index, stage, output_buffer, &stage_axes)?;
         if let Some(site) = stage.output.init {
             let depth = self.site_depth(stage, &local_loops, site)?;
             self.validate_init_depth(stage, &local_loops, depth)?;
@@ -435,7 +450,14 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 zero_checks: self.init_zero_checks(stage, &local_loops, &stage_axes, depth)?,
             });
         }
+        if let Some(correction) = &online_correction {
+            actions[0].push(Action::Snapshot {
+                write: correction.old.clone(),
+                read: correction.new.clone(),
+            });
+        }
 
+        let mut corrections = Vec::new();
         for (input_index, input) in stage.inputs.iter().enumerate() {
             if let Some(site) = input.compute {
                 let source = graph_node.inputs[input_index];
@@ -448,19 +470,53 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 let fused = self.emit_stage(producer.0, &stage_axes)?;
                 self.place_hoisted(
                     stage,
+                    output_buffer,
+                    &stage_axes,
                     &local_loops,
                     &mut actions,
                     &mut hoisted,
                     fused.hoisted,
                 )?;
                 match self.compute_placement(stage, &local_loops, site)? {
-                    Placement::Local(depth) => actions[depth].extend(fused.block.0),
+                    Placement::Local(depth) => {
+                        actions[depth].extend(fused.block.0);
+                        if self.can_apply_online_corrections(stage) {
+                            self.validate_corrections_ready(fused.corrections.as_slice())?;
+                            actions[depth].extend(
+                                fused
+                                    .corrections
+                                    .iter()
+                                    .map(|correction| {
+                                        correction.scale_action(self.lower_access(
+                                            output_buffer,
+                                            &stage.output.layout,
+                                            &stage_axes,
+                                        ))
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?,
+                            );
+                        } else {
+                            corrections.extend(self.propagate_online_corrections(
+                                stage,
+                                input_index,
+                                fused.corrections,
+                            )?);
+                        }
+                    }
                     Placement::Hoist(site) => hoisted.push(HoistedBlock {
                         site,
                         block: fused.block,
+                        corrections: self.propagate_online_corrections(
+                            stage,
+                            input_index,
+                            fused.corrections,
+                        )?,
                     }),
                 }
             }
+        }
+        if let Some(correction) = online_correction {
+            corrections.push(correction);
         }
 
         if stage_index != self.root {
@@ -485,6 +541,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 return Ok(EmittedStage {
                     block: Block(Vec::new()),
                     hoisted: Vec::new(),
+                    corrections: Vec::new(),
                 });
             }
             self.emitted_stages.push(key);
@@ -517,6 +574,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 compute,
             )?,
             hoisted,
+            corrections,
         })
     }
 
@@ -595,19 +653,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         stage: &Stage,
         index: crate::ir::common::Index,
     ) -> Result<DimRef<BufferId>, LowerError> {
-        if let Some(dim) = stage
-            .output
-            .shape
-            .0
-            .iter()
-            .position(|candidate| *candidate == index)
-        {
-            return Ok(DimRef {
-                buffer: self.builder.stage_buffers[stage_index],
-                dim,
-            });
-        }
-
         for (input_index, input) in stage.inputs.iter().enumerate() {
             if let Some(dim) = input
                 .shape
@@ -621,6 +666,19 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                     dim,
                 });
             }
+        }
+
+        if let Some(dim) = stage
+            .output
+            .shape
+            .0
+            .iter()
+            .position(|candidate| *candidate == index)
+        {
+            return Ok(DimRef {
+                buffer: self.builder.stage_buffers[stage_index],
+                dim,
+            });
         }
 
         Err(LowerError::new(format!(
@@ -809,8 +867,10 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
     }
 
     fn place_hoisted(
-        &self,
+        &mut self,
         stage: &Stage,
+        output_buffer: BufferId,
+        stage_axes: &BTreeMap<AxisId, LoopInfo>,
         local_loops: &[(AxisId, LoopInfo)],
         actions: &mut [Vec<Action>],
         propagated: &mut Vec<HoistedBlock>,
@@ -818,10 +878,37 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
     ) -> Result<(), LowerError> {
         for hoist in hoisted {
             match self.hoist_placement(stage, local_loops, hoist.site)? {
-                Placement::Local(depth) => actions[depth].extend(hoist.block.0),
+                Placement::Local(depth) => {
+                    actions[depth].extend(hoist.block.0);
+                    if self.can_apply_online_corrections(stage) {
+                        self.validate_corrections_ready(hoist.corrections.as_slice())?;
+                        actions[depth].extend(
+                            hoist
+                                .corrections
+                                .iter()
+                                .map(|correction| {
+                                    correction.scale_action(self.lower_access(
+                                        output_buffer,
+                                        &stage.output.layout,
+                                        stage_axes,
+                                    ))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        );
+                    } else {
+                        let propagated =
+                            self.propagate_online_corrections(stage, 0, hoist.corrections)?;
+                        if !propagated.is_empty() {
+                            return Err(LowerError::new(
+                                "online correction was hoisted to a non-accumulator stage",
+                            ));
+                        }
+                    }
+                }
                 Placement::Hoist(site) => propagated.push(HoistedBlock {
                     site,
                     block: hoist.block,
+                    corrections: hoist.corrections,
                 }),
             }
         }
@@ -922,6 +1009,76 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
 
         Ok(())
+    }
+
+    fn online_correction(
+        &mut self,
+        stage_index: usize,
+        stage: &Stage,
+        output_buffer: BufferId,
+        stage_axes: &BTreeMap<AxisId, LoopInfo>,
+    ) -> Result<Option<OnlineCorrection>, LowerError> {
+        if stage_index == self.root || !requires_online_reduction(stage) {
+            return Ok(None);
+        }
+        if stage.op != crate::ir::common::Op::Add || !stage.output.shape.0.is_empty() {
+            self.reject_unimplemented_online_reduction(stage_index, stage)?;
+            return Ok(None);
+        }
+
+        let old_buffer = self.builder.add_intermediate_like(output_buffer)?;
+        self.record_write(old_buffer);
+        Ok(Some(OnlineCorrection {
+            old: self.lower_access(old_buffer, &stage.output.layout, stage_axes)?,
+            new: self.lower_access(output_buffer, &stage.output.layout, stage_axes)?,
+            normalized: false,
+        }))
+    }
+
+    fn can_apply_online_corrections(&self, stage: &Stage) -> bool {
+        stage.op == crate::ir::common::Op::Add
+            && stage.output.init.is_some()
+            && stage.output.shape.0.is_empty()
+    }
+
+    fn propagate_online_corrections(
+        &self,
+        stage: &Stage,
+        input_index: usize,
+        corrections: Vec<OnlineCorrection>,
+    ) -> Result<Vec<OnlineCorrection>, LowerError> {
+        if corrections.is_empty() {
+            return Ok(corrections);
+        }
+        if stage.op == crate::ir::common::Op::Div && input_index > 0 {
+            return Ok(corrections
+                .into_iter()
+                .map(|mut correction| {
+                    correction.normalized = true;
+                    correction
+                })
+                .collect());
+        }
+        if stage.output.init.is_none() && corrections.iter().all(|correction| correction.normalized)
+        {
+            return Ok(corrections);
+        }
+        Err(LowerError::new(
+            "online reduction correction requires a division use before accumulation",
+        ))
+    }
+
+    fn validate_corrections_ready(
+        &self,
+        corrections: &[OnlineCorrection],
+    ) -> Result<(), LowerError> {
+        if corrections.iter().all(|correction| correction.normalized) {
+            Ok(())
+        } else {
+            Err(LowerError::new(
+                "online reduction correction reached accumulator before division use",
+            ))
+        }
     }
 
     fn init_zero_checks(
@@ -1053,6 +1210,24 @@ struct LoopInfo {
 struct EmittedStage {
     block: Block,
     hoisted: Vec<HoistedBlock>,
+    corrections: Vec<OnlineCorrection>,
+}
+
+#[derive(Clone)]
+struct OnlineCorrection {
+    old: Access,
+    new: Access,
+    normalized: bool,
+}
+
+impl OnlineCorrection {
+    fn scale_action(&self, write: Result<Access, LowerError>) -> Result<Action, LowerError> {
+        Ok(Action::Scale {
+            write: write?,
+            numerator: ScaleExpr::Access(self.old.clone()),
+            denominator: ScaleExpr::Access(self.new.clone()),
+        })
+    }
 }
 
 struct EmittedStageKey {
@@ -1064,6 +1239,7 @@ struct EmittedStageKey {
 struct HoistedBlock {
     site: HoistSite,
     block: Block,
+    corrections: Vec<OnlineCorrection>,
 }
 
 enum Placement {
@@ -1082,6 +1258,23 @@ fn format_hoist_site(site: HoistSite) -> String {
         HoistSite::Before(axis) => format!("consumer axis {} before site", axis.0),
         HoistSite::After(axis) => format!("consumer axis {} after site", axis.0),
     }
+}
+
+fn requires_online_reduction(stage: &Stage) -> bool {
+    if stage.output.init.is_none() {
+        return false;
+    }
+    let output_indexes = stage
+        .output
+        .shape
+        .0
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    stage.axes.iter().any(|axis| match axis {
+        Axis::Pruned { index, .. } => !output_indexes.contains(index),
+        Axis::Live { .. } => false,
+    })
 }
 
 #[derive(Clone)]
@@ -1453,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_fused_reduction_axis_that_requires_online_lowering() {
+    fn lowers_scalar_fused_reduction_axis_with_online_correction_actions() {
         let normalize = crate::ir::component::Component::Identity
             .pair(parse_component("+i~. | i:8 | ii'"))
             .chain(parse_component("i/.~i | i:8 | i1i'"));
@@ -1463,10 +1656,20 @@ mod tests {
             lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
                 .unwrap();
 
-        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut snapshots = Vec::new();
+        let mut scales = Vec::new();
+        collect_online_actions(
+            &program.graph.nodes[0].inner.body,
+            &mut snapshots,
+            &mut scales,
+        );
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(scales.len(), 1);
         assert_eq!(
-            error.to_string(),
-            "stage 0 requires online reduction lowering: fused reduction axis is consumed before completion"
+            program.buffers[snapshots[0].buffer.0].kind,
+            BufferKind::Intermediate
         );
     }
 
@@ -1666,6 +1869,21 @@ mod tests {
                 Action::Loop { body, .. } => collect_compute_ops(body, ops),
                 Action::Compute { op, .. } => ops.push(*op),
                 Action::Init { .. } | Action::Snapshot { .. } | Action::Scale { .. } => {}
+            }
+        }
+    }
+
+    fn collect_online_actions<'a>(
+        block: &'a crate::ir::kernel_program::Block,
+        snapshots: &mut Vec<&'a crate::ir::kernel_program::Access>,
+        scales: &mut Vec<&'a crate::ir::kernel_program::Access>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { body, .. } => collect_online_actions(body, snapshots, scales),
+                Action::Snapshot { write, .. } => snapshots.push(write),
+                Action::Scale { write, .. } => scales.push(write),
+                Action::Compute { .. } | Action::Init { .. } => {}
             }
         }
     }

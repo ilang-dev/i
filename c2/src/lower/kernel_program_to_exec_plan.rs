@@ -683,6 +683,28 @@ mod tests {
     }
 
     #[test]
+    fn allocates_snapshot_buffer_for_scalar_online_reduction() {
+        let normalize = crate::ir::component::Component::Identity
+            .pair(component::expr(
+                front::parse_expr("+i~. | i:8 | ii'").unwrap(),
+            ))
+            .chain(component::expr(
+                front::parse_expr("i/.~i | i:8 | i1i'").unwrap(),
+            ));
+        let dot = component::expr(front::parse_expr("i*i~i | i:8 | i0i'").unwrap()).chain(
+            component::expr(front::parse_expr("+i~. | i:8 | ii'0").unwrap()),
+        );
+        let component = normalize.chain(dot);
+        let graph = lower_component_to_graph(&component).unwrap();
+        let stage_program = lower_node_graph_to_stage_program(&graph).unwrap();
+        let kernel_program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let exec_plan = lower_kernel_program_to_exec_plan(&kernel_program).unwrap();
+
+        assert_eq!(exec_plan.buffers.intermediates.len(), 4);
+        assert!(contains_snapshot_and_scale(&exec_plan.kernels[0].body));
+    }
+
+    #[test]
     fn lowers_fanout_compute_at_with_pointwise_pruned_producer_axes() {
         let exp = component::expr(front::parse_expr("^ij~ij").unwrap());
         let row_sum = component::expr(front::parse_expr("+ij~i||ij0").unwrap());
@@ -860,5 +882,23 @@ mod tests {
             }
         }
         unreachable!()
+    }
+
+    fn contains_snapshot_and_scale(block: &Block<Param>) -> bool {
+        let mut snapshot = false;
+        let mut scale = false;
+        collect_online_action_kinds(block, &mut snapshot, &mut scale);
+        snapshot && scale
+    }
+
+    fn collect_online_action_kinds(block: &Block<Param>, snapshot: &mut bool, scale: &mut bool) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { body, .. } => collect_online_action_kinds(body, snapshot, scale),
+                Action::Snapshot { .. } => *snapshot = true,
+                Action::Scale { .. } => *scale = true,
+                Action::Init { .. } | Action::Compute { .. } => {}
+            }
+        }
     }
 }
