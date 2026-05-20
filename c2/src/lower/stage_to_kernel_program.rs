@@ -442,13 +442,40 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         let online_correction =
             self.online_correction(stage_index, stage, output_buffer, &stage_axes)?;
         if let Some(site) = stage.output.init {
-            let depth = self.site_depth(stage, &local_loops, site)?;
-            self.validate_init_depth(stage, &local_loops, depth)?;
-            actions[depth].push(Action::Init {
-                op: stage.op,
-                write: self.lower_access(output_buffer, &stage.output.layout, &stage_axes)?,
-                zero_checks: self.init_zero_checks(stage, &local_loops, &stage_axes, depth)?,
-            });
+            match self.init_placement(stage, &local_loops, site)? {
+                Placement::Local(depth) => {
+                    self.validate_init_depth(stage, &local_loops, depth)?;
+                    actions[depth].push(Action::Init {
+                        op: stage.op,
+                        write: self.lower_access(
+                            output_buffer,
+                            &stage.output.layout,
+                            &stage_axes,
+                        )?,
+                        zero_checks: self.init_zero_checks(
+                            stage,
+                            &local_loops,
+                            &stage_axes,
+                            depth,
+                        )?,
+                    });
+                }
+                Placement::Hoist(site) => {
+                    hoisted.push(HoistedBlock {
+                        site,
+                        block: Block(vec![Action::Init {
+                            op: stage.op,
+                            write: self.lower_access(
+                                output_buffer,
+                                &stage.output.layout,
+                                &stage_axes,
+                            )?,
+                            zero_checks: Vec::new(),
+                        }]),
+                        corrections: Vec::new(),
+                    });
+                }
+            }
         }
         if let Some(correction) = &online_correction {
             actions[0].push(Action::Snapshot {
@@ -783,32 +810,19 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
     }
 
-    fn site_depth(
+    fn compute_placement(
         &self,
         stage: &Stage,
         local_loops: &[(AxisId, LoopInfo)],
         site: Site,
-    ) -> Result<usize, LowerError> {
+    ) -> Result<Placement, LowerError> {
         match site {
-            Site::Root => Ok(0),
-            Site::At(axis) => match stage.axes.get(axis.0) {
-                Some(Axis::Live { .. }) => local_loops
-                    .iter()
-                    .position(|(candidate, _)| *candidate == axis)
-                    .map(|position| position + 1)
-                    .ok_or_else(|| {
-                        LowerError::new(format!("site references nonlocal axis {}", axis.0))
-                    }),
-                Some(Axis::Pruned { .. }) => Ok(0),
-                None => Err(LowerError::new(format!(
-                    "site references nonexistent axis {}",
-                    axis.0
-                ))),
-            },
+            Site::Root => self.root_placement(stage),
+            Site::At(axis) => self.axis_placement(stage, local_loops, axis),
         }
     }
 
-    fn compute_placement(
+    fn init_placement(
         &self,
         stage: &Stage,
         local_loops: &[(AxisId, LoopInfo)],

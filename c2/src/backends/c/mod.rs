@@ -187,6 +187,27 @@ mod tests {
     }
 
     #[test]
+    fn renders_fused_root_reduction_init_before_consumer_tile_loop() {
+        let identity = crate::ir::component::Component::Identity;
+        let normalize = identity
+            .fanout(component::expr(
+                front::parse_expr("+i~. | i:8 | !ii'").unwrap(),
+            ))
+            .chain(component::expr(
+                front::parse_expr("i/.~i | i:8 | i1i'").unwrap(),
+            ));
+        let dot = component::expr(front::parse_expr("i*i~i | i:8 | i0i'").unwrap()).chain(
+            component::expr(front::parse_expr("+i~. | i:8 | !ii'0").unwrap()),
+        );
+        let c = render_component(&normalize.chain(dot));
+
+        assert!(c.contains("writeables[1].data[0] = 0.0f;\n  for (size_t i0 = 0;"));
+        assert!(!c.contains("if (i0 == 0)"));
+        assert!(c.contains("writeables[0].data[0] = writeables[1].data[0];"));
+        assert!(!c.contains("writeables[0].data[0] = 0.0f;"));
+    }
+
+    #[test]
     fn renders_data_access_and_ops() {
         let c = render_expr("+ijk~ij");
 
