@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nested_fanout_compute_at_that_requires_online_lowering() {
+    fn rejects_nested_fanout_online_correction_without_downstream_accumulator() {
         let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
             component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
         );
@@ -679,7 +679,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("requires online reduction lowering: fused reduction axis is consumed before completion"));
+            .contains("online reduction correction reached root without an accumulator"));
     }
 
     #[test]

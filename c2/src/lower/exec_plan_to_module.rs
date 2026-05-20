@@ -475,21 +475,24 @@ impl KernelLowerer {
             .iter()
             .map(|info| Expr::Ident(info.iter.clone()))
             .collect::<Vec<_>>();
-        let factors = infos
-            .iter()
-            .find_map(|info| match &info.kind {
-                ExtentKind::Base(factors) => Some(factors.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                infos
-                    .iter()
-                    .filter_map(|info| match info.kind {
-                        ExtentKind::Split { factor, .. } => Some(factor),
-                        _ => None,
-                    })
-                    .collect()
-            });
+        let factors = normalize_reconstruction_factors(
+            infos
+                .iter()
+                .find_map(|info| match &info.kind {
+                    ExtentKind::Base(factors) => Some(factors.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    infos
+                        .iter()
+                        .filter_map(|info| match info.kind {
+                            ExtentKind::Split { factor, .. } => Some(factor),
+                            _ => None,
+                        })
+                        .collect()
+                }),
+            infos.len(),
+        );
         Ok(reconstruct_index(iters, factors.as_slice()))
     }
 
@@ -569,7 +572,11 @@ fn reconstruct_index(iters: Vec<Expr>, factors: &[usize]) -> Expr {
 
     let mut terms = Vec::new();
     for (index, iter) in iters.into_iter().enumerate() {
-        let weight = factors[index..].iter().product::<usize>();
+        let weight = if index < factors.len() {
+            factors[index..].iter().product::<usize>()
+        } else {
+            1
+        };
         if weight == 1 {
             terms.push(iter);
         } else {
@@ -577,6 +584,15 @@ fn reconstruct_index(iters: Vec<Expr>, factors: &[usize]) -> Expr {
         }
     }
     terms.into_iter().reduce(add).unwrap_or(Expr::Usize(0))
+}
+
+fn normalize_reconstruction_factors(factors: Vec<usize>, loop_count: usize) -> Vec<usize> {
+    let expected = loop_count.saturating_sub(1);
+    if factors.len() > expected {
+        factors[factors.len() - expected..].to_vec()
+    } else {
+        factors
+    }
 }
 
 fn init_value(op: Op) -> Result<Expr, LowerError> {

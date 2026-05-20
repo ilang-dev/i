@@ -208,6 +208,28 @@ mod tests {
     }
 
     #[test]
+    fn renders_rowwise_online_normalize_matmul_with_tile_indexing() {
+        let identity = crate::ir::component::Component::Identity;
+        let row_normalize = identity
+            .fanout(component::expr(
+                front::parse_expr("+ik~i | k:8 | kik'").unwrap(),
+            ))
+            .chain(component::expr(
+                front::parse_expr("ik/i~ik | k:8 | k1ik'").unwrap(),
+            ));
+        let mm = component::expr(front::parse_expr("ik*kj~ijk | k:8 | k0ijk'").unwrap()).chain(
+            component::expr(front::parse_expr("+ijk~ij | k:8 | kijk'0").unwrap()),
+        );
+        let c = render_component(&row_normalize.chain(mm));
+
+        assert!(c.contains("for (size_t i0 = 0; i0 < (writeables[3].shape[2] + 8 - 1) / 8; ++i0)"));
+        assert!(c.contains("writeables[0].data[i6] = writeables[1].data[i6];"));
+        assert!(c.contains("i0 * 8 +"));
+        assert!(!c.contains("i5 * 8 +\n              i5"));
+        assert!(c.contains("] * writeables[0].data[i1] / writeables[1].data[i1];"));
+    }
+
+    #[test]
     fn renders_data_access_and_ops() {
         let c = render_expr("+ijk~ij");
 
