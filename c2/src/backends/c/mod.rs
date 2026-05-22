@@ -230,6 +230,34 @@ mod tests {
     }
 
     #[test]
+    fn renders_rowwise_online_normalize_matmul_with_outer_row_tile_lifetime() {
+        let identity = crate::ir::component::Component::Identity;
+        let row_normalize = identity
+            .fanout(component::expr(
+                front::parse_expr("+ik~i | i:8,k:8 | kii'k'").unwrap(),
+            ))
+            .chain(component::expr(
+                front::parse_expr("ik/i~ik | i:8,k:8 | ki1i'k'").unwrap(),
+            ));
+        let mm = component::expr(front::parse_expr("ik*kj~ijk | i:8,k:8 | ki0i'jk'").unwrap())
+            .chain(component::expr(
+                front::parse_expr("+ijk~ij | i:8,k:8 | kii'jk'0").unwrap(),
+            ));
+        let c = render_component(&row_normalize.chain(mm));
+
+        assert!(c.contains(
+            "] / writeables[1].data[\n                i1 * 8 +\n                i5\n              ];"
+        ));
+        assert!(!c.contains("] / writeables[1].data[i5];"));
+        assert!(c.contains(
+            "] * writeables[0].data[\n              i1 * 8 +\n              i2\n            ] / writeables[1].data[\n              i1 * 8 +\n              i2\n            ];"
+        ));
+        assert!(c.contains(
+            "writeables[2].data[\n                  i2 * writeables[2].layout[1] +\n                  i4\n                ]"
+        ));
+    }
+
+    #[test]
     fn renders_data_access_and_ops() {
         let c = render_expr("+ijk~ij");
 

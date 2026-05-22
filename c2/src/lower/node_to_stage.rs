@@ -401,6 +401,11 @@ fn assign_layouts(
     axis_sources: &[AxisSource],
     output_layout: OutputLayout,
 ) -> Result<(), LowerError> {
+    let output_layout = if protected_output_indexes(stage) {
+        OutputLayout::Semantic
+    } else {
+        output_layout
+    };
     stage.output.layout =
         lower_layout(stage, axis_sources, &node.output, output_layout, &[], false)?;
     for input_index in 0..stage.inputs.len() {
@@ -500,6 +505,33 @@ fn physical_layout(
         }
     }
     Ok(Layout(dims))
+}
+
+fn protected_output_indexes(stage: &Stage) -> bool {
+    if stage.output.init.is_none() {
+        return false;
+    }
+    protected_shape_indexes(stage, &stage.output.shape)
+}
+
+fn protected_shape_indexes(stage: &Stage, shape: &Shape) -> bool {
+    let shape_indexes = shape.0.iter().copied().collect::<BTreeSet<_>>();
+    let mut saw_exterior_index = false;
+
+    for axis in &stage.axes {
+        let index = match axis {
+            Axis::Live { index, .. } | Axis::Pruned { index, .. } => *index,
+        };
+        if shape_indexes.contains(&index) {
+            if saw_exterior_index {
+                return true;
+            }
+        } else {
+            saw_exterior_index = true;
+        }
+    }
+
+    false
 }
 
 fn stage_axis_ref(stage: &Stage, axis: AxisId) -> Result<StageAxisRef, LowerError> {
