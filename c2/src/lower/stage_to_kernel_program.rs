@@ -485,11 +485,11 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             }
         }
         if let Some(correction) = &online_correction {
-            let layout = self.correction_layout(correction, stage)?;
+            let layout = self.semantic_shape_layout(&correction.shape, stage)?;
             let depth = self.layout_depth(&layout, &local_loops)?;
             actions[depth].push(self.snapshot_action(
                 correction,
-                &layout,
+                stage,
                 &stage_axes,
                 parent_axes,
             )?);
@@ -602,32 +602,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             .iter()
             .copied()
             .zip(stage.inputs.iter())
-            .map(|(source, input)| {
-                let buffer = self.source_buffer(source)?;
-                let layout = match source {
-                    Source::Node(node, OutputId(0)) if input.compute.is_some() => {
-                        let producer = &self.builder.program.graph.nodes[node.0].inner;
-                        if producer
-                            .output
-                            .layout
-                            .0
-                            .iter()
-                            .any(|dim| matches!(dim, LayoutDim::Semantic { .. }))
-                            && self.layout_axes_are_available(
-                                &producer.output.layout,
-                                &stage_axes,
-                                parent_axes,
-                            )
-                        {
-                            &producer.output.layout
-                        } else {
-                            &input.layout
-                        }
-                    }
-                    _ => &input.layout,
-                };
-                self.lower_access(buffer, layout, &stage_axes, parent_axes)
-            })
+            .map(|(source, input)| self.lower_read(source, input, stage, &stage_axes, parent_axes))
             .collect::<Result<Vec<_>, _>>()?;
         let compute = Action::Compute {
             op: stage.op,
@@ -1127,13 +1102,25 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
     fn snapshot_action(
         &mut self,
         correction: &OnlineCorrection,
-        layout: &Layout,
+        stage: &Stage,
         axes: &BTreeMap<AxisId, LoopInfo>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<Action, LowerError> {
         Ok(Action::Snapshot {
-            write: self.lower_access(correction.old_buffer, layout, axes, parent_axes)?,
-            read: self.lower_access(correction.new_buffer, layout, axes, parent_axes)?,
+            write: self.lower_semantic_shape_access(
+                correction.old_buffer,
+                &correction.shape,
+                stage,
+                axes,
+                parent_axes,
+            )?,
+            read: self.lower_semantic_shape_access(
+                correction.new_buffer,
+                &correction.shape,
+                stage,
+                axes,
+                parent_axes,
+            )?,
         })
     }
 
@@ -1145,31 +1132,62 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         axes: &BTreeMap<AxisId, LoopInfo>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<Action, LowerError> {
-        let layout = self.correction_layout(correction, stage)?;
         Ok(Action::Scale {
             write,
-            numerator: ScaleExpr::Access(self.lower_access(
+            numerator: ScaleExpr::Access(self.lower_semantic_shape_access(
                 correction.old_buffer,
-                &layout,
+                &correction.shape,
+                stage,
                 axes,
                 parent_axes,
             )?),
-            denominator: ScaleExpr::Access(self.lower_access(
+            denominator: ScaleExpr::Access(self.lower_semantic_shape_access(
                 correction.new_buffer,
-                &layout,
+                &correction.shape,
+                stage,
                 axes,
                 parent_axes,
             )?),
         })
     }
 
-    fn correction_layout(
-        &self,
-        correction: &OnlineCorrection,
+    fn lower_read(
+        &mut self,
+        source: Source,
+        input: &crate::ir::stage::Input,
         stage: &Stage,
-    ) -> Result<Layout, LowerError> {
-        correction
-            .shape
+        axes: &BTreeMap<AxisId, LoopInfo>,
+        parent_axes: &BTreeMap<AxisId, LoopInfo>,
+    ) -> Result<Access, LowerError> {
+        let buffer = self.source_buffer(source)?;
+        if let Source::Node(node, OutputId(0)) = source {
+            if input.compute.is_some() {
+                let producer = &self.builder.program.graph.nodes[node.0].inner;
+                let semantic_layout = self.semantic_shape_layout(&producer.output.shape, stage)?;
+                if output_uses_semantic_layout(producer)
+                    && self.layout_axes_are_available(&semantic_layout, axes, parent_axes)
+                {
+                    return self.lower_access(buffer, &semantic_layout, axes, parent_axes);
+                }
+            }
+        }
+        self.lower_access(buffer, &input.layout, axes, parent_axes)
+    }
+
+    fn lower_semantic_shape_access(
+        &mut self,
+        buffer: BufferId,
+        shape: &Shape,
+        stage: &Stage,
+        axes: &BTreeMap<AxisId, LoopInfo>,
+        parent_axes: &BTreeMap<AxisId, LoopInfo>,
+    ) -> Result<Access, LowerError> {
+        let layout = self.semantic_shape_layout(shape, stage)?;
+        self.lower_access(buffer, &layout, axes, parent_axes)
+    }
+
+    fn semantic_shape_layout(&self, shape: &Shape, stage: &Stage) -> Result<Layout, LowerError> {
+        shape
             .0
             .iter()
             .copied()
@@ -1522,6 +1540,15 @@ fn correction_shape_broadcasts_to_stage(correction: &OnlineCorrection, stage: &S
         .0
         .iter()
         .all(|index| output_indexes.contains(index))
+}
+
+fn output_uses_semantic_layout(stage: &Stage) -> bool {
+    stage
+        .output
+        .layout
+        .0
+        .iter()
+        .any(|dim| matches!(dim, LayoutDim::Semantic { .. }))
 }
 
 fn stage_axis_refs_for_index(
