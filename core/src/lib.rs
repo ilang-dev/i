@@ -1,4 +1,6 @@
-use libloading::Library;
+mod loader;
+
+use loader::Library;
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
@@ -353,19 +355,13 @@ fn compile(component: &Component) -> Result<i_program, String> {
     let dylib_path = build(&source)?;
 
     unsafe {
-        let library = Library::new(&dylib_path).map_err(|err| err.to_string())?;
-        let count = *library
-            .get::<unsafe extern "C" fn() -> usize>(b"count")
-            .map_err(|err| err.to_string())?;
-        let ranks = *library
-            .get::<unsafe extern "C" fn(*mut usize)>(b"ranks")
-            .map_err(|err| err.to_string())?;
-        let shapes = *library
-            .get::<unsafe extern "C" fn(*const i_tensor, *mut *mut usize)>(b"shapes")
-            .map_err(|err| err.to_string())?;
-        let exec = *library
-            .get::<unsafe extern "C" fn(*const i_tensor, *mut i_tensor_mut)>(b"exec")
-            .map_err(|err| err.to_string())?;
+        let library = Library::open(&dylib_path)?;
+        let count = library.symbol::<unsafe extern "C" fn() -> usize>(c"count")?;
+        let ranks = library.symbol::<unsafe extern "C" fn(*mut usize)>(c"ranks")?;
+        let shapes =
+            library.symbol::<unsafe extern "C" fn(*const i_tensor, *mut *mut usize)>(c"shapes")?;
+        let exec =
+            library.symbol::<unsafe extern "C" fn(*const i_tensor, *mut i_tensor_mut)>(c"exec")?;
 
         Ok(i_program {
             _library: library,
