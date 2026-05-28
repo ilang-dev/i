@@ -275,10 +275,10 @@ class Component:
     def swap(self):
         return Component(_ptr=_check_ptr(_core.i_swap(self._ptr)))
 
-    def __or__(self, other):
+    def __rshift__(self, other):
         return self.chain(other)
 
-    def __call__(self, other):
+    def __lshift__(self, other):
         return self.compose(other)
 
     def __and__(self, other):
