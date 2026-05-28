@@ -268,10 +268,36 @@ mod tests {
     }
 
     #[test]
-    fn renders_unary_pow_as_exp() {
+    fn renders_normalized_unary_pow() {
         let c = render_expr("^ij~ij");
 
-        assert!(c.contains("expf("));
+        assert!(c.contains("powf(2.718281"));
+    }
+
+    #[test]
+    fn renders_unary_max_and_min_with_zero_defaults() {
+        let max = render_expr(">ij~ij");
+        let min = render_expr("<ij~ij");
+
+        assert!(max.contains("fmaxf(0.0f, readonlys[0].data["));
+        assert!(min.contains("fminf(0.0f, readonlys[0].data["));
+    }
+
+    #[test]
+    fn renders_normalized_unary_comparisons_with_zero_defaults() {
+        let gt = render_expr(">>ij~ij");
+        let ge = render_expr(">=ij~ij");
+        let lt = render_expr("<<ij~ij");
+        let le = render_expr("<=ij~ij");
+        let eq = render_expr("==ij~ij");
+        let ne = render_expr("!=ij~ij");
+
+        assert!(gt.contains("] > 0.0f;"));
+        assert!(ge.contains("] >= 0.0f;"));
+        assert!(lt.contains("] < 0.0f;"));
+        assert!(le.contains("] <= 0.0f;"));
+        assert!(eq.contains("] == 0.0f;"));
+        assert!(ne.contains("] != 0.0f;"));
     }
 
     #[test]

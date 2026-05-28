@@ -128,29 +128,11 @@ fn render_op(op: Op, args: &[Expr], context: Context) -> Rendered {
     match op {
         Op::Add => render_joined(Operator::Add, args, context),
         Op::Mul => render_joined(Operator::Mul, args, context),
-        Op::Div => {
-            if args.len() == 1 {
-                render_prefix_binary("1.0f", Operator::Div, &args[0], context)
-            } else {
-                render_joined(Operator::Div, args, context)
-            }
-        }
-        Op::Sub => {
-            if args.len() == 1 {
-                render_unary("-", &args[0], context)
-            } else {
-                render_joined(Operator::Sub, args, context)
-            }
-        }
+        Op::Div => render_joined(Operator::Div, args, context),
+        Op::Sub => render_joined(Operator::Sub, args, context),
         Op::Max => Rendered::primary(render_call_fold("fmaxf", args)),
         Op::Min => Rendered::primary(render_call_fold("fminf", args)),
-        Op::Pow => {
-            if args.len() == 1 {
-                Rendered::primary(render_unary_call("expf", args))
-            } else {
-                Rendered::primary(render_call_fold("powf", args))
-            }
-        }
+        Op::Pow => Rendered::primary(render_call_fold("powf", args)),
         Op::Log => Rendered::primary(render_unary_call("logf", args)),
         Op::Gt => render_joined(Operator::Gt, args, context),
         Op::Ge => render_joined(Operator::Ge, args, context),
@@ -224,16 +206,6 @@ fn render_binary(operator: Operator, lhs: &Expr, rhs: &Expr) -> Rendered {
         precedence: operator.precedence(),
         operator: Some(operator),
     }
-}
-
-fn render_prefix_binary(lhs: &str, operator: Operator, rhs: &Expr, context: Context) -> Rendered {
-    let rhs = render_child(rhs, operator, Side::Right);
-    let rendered = Rendered {
-        source: format!("{lhs} {} {}", operator.symbol(), rhs.source),
-        precedence: operator.precedence(),
-        operator: Some(operator),
-    };
-    apply_context(rendered, context)
 }
 
 fn render_joined(operator: Operator, args: &[Expr], context: Context) -> Rendered {

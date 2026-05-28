@@ -362,7 +362,7 @@ impl KernelLowerer {
                 }
                 Ok(Stmt::Set {
                     dst,
-                    value: Expr::Op { op: *op, args },
+                    value: scalar_op_expr(*op, args)?,
                 })
             }
             Action::Snapshot { write, read } => Ok(Stmt::Set {
@@ -382,14 +382,11 @@ impl KernelLowerer {
     fn lower_scale_expr(&self, expr: &ScalarExpr<Param>) -> Result<Expr, LowerError> {
         match expr {
             ScalarExpr::Access(access) => self.lower_read(access),
-            ScalarExpr::Unary { op, arg } => Ok(Expr::Op {
-                op: *op,
-                args: vec![self.lower_scale_expr(arg)?],
-            }),
-            ScalarExpr::Binary { op, lhs, rhs } => Ok(Expr::Op {
-                op: *op,
-                args: vec![self.lower_scale_expr(lhs)?, self.lower_scale_expr(rhs)?],
-            }),
+            ScalarExpr::Unary { op, arg } => scalar_op_expr(*op, vec![self.lower_scale_expr(arg)?]),
+            ScalarExpr::Binary { op, lhs, rhs } => scalar_op_expr(
+                *op,
+                vec![self.lower_scale_expr(lhs)?, self.lower_scale_expr(rhs)?],
+            ),
         }
     }
 
@@ -603,6 +600,43 @@ fn init_value(op: Op) -> Result<Expr, LowerError> {
             op
         ))),
     }
+}
+
+fn scalar_op_expr(op: Op, args: Vec<Expr>) -> Result<Expr, LowerError> {
+    if args.len() != 1 {
+        return Ok(Expr::Op { op, args });
+    }
+
+    let mut args = args;
+    let arg = args.pop().unwrap();
+    let expr = match op {
+        Op::Add | Op::Mul | Op::And | Op::Or | Op::Xor => arg,
+        Op::Sub => Expr::Op {
+            op,
+            args: vec![Expr::Scalar(0.0), arg],
+        },
+        Op::Div => Expr::Op {
+            op,
+            args: vec![Expr::Scalar(1.0), arg],
+        },
+        Op::Max | Op::Min => Expr::Op {
+            op,
+            args: vec![Expr::Scalar(0.0), arg],
+        },
+        Op::Gt | Op::Ge | Op::Lt | Op::Le | Op::Eq | Op::Ne => Expr::Op {
+            op,
+            args: vec![arg, Expr::Scalar(0.0)],
+        },
+        Op::Pow => Expr::Op {
+            op,
+            args: vec![Expr::Scalar(std::f32::consts::E), arg],
+        },
+        Op::Log | Op::Not => Expr::Op {
+            op,
+            args: vec![arg],
+        },
+    };
+    Ok(expr)
 }
 
 fn param_expr(param: Param) -> Expr {
@@ -1162,15 +1196,48 @@ mod tests {
                 args: vec![
                     Expr::Op {
                         op: Op::Pow,
-                        args: vec![data_expr("writeables", 2)]
+                        args: vec![
+                            Expr::Scalar(std::f32::consts::E),
+                            data_expr("writeables", 2)
+                        ]
                     },
                     Expr::Op {
                         op: Op::Pow,
-                        args: vec![data_expr("writeables", 1)]
+                        args: vec![
+                            Expr::Scalar(std::f32::consts::E),
+                            data_expr("writeables", 1)
+                        ]
                     }
                 ]
             }
         );
+    }
+
+    #[test]
+    fn lowers_unary_pointwise_ops_with_defaults() {
+        let cases = [
+            (">i~i", Op::Max, 0.0),
+            (">>i~i", Op::Gt, 0.0),
+            ("/i~i", Op::Div, 1.0),
+            ("^i~i", Op::Pow, std::f32::consts::E),
+        ];
+
+        for (src, op, default) in cases {
+            let module = lower_expr(src);
+            let Stmt::Set { value, .. } = first_set_with_op(&module.kernels[0].body) else {
+                unreachable!();
+            };
+            let Expr::Op { op: actual, args } = value else {
+                unreachable!();
+            };
+            assert_eq!(*actual, op, "{src}");
+            assert_eq!(args.len(), 2, "{src}");
+            assert!(
+                args.iter()
+                    .any(|arg| matches!(arg, Expr::Scalar(value) if *value == default)),
+                "{src}"
+            );
+        }
     }
 
     fn first_set_with_op(block: &Block) -> &Stmt {
