@@ -104,21 +104,7 @@ impl<'a> Builder<'a> {
             OutputLayout::Physical,
         )?;
 
-        if let Some(cached) = self
-            .duplicates
-            .iter()
-            .find(|cached| cached.node == node && cached.scope == scope && cached.stage == stage)
-        {
-            if self.scope_site(scope)? != ScopeSite::Root {
-                return Err(LowerError::new(format!(
-                    "shared non-root compute-at placement for node {} is not supported",
-                    node.0
-                )));
-            }
-            return Ok(cached.stage_id);
-        }
-
-        self.instantiate_lowered_stage(node, stage, scope, Some((node, scope)))
+        self.instantiate_lowered_stage(node, stage, scope, Some(node))
     }
 
     fn instantiate_stage(
@@ -145,17 +131,25 @@ impl<'a> Builder<'a> {
         node_id: NodeId,
         stage: Stage,
         scope: ScopeId,
-        duplicate: Option<(NodeId, ScopeId)>,
+        duplicate: Option<NodeId>,
     ) -> Result<NodeId, LowerError> {
         let graph_node = &self.graph.nodes[node_id.0];
         let inputs = self.lower_stage_inputs(node_id, &stage, scope)?;
+        if let Some(node) = duplicate {
+            if let Some(cached) = self.duplicates.iter().find(|cached| {
+                cached.node == node && cached.stage == stage && cached.inputs == inputs
+            }) {
+                return Ok(cached.stage_id);
+            }
+        }
+
         let shape = self.lower_stage_shape(&stage, inputs.as_slice())?;
         let stage_id = NodeId(self.nodes.len());
-        if let Some((node, scope)) = duplicate {
+        if let Some(node) = duplicate {
             self.duplicates.push(DuplicateStage {
                 node,
-                scope,
                 stage: stage.clone(),
+                inputs: inputs.clone(),
                 stage_id,
             });
         }
@@ -233,13 +227,6 @@ impl<'a> Builder<'a> {
         self.scope_sites.insert(scope, scope_site);
         self.scopes.insert(key, scope);
         scope
-    }
-
-    fn scope_site(&self, scope: ScopeId) -> Result<ScopeSite, LowerError> {
-        self.scope_sites
-            .get(&scope)
-            .copied()
-            .ok_or_else(|| LowerError::new(format!("scope {} has no placement site", scope.0)))
     }
 
     fn lower_stage_shape(
@@ -349,8 +336,8 @@ impl ScopeSite {
 
 struct DuplicateStage {
     node: NodeId,
-    scope: ScopeId,
     stage: Stage,
+    inputs: Vec<Source>,
     stage_id: NodeId,
 }
 

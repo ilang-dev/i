@@ -94,29 +94,29 @@ fn validate_consumer_axis_refs(graph: &Graph<Stage>) -> Result<(), ValidationErr
         }
 
         let node_consumers = &consumers[node_index];
-        if node_consumers.len() != 1 {
+        if node_consumers.is_empty() {
             return Err(err(format!(
-                "node {}: consumer-scoped stage must have exactly one consumer, found {}",
-                node_index,
-                node_consumers.len()
+                "node {}: consumer-scoped stage has no consumers",
+                node_index
             )));
         }
 
-        let (consumer_index, input_index) = node_consumers[0];
-        let consumer = &graph.nodes[consumer_index].inner;
-        if consumer.inputs[input_index].compute.is_none() {
-            return Err(err(format!(
-                "node {}: consumer-scoped stage consumer {} input {} has no compute site",
-                node_index, consumer_index, input_index
-            )));
-        }
-
-        for axis in consumer_refs {
-            if axis.0 >= consumer.axes.len() {
+        for (consumer_index, input_index) in node_consumers {
+            let consumer = &graph.nodes[*consumer_index].inner;
+            if consumer.inputs[*input_index].compute.is_none() {
                 return Err(err(format!(
-                    "node {}: references nonexistent consumer axis {}",
-                    node_index, axis.0
+                    "node {}: consumer-scoped stage consumer {} input {} has no compute site",
+                    node_index, consumer_index, input_index
                 )));
+            }
+
+            for axis in &consumer_refs {
+                if axis.0 >= consumer.axes.len() {
+                    return Err(err(format!(
+                        "node {}: references nonexistent consumer axis {}",
+                        node_index, axis.0
+                    )));
+                }
             }
         }
     }

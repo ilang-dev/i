@@ -574,10 +574,11 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 .iter()
                 .find(|existing| existing.stage == *stage && existing.inputs == key.inputs)
             {
-                if stage
-                    .axes
-                    .iter()
-                    .any(|axis| matches!(axis, Axis::Pruned { .. }))
+                if existing.stage_index != stage_index
+                    && stage
+                        .axes
+                        .iter()
+                        .any(|axis| matches!(axis, Axis::Pruned { .. }))
                     && !stage.output.layout.0.is_empty()
                 {
                     return Err(LowerError::new(format!(
@@ -1946,6 +1947,34 @@ mod tests {
     }
 
     #[test]
+    fn lowers_matmul_rowwise_normalize_matmul_with_shared_score_tile() {
+        let scores = parse_component("ij*kj~ikj | i:2,k:2 | kii'k'j")
+            .chain(parse_component("+ikj~ik | i:2,k:2 | kii'k'j0"));
+        let normalize = crate::ir::component::Component::Identity
+            .fanout(parse_component("+ik~i | i:2,k:2 | ki0i'k'"))
+            .chain(parse_component("ik/i~ik | i:2,k:2 | ki01i'k'"));
+        let matmul = parse_component("ik*kj~ijk | i:2,k:2 | ki0i'jk'")
+            .chain(parse_component("+ijk~ij | i:2,k:2 | kii'jk'0"));
+        let component = scores.chain(normalize).chain(matmul);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut snapshots = Vec::new();
+        let mut scales = Vec::new();
+        collect_online_actions(
+            &program.graph.nodes[0].inner.body,
+            &mut snapshots,
+            &mut scales,
+        );
+
+        assert_eq!(program.graph.nodes.len(), 1);
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(scales.len(), 1);
+    }
+
+    #[test]
     fn lowers_rowwise_normalize_matmul_with_online_correction_actions() {
         let normalize = crate::ir::component::Component::Identity
             .fanout(parse_component("+ik~i | i:2,k:2 | kii'k'"))
@@ -2120,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_shared_non_root_transitive_compute_at() {
+    fn shares_non_root_transitive_compute_at() {
         let mm_t = component::expr(front::parse_expr("ik*jk~ijk|i:2,j:2|iji'j'k").unwrap()).chain(
             component::expr(front::parse_expr("+ijk~ij|i:2,j:2|iji'j'k0").unwrap()),
         );
@@ -2134,11 +2163,19 @@ mod tests {
         let stage_program =
             lower_node_graph_to_stage_program(&lower_component_to_graph(&attention).unwrap())
                 .unwrap();
-        let error = lower_stage_program_to_kernel_program(&stage_program).unwrap_err();
 
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut ops = Vec::new();
+        for node in &program.graph.nodes {
+            collect_compute_ops(&node.inner.body, &mut ops);
+        }
+
+        assert_eq!(program.graph.nodes.len(), 1);
         assert_eq!(
-            error.to_string(),
-            "shared non-root compute-at placement for stage 7 is not supported"
+            ops.iter()
+                .filter(|op| **op == crate::ir::common::Op::Pow)
+                .count(),
+            1
         );
     }
 
