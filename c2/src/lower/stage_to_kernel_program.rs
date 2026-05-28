@@ -1256,27 +1256,22 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             axes,
             parent_axes,
         )?;
-        let (numerator, denominator) = match correction.kind {
-            OnlineCorrectionKind::Divisor => (ScalarExpr::Access(old), ScalarExpr::Access(new)),
-            OnlineCorrectionKind::ExpShift => (
-                ScalarExpr::Unary {
-                    op: Op::Pow,
-                    arg: Box::new(ScalarExpr::Access(old)),
-                },
-                ScalarExpr::Unary {
-                    op: Op::Pow,
-                    arg: Box::new(ScalarExpr::Access(new)),
-                },
-            ),
-        };
-        Ok(Action::Scale {
-            write,
-            factor: ScalarExpr::Binary {
+        let factor = match correction.kind {
+            OnlineCorrectionKind::Divisor => ScalarExpr::Binary {
                 op: Op::Div,
-                lhs: Box::new(numerator),
-                rhs: Box::new(denominator),
+                lhs: Box::new(ScalarExpr::Access(old)),
+                rhs: Box::new(ScalarExpr::Access(new)),
             },
-        })
+            OnlineCorrectionKind::ExpShift => ScalarExpr::Unary {
+                op: Op::Pow,
+                arg: Box::new(ScalarExpr::Binary {
+                    op: Op::Sub,
+                    lhs: Box::new(ScalarExpr::Access(old)),
+                    rhs: Box::new(ScalarExpr::Access(new)),
+                }),
+            },
+        };
+        Ok(Action::Scale { write, factor })
     }
 
     fn lower_read(
@@ -2308,7 +2303,7 @@ mod tests {
         collect_scale_terms(&program.graph.nodes[0].inner.body, &mut scale_terms);
         let exp_scales = scale_terms
             .iter()
-            .filter(|factor| is_exp_ratio(factor))
+            .filter(|factor| is_exp_shift(factor))
             .count();
 
         assert_eq!(program.graph.nodes.len(), 1);
@@ -2342,7 +2337,7 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(scales.len(), 1);
         assert_eq!(scale_terms.len(), 1);
-        assert!(is_exp_ratio(scale_terms[0]));
+        assert!(is_exp_shift(scale_terms[0]));
     }
 
     #[test]
@@ -2609,25 +2604,18 @@ mod tests {
         }
     }
 
-    fn is_exp_ratio(factor: &ScalarExpr) -> bool {
+    fn is_exp_shift(factor: &ScalarExpr) -> bool {
         matches!(
             factor,
-            ScalarExpr::Binary {
-                op: crate::ir::common::Op::Div,
-                lhs,
-                rhs,
+            ScalarExpr::Unary {
+                op: crate::ir::common::Op::Pow,
+                arg,
             } if matches!(
-                (lhs.as_ref(), rhs.as_ref()),
-                (
-                    ScalarExpr::Unary {
-                        op: crate::ir::common::Op::Pow,
-                        ..
-                    },
-                    ScalarExpr::Unary {
-                        op: crate::ir::common::Op::Pow,
-                        ..
-                    }
-                )
+                arg.as_ref(),
+                ScalarExpr::Binary {
+                    op: crate::ir::common::Op::Sub,
+                    ..
+                }
             )
         )
     }
