@@ -249,7 +249,7 @@ impl<'a> Builder<'a> {
     fn lower_kernel(&mut self, stage_index: usize) -> Result<(), LowerError> {
         let mut kernel = KernelBuilder::new(self, stage_index);
         let body = kernel.emit_root_stage(stage_index)?;
-        let (reads, writes) = kernel.params();
+        let (reads, writes) = kernel.params(&body);
         let inputs = reads
             .iter()
             .copied()
@@ -380,33 +380,42 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         Ok(emitted.block)
     }
 
-    fn params(mut self) -> (Vec<BufferId>, Vec<BufferId>) {
+    fn params(mut self, body: &Block) -> (Vec<BufferId>, Vec<BufferId>) {
+        let mut actual_accessed = BTreeSet::new();
+        let mut actual_written = BTreeSet::new();
+        collect_block_buffer_uses(body, &mut actual_accessed, &mut actual_written);
+        let actual_accessed = actual_accessed
+            .into_iter()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect::<BTreeSet<_>>();
+        let actual_written = actual_written
+            .into_iter()
+            .map(|buffer| self.canonical_buffer(buffer))
+            .collect::<BTreeSet<_>>();
+
         let writes = self
             .writes
             .iter()
             .copied()
             .map(|buffer| self.canonical_buffer(buffer))
+            .filter(|buffer| actual_written.contains(buffer))
             .collect::<Vec<_>>();
-        let written = self
-            .written
-            .iter()
-            .copied()
-            .map(|buffer| self.canonical_buffer(buffer))
-            .collect::<BTreeSet<_>>();
         let accessed = self
             .accessed
             .iter()
             .copied()
             .map(|buffer| self.canonical_buffer(buffer))
+            .filter(|buffer| actual_accessed.contains(buffer))
             .collect::<Vec<_>>();
         self.reads = self
             .reads
             .iter()
             .copied()
             .map(|buffer| self.canonical_buffer(buffer))
+            .filter(|buffer| actual_accessed.contains(buffer))
             .collect();
         for buffer in accessed {
-            if !written.contains(&buffer) && !self.reads.contains(&buffer) {
+            if !actual_written.contains(&buffer) && !self.reads.contains(&buffer) {
                 self.reads.push(buffer);
             }
         }
@@ -441,6 +450,42 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                     let info = resolve_parent_axis(parent_axes, *by)?;
                     stage_axes.insert(axis_id, info);
                 }
+            }
+        }
+
+        if stage_index != self.root {
+            let key = self.stage_key(stage_index, stage, &graph_node.inputs);
+            if let Some(existing) = self
+                .emitted_stages
+                .iter()
+                .find(|existing| existing.stage == *stage && existing.inputs == key.inputs)
+            {
+                if existing.stage_index != stage_index
+                    && stage
+                        .axes
+                        .iter()
+                        .any(|axis| matches!(axis, Axis::Pruned { .. }))
+                    && !stage.output.layout.0.is_empty()
+                {
+                    return Err(LowerError::new(format!(
+                        "shared non-root compute-at placement for stage {} is not supported",
+                        stage_index
+                    )));
+                }
+                self.stage_aliases.insert(stage_index, existing.stage_index);
+                return Ok(EmittedStage {
+                    block: Block(Vec::new()),
+                    hoisted: existing
+                        .hoisted
+                        .iter()
+                        .map(|hoisted| HoistedBlock {
+                            site: hoisted.site,
+                            block: Block(Vec::new()),
+                        })
+                        .collect(),
+                    hoisted_corrections: existing.hoisted_corrections.clone(),
+                    corrections: existing.corrections.clone(),
+                });
             }
         }
 
@@ -601,40 +646,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         }
 
         if stage_index != self.root {
-            let key = self.stage_key(stage_index, stage, &graph_node.inputs);
-            if let Some(existing) = self
-                .emitted_stages
-                .iter()
-                .find(|existing| existing.stage == *stage && existing.inputs == key.inputs)
-            {
-                if existing.stage_index != stage_index
-                    && stage
-                        .axes
-                        .iter()
-                        .any(|axis| matches!(axis, Axis::Pruned { .. }))
-                    && !stage.output.layout.0.is_empty()
-                {
-                    return Err(LowerError::new(format!(
-                        "shared non-root compute-at placement for stage {} is not supported",
-                        stage_index
-                    )));
-                }
-                self.stage_aliases.insert(stage_index, existing.stage_index);
-                return Ok(EmittedStage {
-                    block: Block(Vec::new()),
-                    hoisted: existing
-                        .hoisted
-                        .iter()
-                        .map(|hoisted| HoistedBlock {
-                            site: hoisted.site,
-                            block: Block(Vec::new()),
-                        })
-                        .collect(),
-                    hoisted_corrections: existing.hoisted_corrections.clone(),
-                    corrections: existing.corrections.clone(),
-                });
-            }
-            let mut key = key;
+            let mut key = self.stage_key(stage_index, stage, &graph_node.inputs);
             key.hoisted = hoisted.clone();
             key.hoisted_corrections = hoisted_corrections.clone();
             key.corrections = corrections.clone();
@@ -1163,7 +1175,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         };
 
         let old_buffer = self.builder.add_intermediate_like(output_buffer)?;
-        self.record_write(old_buffer);
         Ok(Some(OnlineCorrection {
             old_buffer,
             new_buffer: output_buffer,
@@ -1194,6 +1205,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         axes: &BTreeMap<AxisId, LoopInfo>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<Action, LowerError> {
+        self.record_write(correction.old_buffer);
         Ok(Action::Snapshot {
             write: self.lower_semantic_shape_access(
                 correction.old_buffer,
@@ -1707,6 +1719,51 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             self.writes.push(buffer);
         }
         self.record_access(buffer);
+    }
+}
+
+fn collect_block_buffer_uses(
+    block: &Block,
+    accessed: &mut BTreeSet<BufferId>,
+    written: &mut BTreeSet<BufferId>,
+) {
+    for action in &block.0 {
+        match action {
+            Action::Loop { extent, body, .. } => {
+                accessed.insert(extent.source.buffer);
+                collect_block_buffer_uses(body, accessed, written);
+            }
+            Action::Init { write, .. } => {
+                written.insert(write.buffer);
+            }
+            Action::Compute { write, reads, .. } => {
+                written.insert(write.buffer);
+                for read in reads {
+                    accessed.insert(read.buffer);
+                }
+            }
+            Action::Snapshot { write, read } => {
+                written.insert(write.buffer);
+                accessed.insert(read.buffer);
+            }
+            Action::Scale { write, factor } => {
+                written.insert(write.buffer);
+                collect_scalar_expr_buffer_uses(factor, accessed);
+            }
+        }
+    }
+}
+
+fn collect_scalar_expr_buffer_uses(expr: &ScalarExpr, accessed: &mut BTreeSet<BufferId>) {
+    match expr {
+        ScalarExpr::Access(access) => {
+            accessed.insert(access.buffer);
+        }
+        ScalarExpr::Unary { arg, .. } => collect_scalar_expr_buffer_uses(arg, accessed),
+        ScalarExpr::Binary { lhs, rhs, .. } => {
+            collect_scalar_expr_buffer_uses(lhs, accessed);
+            collect_scalar_expr_buffer_uses(rhs, accessed);
+        }
     }
 }
 
@@ -2464,6 +2521,7 @@ mod tests {
         assert_eq!(program.graph.nodes.len(), 1);
         assert_eq!(scale_terms.len(), 3);
         assert_eq!(exp_scales, 2);
+        assert_no_unused_intermediates(&program);
     }
 
     #[test]
@@ -2806,6 +2864,25 @@ mod tests {
                 Action::Loop { body, .. } => collect_scale_terms(body, scales),
                 Action::Scale { factor, .. } => scales.push(factor),
                 Action::Compute { .. } | Action::Init { .. } | Action::Snapshot { .. } => {}
+            }
+        }
+    }
+
+    fn assert_no_unused_intermediates(program: &crate::ir::kernel_program::KernelProgram) {
+        let used = program
+            .graph
+            .nodes
+            .iter()
+            .flat_map(|node| node.inner.reads.iter().chain(node.inner.writes.iter()))
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        for (index, buffer) in program.buffers.iter().enumerate() {
+            if buffer.kind == BufferKind::Intermediate {
+                assert!(
+                    used.contains(&BufferId(index)),
+                    "unused intermediate buffer {index}"
+                );
             }
         }
     }
