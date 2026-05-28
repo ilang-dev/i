@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ilang import Tensor, Component as i
+from ilang import Tensor, Component as i, I
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -50,10 +50,9 @@ def make_attention_inputs():
     return q, k, v
 
 def i_matmul(A, B):
-    f = i("ik*kj~ijk") | i("+ijk~ij")
     p = i("ik*kj~ijk|i:2,k:2|ii'jkk'")
     a = i("+ijk~ij|i:2,k:2|ii'j!kk'0")
-    f = a(p)
+    f = p >> a
     return f.exec(A, B)
 
 def np_matmul(A, B):
@@ -74,20 +73,12 @@ def np_attention(q, k, v):
     return weights @ v
 
 def i_attention(q, k, v):
-    mm_t = i("bhik*bhjk~bhijk") | i("+bhijk~bhij")
-    mm = i("bhik*bhkj~bhijk") | i("+bhijk~bhij")
-
-    exp = i("^bhij~bhij")
-    I = i("bhij~bhij")
-    row_sum = i("+bhij~bhi")
-    row_div = i("bhij/bhi~bhij")
-    row_max = i(">bhij~bhi")
-    row_shift = i("bhij-bhi~bhij")
-    row_max_shift = (I & row_max) | row_shift
-    row_normalize = (I & row_sum) | row_div
-    sm = row_max_shift | exp | row_normalize
-
-    attn = mm_t | sm | mm
+    mm_t = i("bhij*bhkj~bhikj | i:16,k:16 | bhkii'k'j") >> i("+bhikj~bhik | i:16,k:16 | bhkii'k'j0")
+    row_max_shift = (I & i(">bhik~bhi | i:16,k:16 | bhkii'k'")) >> i("bhik-bhi~bhik | i:16,k:16 | bh1kii'k'")
+    exp = i("^bhik~bhik | i:16,k:16 | bhkii'k'")
+    row_normalize = (I & i("+bhik~bhi | i:16,k:16 | bhkii'k'")) >> i("bhik/bhi~bhik | i:16,k:16 | bh1kii'k'")
+    mm = i("bhik*bhkj~bhijk | i:16,k:16 | bhkii'jk'") >> i("+bhijk~bhij | i:16,k:16 | bhkii'jk'0")
+    attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
     return attn.exec(q, k, v)
 
 def make_mlp_inputs():
@@ -100,10 +91,10 @@ def np_mlp(x, w1, w2):
     return w2 @ np.maximum(w1 @ x, 0)
 
 def i_mlp(x, w1, w2):
-    mvp = i("ij*j~ij") | i("+ij~i")
-    amvp = mvp | i(">i~i")
+    mvp = i("ij*j~ij") >> i("+ij~i")
+    amvp = mvp >> i(">i~i")
     I = i("ij~ij")
-    f = (I @ amvp) | mvp
+    f = (I @ amvp) >> mvp
     return f.exec(w2, w1, x)
 
 # --- reductions ---
