@@ -1,7 +1,6 @@
-pub mod ast;
-pub mod backend;
-pub mod block;
-pub mod graph;
-pub mod lowerer;
-pub mod parser;
-pub mod tokenizer;
+pub mod backends;
+pub mod check;
+pub mod component;
+pub mod front;
+pub mod ir;
+pub mod lower;

@@ -7,4 +7,4 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-c2 = { path = "../c2" }
+compiler = { path = "../compiler" }

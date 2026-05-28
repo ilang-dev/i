@@ -3,10 +3,6 @@
 version = 4
 
 [[package]]
-name = "c2"
-version = "0.1.0"
-
-[[package]]
 name = "compiler"
 version = "0.1.0"
 
@@ -14,5 +10,5 @@ version = "0.1.0"
 name = "i-core"
 version = "0.1.0"
 dependencies = [
- "c2",
+ "compiler",
 ]

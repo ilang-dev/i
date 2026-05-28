@@ -8,8 +8,8 @@ use std::process::Command;
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use c2::ir::component::Component;
-use c2::ir::module::Module;
+use compiler::ir::component::Component;
+use compiler::ir::module::Module;
 
 #[repr(C)]
 pub struct i_tensor {
@@ -64,7 +64,7 @@ pub extern "C" fn i_parse(src: *const c_char) -> *mut i_component {
         return null_with_error("null source");
     };
 
-    match c2::front::parse_component(src) {
+    match compiler::front::parse_component(src) {
         Ok(inner) => Box::into_raw(Box::new(i_component { inner })),
         Err(err) => null_with_error(format!("{err:?}")),
     }
@@ -73,7 +73,7 @@ pub extern "C" fn i_parse(src: *const c_char) -> *mut i_component {
 #[no_mangle]
 pub extern "C" fn i_identity() -> *mut i_component {
     Box::into_raw(Box::new(i_component {
-        inner: c2::component::identity(),
+        inner: compiler::component::identity(),
     }))
 }
 
@@ -376,18 +376,19 @@ fn compile(component: &Component) -> Result<i_program, String> {
 
 fn render_component(component: &Component) -> Result<String, String> {
     let module = lower_component_to_module(component)?;
-    Ok(c2::backends::c::render(&module))
+    Ok(compiler::backends::c::render(&module))
 }
 
 fn lower_component_to_module(component: &Component) -> Result<Module, String> {
-    let graph = c2::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
-    let stages =
-        c2::lower::lower_node_graph_to_stage_program(&graph).map_err(|err| format!("{err:?}"))?;
-    let kernels = c2::lower::lower_stage_program_to_kernel_program(&stages)
+    let graph =
+        compiler::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
+    let stages = compiler::lower::lower_node_graph_to_stage_program(&graph)
         .map_err(|err| format!("{err:?}"))?;
-    let plan =
-        c2::lower::lower_kernel_program_to_exec_plan(&kernels).map_err(|err| format!("{err:?}"))?;
-    c2::lower::lower_exec_plan_to_module(&plan).map_err(|err| format!("{err:?}"))
+    let kernels = compiler::lower::lower_stage_program_to_kernel_program(&stages)
+        .map_err(|err| format!("{err:?}"))?;
+    let plan = compiler::lower::lower_kernel_program_to_exec_plan(&kernels)
+        .map_err(|err| format!("{err:?}"))?;
+    compiler::lower::lower_exec_plan_to_module(&plan).map_err(|err| format!("{err:?}"))
 }
 
 fn build(source: &str) -> Result<PathBuf, String> {
