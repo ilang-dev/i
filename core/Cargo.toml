@@ -1,12 +1,11 @@
 [package]
-name = "ilang"
+name = "i-core"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 c2 = { path = "../c2" }
 libloading = "0.8.6"
-
-[dependencies.pyo3]
-version = "0.27.2"
-features = ["extension-module"]
