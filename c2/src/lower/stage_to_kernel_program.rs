@@ -1148,7 +1148,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         stage_index: usize,
         stage: &Stage,
         output_buffer: BufferId,
-        _stage_axes: &BTreeMap<AxisId, LoopInfo>,
+        stage_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<Option<OnlineCorrection>, LowerError> {
         if stage_index == self.root || !requires_online_reduction(stage) {
             return Ok(None);
@@ -1170,6 +1170,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             shape: stage.output.shape.clone(),
             kind,
             state: OnlineCorrectionState::Pending,
+            update_loops: online_correction_update_loops(stage, stage_axes),
         }))
     }
 
@@ -1301,28 +1302,6 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             .map(Layout)
     }
 
-    fn accumulator_output_depth(
-        &self,
-        stage: &Stage,
-        local_loops: &[(AxisId, LoopInfo)],
-    ) -> Result<usize, LowerError> {
-        let output_indexes = stage
-            .output
-            .shape
-            .0
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        Ok(local_loops
-            .iter()
-            .enumerate()
-            .filter_map(|(position, (_, info))| {
-                output_indexes.contains(&info.index).then_some(position + 1)
-            })
-            .max()
-            .unwrap_or(0))
-    }
-
     fn layout_axes_are_available(
         &self,
         layout: &Layout,
@@ -1402,6 +1381,122 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         Ok(())
     }
 
+    fn online_correction_scale_depth(
+        &self,
+        stage: &Stage,
+        local_loops: &[(AxisId, LoopInfo)],
+        corrections: &[OnlineCorrection],
+    ) -> Result<usize, LowerError> {
+        let mut depth = 0;
+        for correction in corrections {
+            let layout = self.semantic_shape_layout(&correction.shape, stage)?;
+            depth = depth.max(self.layout_depth(&layout, local_loops)?);
+            for update_loop in &correction.update_loops {
+                if let Some(position) = local_loops
+                    .iter()
+                    .position(|(_, info)| info.id == *update_loop)
+                {
+                    depth = depth.max(position + 1);
+                }
+            }
+        }
+        Ok(depth)
+    }
+
+    fn online_correction_scale_block(
+        &mut self,
+        stage: &Stage,
+        stage_index: usize,
+        output_buffer: BufferId,
+        stage_axes: &BTreeMap<AxisId, LoopInfo>,
+        local_loops: &[(AxisId, LoopInfo)],
+        depth: usize,
+        corrections: Vec<&OnlineCorrection>,
+        parent_axes: &BTreeMap<AxisId, LoopInfo>,
+    ) -> Result<Block, LowerError> {
+        let mut axes = stage_axes.clone();
+        let required_axes = self.correction_scale_axes(stage, corrections.as_slice())?;
+        let scale_axes = local_loops
+            .iter()
+            .enumerate()
+            .filter_map(|(position, (axis, info))| {
+                (position >= depth && required_axes.contains(axis)).then_some((*axis, info.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        fn build(
+            emitter: &mut KernelBuilder<'_, '_>,
+            stage: &Stage,
+            stage_index: usize,
+            output_buffer: BufferId,
+            axes: &mut BTreeMap<AxisId, LoopInfo>,
+            scale_axes: &[(AxisId, LoopInfo)],
+            corrections: &[&OnlineCorrection],
+            parent_axes: &BTreeMap<AxisId, LoopInfo>,
+            position: usize,
+        ) -> Result<Block, LowerError> {
+            if position == scale_axes.len() {
+                let write =
+                    emitter.lower_access(output_buffer, &stage.output.layout, axes, parent_axes)?;
+                let actions = corrections
+                    .iter()
+                    .map(|correction| {
+                        emitter.scale_action(correction, stage, write.clone(), axes, parent_axes)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(Block(actions));
+            }
+
+            let (axis, mut info) = scale_axes[position].clone();
+            info.id = emitter.alloc_loop();
+            axes.insert(axis, info.clone());
+            let body = build(
+                emitter,
+                stage,
+                stage_index,
+                output_buffer,
+                axes,
+                scale_axes,
+                corrections,
+                parent_axes,
+                position + 1,
+            )?;
+            axes.insert(axis, scale_axes[position].1.clone());
+            Ok(Block(vec![Action::Loop {
+                id: info.id,
+                extent: emitter.lower_loop_extent(stage_index, stage, axis, info.clone())?,
+                guard: TailGuard(emitter.tail_guard(stage, info)),
+                body,
+            }]))
+        }
+
+        build(
+            self,
+            stage,
+            stage_index,
+            output_buffer,
+            &mut axes,
+            scale_axes.as_slice(),
+            corrections.as_slice(),
+            parent_axes,
+            0,
+        )
+    }
+
+    fn correction_scale_axes(
+        &self,
+        stage: &Stage,
+        corrections: &[&OnlineCorrection],
+    ) -> Result<BTreeSet<AxisId>, LowerError> {
+        let mut axes = BTreeSet::new();
+        collect_local_layout_axes(&stage.output.layout, &mut axes);
+        for correction in corrections {
+            let layout = self.semantic_shape_layout(&correction.shape, stage)?;
+            collect_local_layout_axes(&layout, &mut axes);
+        }
+        Ok(axes)
+    }
+
     fn apply_online_corrections_at_stage(
         &mut self,
         stage: &Stage,
@@ -1412,7 +1507,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         actions: &mut [Vec<Action>],
         outgoing: &mut Vec<OnlineCorrection>,
         incoming: Vec<OnlineCorrection>,
-        producer_depth: Option<usize>,
+        _producer_depth: Option<usize>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<(), LowerError> {
         let incoming = dedup_online_corrections(incoming);
@@ -1420,12 +1515,8 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             return Ok(());
         }
         self.validate_corrections_ready(incoming.as_slice())?;
-        let write =
-            self.lower_access(output_buffer, &stage.output.layout, stage_axes, parent_axes)?;
-        let accumulator_depth = self.accumulator_output_depth(stage, local_loops)?;
-        let scale_depth = producer_depth
-            .map(|depth| depth.max(accumulator_depth))
-            .unwrap_or(accumulator_depth);
+        let scale_depth =
+            self.online_correction_scale_depth(stage, local_loops, incoming.as_slice())?;
         let scale_corrections = incoming
             .iter()
             .filter(|correction| {
@@ -1437,13 +1528,21 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 ))
             })
             .collect::<Vec<_>>();
-        let scales = scale_corrections
-            .into_iter()
-            .map(|correction| {
-                self.scale_action(correction, stage, write.clone(), stage_axes, parent_axes)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        actions[scale_depth].extend(scales);
+        if !scale_corrections.is_empty() {
+            actions[scale_depth].extend(
+                self.online_correction_scale_block(
+                    stage,
+                    stage_index,
+                    output_buffer,
+                    stage_axes,
+                    local_loops,
+                    scale_depth,
+                    scale_corrections,
+                    parent_axes,
+                )?
+                .0,
+            );
+        }
         if stage_index != self.root {
             outgoing.extend(incoming);
         }
@@ -1716,6 +1815,7 @@ struct OnlineCorrection {
     shape: Shape,
     kind: OnlineCorrectionKind,
     state: OnlineCorrectionState,
+    update_loops: Vec<LoopId>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1791,6 +1891,45 @@ fn requires_online_reduction(stage: &Stage) -> bool {
         Axis::Pruned { index, .. } => !output_indexes.contains(index),
         Axis::Live { .. } => false,
     })
+}
+
+fn online_correction_update_loops(stage: &Stage, axes: &BTreeMap<AxisId, LoopInfo>) -> Vec<LoopId> {
+    let output_indexes = stage
+        .output
+        .shape
+        .0
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    stage
+        .axes
+        .iter()
+        .enumerate()
+        .filter_map(|(axis, stage_axis)| match stage_axis {
+            Axis::Pruned { index, .. } if !output_indexes.contains(index) => {
+                axes.get(&AxisId(axis)).map(|info| info.id)
+            }
+            Axis::Live { .. } | Axis::Pruned { .. } => None,
+        })
+        .collect()
+}
+
+fn collect_local_layout_axes(layout: &Layout, axes: &mut BTreeSet<AxisId>) {
+    for dim in &layout.0 {
+        match dim {
+            LayoutDim::Physical(StageAxisRef::Local(axis)) => {
+                axes.insert(*axis);
+            }
+            LayoutDim::Physical(StageAxisRef::Consumer(_)) => {}
+            LayoutDim::Semantic { axes: dim_axes, .. } => {
+                for axis in dim_axes {
+                    if let StageAxisRef::Local(axis) = axis {
+                        axes.insert(*axis);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn correction_kind_key(kind: OnlineCorrectionKind) -> usize {
@@ -2328,6 +2467,57 @@ mod tests {
     }
 
     #[test]
+    fn places_attention_online_corrections_outside_permuted_inner_reduction_loop() {
+        let scores = parse_component("ij*kj~ikj | i:2,k:2 | kii'k'j")
+            .chain(parse_component("+ikj~ik | i:2,k:2 | kii'k'j0"));
+        let max_shift = crate::ir::component::Component::Identity
+            .fanout(parse_component(">ik~i | i:2,k:2 | ki0i'k'"))
+            .chain(parse_component("ik-i~ik | i:2,k:2 | ki01i'k'"));
+        let exp = parse_component("^ik~ik | i:2,k:2 | ki0i'k'");
+        let normalize = crate::ir::component::Component::Identity
+            .fanout(parse_component("+ik~i | i:2,k:2 | ki0i'k'"))
+            .chain(parse_component("ik/i~ik | i:2,k:2 | ki01i'k'"));
+        let matmul = parse_component("ik*kj~ijk | i:2,k:2 | ki0i'k'j")
+            .chain(parse_component("+ijk~ij | i:2,k:2 | kii'k'j0"));
+        let component = scores
+            .chain(max_shift)
+            .chain(exp)
+            .chain(normalize)
+            .chain(matmul);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut scale_paths = Vec::new();
+        collect_scale_paths(
+            &program.graph.nodes[0].inner.body,
+            &mut Vec::new(),
+            &mut scale_paths,
+        );
+
+        let mut computes = Vec::new();
+        collect_compute_paths(
+            &program.graph.nodes[0].inner.body,
+            &mut Vec::new(),
+            &mut computes,
+        );
+        let output = program.outputs[0];
+        let final_add_path = computes
+            .iter()
+            .find_map(|(op, write, path)| {
+                (*op == crate::ir::common::Op::Add && *write == output).then_some(path)
+            })
+            .unwrap();
+        let inner_reduction_loop = final_add_path[3];
+
+        assert_eq!(scale_paths.len(), 3);
+        assert!(scale_paths
+            .iter()
+            .all(|path| !path.contains(&inner_reduction_loop)));
+    }
+
+    #[test]
     fn lowers_scalar_max_shift_exp_dot_with_online_correction_actions() {
         let max_shift = crate::ir::component::Component::Identity
             .pair(parse_component(">i~. | i:2 | ii'"))
@@ -2615,6 +2805,24 @@ mod tests {
             match action {
                 Action::Loop { body, .. } => collect_scale_terms(body, scales),
                 Action::Scale { factor, .. } => scales.push(factor),
+                Action::Compute { .. } | Action::Init { .. } | Action::Snapshot { .. } => {}
+            }
+        }
+    }
+
+    fn collect_scale_paths(
+        block: &crate::ir::kernel_program::Block,
+        path: &mut Vec<LoopId>,
+        scales: &mut Vec<Vec<LoopId>>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { id, body, .. } => {
+                    path.push(*id);
+                    collect_scale_paths(body, path, scales);
+                    path.pop();
+                }
+                Action::Scale { .. } => scales.push(path.clone()),
                 Action::Compute { .. } | Action::Init { .. } | Action::Snapshot { .. } => {}
             }
         }
