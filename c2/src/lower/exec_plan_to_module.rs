@@ -6,7 +6,7 @@ use crate::check::module::validate_module;
 use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
 use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Param, Step};
 use crate::ir::kernel_program::{
-    Access, Action, Block as KernelBlock, Iter, Kernel, LoopId, ScaleExpr,
+    Access, Action, Block as KernelBlock, Iter, Kernel, LoopId, ScalarExpr,
 };
 use crate::ir::module::{
     Block, Cast, Expr, Field, Fn, Ident, Module, Place, Signature, Stmt, Type,
@@ -369,29 +369,26 @@ impl KernelLowerer {
                 dst: self.lower_write(write)?,
                 value: self.lower_read(read)?,
             }),
-            Action::Scale {
-                write,
-                numerator,
-                denominator,
-            } => {
+            Action::Scale { write, factor } => {
                 let dst = self.lower_write(write)?;
                 Ok(Stmt::Set {
                     dst: dst.clone(),
-                    value: div(
-                        mul(place_expr(dst), self.lower_scale_expr(numerator)?),
-                        self.lower_scale_expr(denominator)?,
-                    ),
+                    value: mul(place_expr(dst), self.lower_scale_expr(factor)?),
                 })
             }
         }
     }
 
-    fn lower_scale_expr(&self, expr: &ScaleExpr<Param>) -> Result<Expr, LowerError> {
+    fn lower_scale_expr(&self, expr: &ScalarExpr<Param>) -> Result<Expr, LowerError> {
         match expr {
-            ScaleExpr::Access(access) => self.lower_read(access),
-            ScaleExpr::Unary { op, arg } => Ok(Expr::Op {
+            ScalarExpr::Access(access) => self.lower_read(access),
+            ScalarExpr::Unary { op, arg } => Ok(Expr::Op {
                 op: *op,
-                args: vec![self.lower_read(arg)?],
+                args: vec![self.lower_scale_expr(arg)?],
+            }),
+            ScalarExpr::Binary { op, lhs, rhs } => Ok(Expr::Op {
+                op: *op,
+                args: vec![self.lower_scale_expr(lhs)?, self.lower_scale_expr(rhs)?],
             }),
         }
     }
@@ -752,7 +749,7 @@ mod tests {
     use crate::ir::exec_plan::{
         Arg, BufferRef, Buffers, Exec, ExecPlan, KernelId, Output, OutputBuffer, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{Access, Action, Kernel, ScaleExpr};
+    use crate::ir::kernel_program::{Access, Action, Kernel, ScalarExpr};
     use crate::ir::module::{Block, Cast, Expr, Field, Ident, Place, Signature, Stmt, Type};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::kernel_program_to_exec_plan::lower_kernel_program_to_exec_plan;
@@ -1114,20 +1111,23 @@ mod tests {
     fn lowers_scale_action_to_accumulator_ratio_update() {
         let module = online_action_module(Action::Scale {
             write: scalar_access(write_param(0)),
-            numerator: ScaleExpr::Access(scalar_access(write_param(2))),
-            denominator: ScaleExpr::Access(scalar_access(write_param(1))),
+            factor: ScalarExpr::Binary {
+                op: Op::Div,
+                lhs: Box::new(ScalarExpr::Access(scalar_access(write_param(2)))),
+                rhs: Box::new(ScalarExpr::Access(scalar_access(write_param(1)))),
+            },
         });
 
         assert_eq!(
             module.kernels[0].body.0[0],
             Stmt::Set {
                 dst: data_place("writeables", 0),
-                value: Expr::Div(
-                    Box::new(Expr::Mul(
-                        Box::new(data_expr("writeables", 0)),
-                        Box::new(data_expr("writeables", 2))
-                    )),
-                    Box::new(data_expr("writeables", 1))
+                value: Expr::Mul(
+                    Box::new(data_expr("writeables", 0)),
+                    Box::new(Expr::Op {
+                        op: Op::Div,
+                        args: vec![data_expr("writeables", 2), data_expr("writeables", 1)]
+                    })
                 )
             }
         );
@@ -1137,37 +1137,38 @@ mod tests {
     fn lowers_scale_action_with_unary_terms() {
         let module = online_action_module(Action::Scale {
             write: scalar_access(write_param(0)),
-            numerator: ScaleExpr::Unary {
-                op: Op::Pow,
-                arg: scalar_access(write_param(2)),
-            },
-            denominator: ScaleExpr::Unary {
-                op: Op::Pow,
-                arg: scalar_access(write_param(1)),
+            factor: ScalarExpr::Binary {
+                op: Op::Div,
+                lhs: Box::new(ScalarExpr::Unary {
+                    op: Op::Pow,
+                    arg: Box::new(ScalarExpr::Access(scalar_access(write_param(2)))),
+                }),
+                rhs: Box::new(ScalarExpr::Unary {
+                    op: Op::Pow,
+                    arg: Box::new(ScalarExpr::Access(scalar_access(write_param(1)))),
+                }),
             },
         });
         let Stmt::Set { value, .. } = &module.kernels[0].body.0[0] else {
             unreachable!();
         };
-        let Expr::Div(numerator, denominator) = value else {
+        let Expr::Mul(_, correction) = value else {
             unreachable!();
         };
-        let Expr::Mul(_, correction) = numerator.as_ref() else {
-            unreachable!();
-        };
-
         assert_eq!(
             correction.as_ref(),
             &Expr::Op {
-                op: Op::Pow,
-                args: vec![data_expr("writeables", 2)]
-            }
-        );
-        assert_eq!(
-            denominator.as_ref(),
-            &Expr::Op {
-                op: Op::Pow,
-                args: vec![data_expr("writeables", 1)]
+                op: Op::Div,
+                args: vec![
+                    Expr::Op {
+                        op: Op::Pow,
+                        args: vec![data_expr("writeables", 2)]
+                    },
+                    Expr::Op {
+                        op: Op::Pow,
+                        args: vec![data_expr("writeables", 1)]
+                    }
+                ]
             }
         );
     }

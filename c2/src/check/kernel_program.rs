@@ -4,7 +4,7 @@ use std::fmt;
 use crate::check::graph::validate_graph;
 use crate::ir::common::DimRef;
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, Iter, Kernel, KernelProgram, LoopId, ScaleExpr,
+    Access, Action, Block, BufferId, Iter, Kernel, KernelProgram, LoopId, ScalarExpr,
 };
 
 pub fn validate_kernel_program(program: &KernelProgram) -> Result<(), ValidationError> {
@@ -154,17 +154,11 @@ fn validate_block(
                 validate_access(program, kernel, loops, scope, read)
                     .map_err(|message| err(format!("snapshot read {}", message)))?;
             }
-            Action::Scale {
-                write,
-                numerator,
-                denominator,
-            } => {
+            Action::Scale { write, factor } => {
                 validate_write_access(program, kernel, loops, scope, write)
                     .map_err(|message| err(format!("scale write {}", message)))?;
-                validate_scale_expr(program, kernel, loops, scope, numerator)
-                    .map_err(|message| err(format!("scale numerator {}", message)))?;
-                validate_scale_expr(program, kernel, loops, scope, denominator)
-                    .map_err(|message| err(format!("scale denominator {}", message)))?;
+                validate_scale_expr(program, kernel, loops, scope, factor)
+                    .map_err(|message| err(format!("scale factor {}", message)))?;
             }
         }
     }
@@ -176,11 +170,15 @@ fn validate_scale_expr(
     kernel: &Kernel,
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    expr: &ScaleExpr,
+    expr: &ScalarExpr,
 ) -> Result<(), String> {
     match expr {
-        ScaleExpr::Access(access) => validate_access(program, kernel, loops, scope, access),
-        ScaleExpr::Unary { arg, .. } => validate_access(program, kernel, loops, scope, arg),
+        ScalarExpr::Access(access) => validate_access(program, kernel, loops, scope, access),
+        ScalarExpr::Unary { arg, .. } => validate_scale_expr(program, kernel, loops, scope, arg),
+        ScalarExpr::Binary { lhs, rhs, .. } => {
+            validate_scale_expr(program, kernel, loops, scope, lhs)?;
+            validate_scale_expr(program, kernel, loops, scope, rhs)
+        }
     }
 }
 

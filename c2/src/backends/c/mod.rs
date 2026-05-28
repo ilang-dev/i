@@ -226,7 +226,7 @@ mod tests {
         assert!(c.contains("writeables[0].data[i6] = writeables[1].data[i6];"));
         assert!(c.contains("i0 * 8 +"));
         assert!(!c.contains("i5 * 8 +\n              i5"));
-        assert!(c.contains("] * writeables[0].data[i1] / writeables[1].data[i1];"));
+        assert!(c.contains("] * (writeables[0].data[i1] / writeables[1].data[i1]);"));
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
         ));
         assert!(!c.contains("] / writeables[1].data[i5];"));
         assert!(c.contains(
-            "] * writeables[0].data[\n              i1 * 8 +\n              i2\n            ] / writeables[1].data[\n              i1 * 8 +\n              i2\n            ];"
+            "] * (writeables[0].data[\n              i1 * 8 +\n              i2\n            ] / writeables[1].data[\n              i1 * 8 +\n              i2\n            ]);"
         ));
         assert!(c.contains(
             "writeables[2].data[\n                  i2 * writeables[2].layout[1] +\n                  i4\n                ]"

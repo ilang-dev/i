@@ -9,7 +9,7 @@ use crate::ir::exec_plan::{
     KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram, ScaleExpr,
+    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram, ScalarExpr,
 };
 
 pub fn lower_kernel_program_to_exec_plan(program: &KernelProgram) -> Result<ExecPlan, LowerError> {
@@ -326,14 +326,9 @@ impl<'a> Builder<'a> {
                 write: self.lower_access(kernel, write)?,
                 read: self.lower_access(kernel, read)?,
             }),
-            Action::Scale {
-                write,
-                numerator,
-                denominator,
-            } => Ok(Action::Scale {
+            Action::Scale { write, factor } => Ok(Action::Scale {
                 write: self.lower_access(kernel, write)?,
-                numerator: self.lower_scale_expr(kernel, numerator)?,
-                denominator: self.lower_scale_expr(kernel, denominator)?,
+                factor: self.lower_scale_expr(kernel, factor)?,
             }),
         }
     }
@@ -341,13 +336,20 @@ impl<'a> Builder<'a> {
     fn lower_scale_expr(
         &self,
         kernel: &Kernel<BufferId>,
-        expr: &ScaleExpr<BufferId>,
-    ) -> Result<ScaleExpr<Param>, LowerError> {
+        expr: &ScalarExpr<BufferId>,
+    ) -> Result<ScalarExpr<Param>, LowerError> {
         match expr {
-            ScaleExpr::Access(access) => Ok(ScaleExpr::Access(self.lower_access(kernel, access)?)),
-            ScaleExpr::Unary { op, arg } => Ok(ScaleExpr::Unary {
+            ScalarExpr::Access(access) => {
+                Ok(ScalarExpr::Access(self.lower_access(kernel, access)?))
+            }
+            ScalarExpr::Unary { op, arg } => Ok(ScalarExpr::Unary {
                 op: *op,
-                arg: self.lower_access(kernel, arg)?,
+                arg: Box::new(self.lower_scale_expr(kernel, arg)?),
+            }),
+            ScalarExpr::Binary { op, lhs, rhs } => Ok(ScalarExpr::Binary {
+                op: *op,
+                lhs: Box::new(self.lower_scale_expr(kernel, lhs)?),
+                rhs: Box::new(self.lower_scale_expr(kernel, rhs)?),
             }),
         }
     }

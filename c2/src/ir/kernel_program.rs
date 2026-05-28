@@ -41,8 +41,8 @@
 //! - `Action::Compute` computes one scalar element of one write buffer.
 //! - `Action::Snapshot` copies one scalar element from a kernel buffer to a
 //!   write buffer.
-//! - `Action::Scale` multiplies one scalar accumulator element by a numerator
-//!   expression divided by a denominator expression.
+//! - `Action::Scale` multiplies one scalar accumulator element by a scalar
+//!   factor expression.
 //! - `Extent<B>.source` names the semantic dimension supplying the loop bound.
 //! - `Extent<B>.kind` gives the physical extent kind of the loop.
 //! - `TailGuard(true)` requests the canonical tail guard for a loop.
@@ -157,24 +157,31 @@ pub enum Action<B = BufferId> {
     Scale {
         /// Accumulator access being scaled.
         write: Access<B>,
-        /// Multiplicative numerator.
-        numerator: ScaleExpr<B>,
-        /// Multiplicative denominator.
-        denominator: ScaleExpr<B>,
+        /// Multiplicative scale factor.
+        factor: ScalarExpr<B>,
     },
 }
 
-/// One scalar expression usable as a scale factor term.
+/// One scalar expression usable as a scale factor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ScaleExpr<B = BufferId> {
+pub enum ScalarExpr<B = BufferId> {
     /// One buffer access.
     Access(Access<B>),
-    /// One unary scalar operation applied to a buffer access.
+    /// One unary scalar operation.
     Unary {
         /// Unary scalar operator.
         op: Op,
-        /// Operand access.
-        arg: Access<B>,
+        /// Operand expression.
+        arg: Box<ScalarExpr<B>>,
+    },
+    /// One binary scalar operation.
+    Binary {
+        /// Binary scalar operator.
+        op: Op,
+        /// Left operand expression.
+        lhs: Box<ScalarExpr<B>>,
+        /// Right operand expression.
+        rhs: Box<ScalarExpr<B>>,
     },
 }
 

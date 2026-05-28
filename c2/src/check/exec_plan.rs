@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::ir::common::DimRef;
 use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Intermediate, KernelId, Param, Step};
-use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, ScaleExpr};
+use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, ScalarExpr};
 
 pub fn validate_exec_plan(plan: &ExecPlan) -> Result<(), ValidationError> {
     validate_metadata(plan)?;
@@ -281,17 +281,11 @@ fn validate_block(
                 validate_access(plan, reads, writes, loops, scope, read)
                     .map_err(|message| format!("snapshot read {}", message))?;
             }
-            Action::Scale {
-                write,
-                numerator,
-                denominator,
-            } => {
+            Action::Scale { write, factor } => {
                 validate_write_access(plan, reads, writes, loops, scope, write)
                     .map_err(|message| format!("scale write {}", message))?;
-                validate_scale_expr(plan, reads, writes, loops, scope, numerator)
-                    .map_err(|message| format!("scale numerator {}", message))?;
-                validate_scale_expr(plan, reads, writes, loops, scope, denominator)
-                    .map_err(|message| format!("scale denominator {}", message))?;
+                validate_scale_expr(plan, reads, writes, loops, scope, factor)
+                    .map_err(|message| format!("scale factor {}", message))?;
             }
         }
     }
@@ -304,11 +298,17 @@ fn validate_scale_expr(
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    expr: &ScaleExpr<Param>,
+    expr: &ScalarExpr<Param>,
 ) -> Result<(), String> {
     match expr {
-        ScaleExpr::Access(access) => validate_access(plan, reads, writes, loops, scope, access),
-        ScaleExpr::Unary { arg, .. } => validate_access(plan, reads, writes, loops, scope, arg),
+        ScalarExpr::Access(access) => validate_access(plan, reads, writes, loops, scope, access),
+        ScalarExpr::Unary { arg, .. } => {
+            validate_scale_expr(plan, reads, writes, loops, scope, arg)
+        }
+        ScalarExpr::Binary { lhs, rhs, .. } => {
+            validate_scale_expr(plan, reads, writes, loops, scope, lhs)?;
+            validate_scale_expr(plan, reads, writes, loops, scope, rhs)
+        }
     }
 }
 

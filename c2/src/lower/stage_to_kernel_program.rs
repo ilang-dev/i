@@ -9,7 +9,7 @@ use crate::ir::graph::{
 };
 use crate::ir::kernel_program::{
     Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Iter, Kernel,
-    KernelProgram, LoopId, ScaleExpr, TailGuard,
+    KernelProgram, LoopId, ScalarExpr, TailGuard,
 };
 use crate::ir::stage::{
     Axis, AxisId, AxisRef as StageAxisRef, Layout, LayoutDim, ProgramShape, Shape, ShapeDim, Site,
@@ -1257,22 +1257,25 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             parent_axes,
         )?;
         let (numerator, denominator) = match correction.kind {
-            OnlineCorrectionKind::Divisor => (ScaleExpr::Access(old), ScaleExpr::Access(new)),
+            OnlineCorrectionKind::Divisor => (ScalarExpr::Access(old), ScalarExpr::Access(new)),
             OnlineCorrectionKind::ExpShift => (
-                ScaleExpr::Unary {
+                ScalarExpr::Unary {
                     op: Op::Pow,
-                    arg: old,
+                    arg: Box::new(ScalarExpr::Access(old)),
                 },
-                ScaleExpr::Unary {
+                ScalarExpr::Unary {
                     op: Op::Pow,
-                    arg: new,
+                    arg: Box::new(ScalarExpr::Access(new)),
                 },
             ),
         };
         Ok(Action::Scale {
             write,
-            numerator,
-            denominator,
+            factor: ScalarExpr::Binary {
+                op: Op::Div,
+                lhs: Box::new(numerator),
+                rhs: Box::new(denominator),
+            },
         })
     }
 
@@ -1892,7 +1895,7 @@ mod tests {
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
     use crate::ir::kernel_program::{
-        Action, BufferId, BufferKind, BufferLayout, Iter, LoopId, ScaleExpr,
+        Action, BufferId, BufferKind, BufferLayout, Iter, LoopId, ScalarExpr,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -2305,21 +2308,7 @@ mod tests {
         collect_scale_terms(&program.graph.nodes[0].inner.body, &mut scale_terms);
         let exp_scales = scale_terms
             .iter()
-            .filter(|(numerator, denominator)| {
-                matches!(
-                    (numerator, denominator),
-                    (
-                        ScaleExpr::Unary {
-                            op: crate::ir::common::Op::Pow,
-                            ..
-                        },
-                        ScaleExpr::Unary {
-                            op: crate::ir::common::Op::Pow,
-                            ..
-                        }
-                    )
-                )
-            })
+            .filter(|factor| is_exp_ratio(factor))
             .count();
 
         assert_eq!(program.graph.nodes.len(), 1);
@@ -2353,20 +2342,7 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(scales.len(), 1);
         assert_eq!(scale_terms.len(), 1);
-        assert!(matches!(
-            scale_terms[0].0,
-            ScaleExpr::Unary {
-                op: crate::ir::common::Op::Pow,
-                ..
-            }
-        ));
-        assert!(matches!(
-            scale_terms[0].1,
-            ScaleExpr::Unary {
-                op: crate::ir::common::Op::Pow,
-                ..
-            }
-        ));
+        assert!(is_exp_ratio(scale_terms[0]));
     }
 
     #[test]
@@ -2622,19 +2598,38 @@ mod tests {
 
     fn collect_scale_terms<'a>(
         block: &'a crate::ir::kernel_program::Block,
-        scales: &mut Vec<(&'a ScaleExpr, &'a ScaleExpr)>,
+        scales: &mut Vec<&'a ScalarExpr>,
     ) {
         for action in &block.0 {
             match action {
                 Action::Loop { body, .. } => collect_scale_terms(body, scales),
-                Action::Scale {
-                    numerator,
-                    denominator,
-                    ..
-                } => scales.push((numerator, denominator)),
+                Action::Scale { factor, .. } => scales.push(factor),
                 Action::Compute { .. } | Action::Init { .. } | Action::Snapshot { .. } => {}
             }
         }
+    }
+
+    fn is_exp_ratio(factor: &ScalarExpr) -> bool {
+        matches!(
+            factor,
+            ScalarExpr::Binary {
+                op: crate::ir::common::Op::Div,
+                lhs,
+                rhs,
+            } if matches!(
+                (lhs.as_ref(), rhs.as_ref()),
+                (
+                    ScalarExpr::Unary {
+                        op: crate::ir::common::Op::Pow,
+                        ..
+                    },
+                    ScalarExpr::Unary {
+                        op: crate::ir::common::Op::Pow,
+                        ..
+                    }
+                )
+            )
+        )
     }
 
     fn collect_compute_paths(
