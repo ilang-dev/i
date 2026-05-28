@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::check::kernel_program::validate_kernel_program;
 use crate::check::stage::validate_stage_graph;
-use crate::ir::common::{DimRef, Extent, ExtentKind};
+use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
 use crate::ir::graph::{
     Graph, InputId, Node as GraphNode, NodeId, Output as GraphOutput, OutputId, Source,
 };
@@ -960,7 +960,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 Placement::Hoist(site) => propagated.push(HoistedBlock {
                     site,
                     block: hoist.block,
-                    corrections: hoist.corrections,
+                    corrections: self.propagate_online_corrections(stage, 0, hoist.corrections)?,
                 }),
             }
         }
@@ -1073,10 +1073,14 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         if stage_index == self.root || !requires_online_reduction(stage) {
             return Ok(None);
         }
-        if stage.op != crate::ir::common::Op::Add {
-            self.reject_unimplemented_online_reduction(stage_index, stage)?;
-            return Ok(None);
-        }
+        let kind = match stage.op {
+            Op::Add => OnlineCorrectionKind::Divisor,
+            Op::Max => OnlineCorrectionKind::ExpShift,
+            _ => {
+                self.reject_unimplemented_online_reduction(stage_index, stage)?;
+                return Ok(None);
+            }
+        };
 
         let old_buffer = self.builder.add_intermediate_like(output_buffer)?;
         self.record_write(old_buffer);
@@ -1084,7 +1088,8 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             old_buffer,
             new_buffer: output_buffer,
             shape: stage.output.shape.clone(),
-            normalized: false,
+            kind,
+            state: OnlineCorrectionState::Pending,
         }))
     }
 
@@ -1093,11 +1098,12 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         stage: &Stage,
         corrections: &[OnlineCorrection],
     ) -> bool {
-        stage.op == crate::ir::common::Op::Add
+        stage.op == Op::Add
             && stage.output.init.is_some()
-            && corrections
-                .iter()
-                .all(|correction| correction_shape_broadcasts_to_stage(correction, stage))
+            && corrections.iter().all(|correction| {
+                correction.state.is_ready()
+                    && correction_shape_broadcasts_to_stage(correction, stage)
+            })
     }
 
     fn snapshot_action(
@@ -1133,22 +1139,37 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         axes: &BTreeMap<AxisId, LoopInfo>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<Action, LowerError> {
+        let old = self.lower_semantic_shape_access(
+            correction.old_buffer,
+            &correction.shape,
+            stage,
+            axes,
+            parent_axes,
+        )?;
+        let new = self.lower_semantic_shape_access(
+            correction.new_buffer,
+            &correction.shape,
+            stage,
+            axes,
+            parent_axes,
+        )?;
+        let (numerator, denominator) = match correction.kind {
+            OnlineCorrectionKind::Divisor => (ScaleExpr::Access(old), ScaleExpr::Access(new)),
+            OnlineCorrectionKind::ExpShift => (
+                ScaleExpr::Unary {
+                    op: Op::Pow,
+                    arg: old,
+                },
+                ScaleExpr::Unary {
+                    op: Op::Pow,
+                    arg: new,
+                },
+            ),
+        };
         Ok(Action::Scale {
             write,
-            numerator: ScaleExpr::Access(self.lower_semantic_shape_access(
-                correction.old_buffer,
-                &correction.shape,
-                stage,
-                axes,
-                parent_axes,
-            )?),
-            denominator: ScaleExpr::Access(self.lower_semantic_shape_access(
-                correction.new_buffer,
-                &correction.shape,
-                stage,
-                axes,
-                parent_axes,
-            )?),
+            numerator,
+            denominator,
         })
     }
 
@@ -1275,33 +1296,75 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         if corrections.is_empty() {
             return Ok(corrections);
         }
-        if stage.op == crate::ir::common::Op::Div && input_index > 0 {
-            return Ok(corrections
-                .into_iter()
-                .map(|mut correction| {
-                    correction.normalized = true;
-                    correction
-                })
-                .collect());
+        if stage.output.init.is_some() {
+            return Err(LowerError::new(
+                "online reduction correction reached unsupported accumulator",
+            ));
         }
-        if stage.output.init.is_none() && corrections.iter().all(|correction| correction.normalized)
-        {
-            return Ok(corrections);
+
+        corrections
+            .into_iter()
+            .map(|correction| self.propagate_online_correction(stage, input_index, correction))
+            .collect()
+    }
+
+    fn propagate_online_correction(
+        &self,
+        stage: &Stage,
+        input_index: usize,
+        mut correction: OnlineCorrection,
+    ) -> Result<OnlineCorrection, LowerError> {
+        match (correction.kind, correction.state, stage.op, input_index) {
+            (OnlineCorrectionKind::Divisor, OnlineCorrectionState::Pending, Op::Div, index)
+                if index > 0 =>
+            {
+                correction.state = OnlineCorrectionState::Ready;
+                Ok(correction)
+            }
+            (_, OnlineCorrectionState::Ready, _, _) => Ok(correction),
+            (OnlineCorrectionKind::ExpShift, OnlineCorrectionState::Pending, Op::Sub, index)
+                if index > 0 =>
+            {
+                correction.state = OnlineCorrectionState::Shifted;
+                Ok(correction)
+            }
+            (OnlineCorrectionKind::ExpShift, OnlineCorrectionState::Shifted, Op::Pow, _) => {
+                correction.state = OnlineCorrectionState::Ready;
+                Ok(correction)
+            }
+            (OnlineCorrectionKind::Divisor, OnlineCorrectionState::Pending, _, _) => {
+                Err(LowerError::new(
+                    "online reduction correction requires a division use before accumulation",
+                ))
+            }
+            (OnlineCorrectionKind::ExpShift, OnlineCorrectionState::Pending, _, _) => {
+                Err(LowerError::new(
+                    "online max correction requires a subtraction use before exponentiation",
+                ))
+            }
+            (OnlineCorrectionKind::ExpShift, OnlineCorrectionState::Shifted, _, _) => {
+                Err(LowerError::new(
+                    "online max correction requires exponentiation before accumulation",
+                ))
+            }
+            (OnlineCorrectionKind::Divisor, OnlineCorrectionState::Shifted, _, _) => Err(
+                LowerError::new("division correction reached invalid shifted state"),
+            ),
         }
-        Err(LowerError::new(
-            "online reduction correction requires a division use before accumulation",
-        ))
     }
 
     fn validate_corrections_ready(
         &self,
         corrections: &[OnlineCorrection],
     ) -> Result<(), LowerError> {
-        if corrections.iter().all(|correction| correction.normalized) {
+        if corrections
+            .iter()
+            .all(|correction| correction.state.is_ready())
+        {
             Ok(())
         } else {
             Err(LowerError::new(
-                "online reduction correction reached accumulator before division use",
+                "online reduction correction reached accumulator before correction use",
             ))
         }
     }
@@ -1478,7 +1541,27 @@ struct OnlineCorrection {
     old_buffer: BufferId,
     new_buffer: BufferId,
     shape: Shape,
-    normalized: bool,
+    kind: OnlineCorrectionKind,
+    state: OnlineCorrectionState,
+}
+
+#[derive(Clone, Copy)]
+enum OnlineCorrectionKind {
+    Divisor,
+    ExpShift,
+}
+
+#[derive(Clone, Copy)]
+enum OnlineCorrectionState {
+    Pending,
+    Shifted,
+    Ready,
+}
+
+impl OnlineCorrectionState {
+    fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
 }
 
 struct EmittedStageKey {
@@ -1619,7 +1702,9 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
-    use crate::ir::kernel_program::{Action, BufferId, BufferKind, BufferLayout, Iter, LoopId};
+    use crate::ir::kernel_program::{
+        Action, BufferId, BufferKind, BufferLayout, Iter, LoopId, ScaleExpr,
+    };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
     use crate::{component, front};
@@ -2005,6 +2090,48 @@ mod tests {
     }
 
     #[test]
+    fn lowers_scalar_max_shift_exp_dot_with_online_correction_actions() {
+        let max_shift = crate::ir::component::Component::Identity
+            .pair(parse_component(">i~. | i:2 | ii'"))
+            .chain(parse_component("i-.~i | i:2 | i1i'"));
+        let exp = parse_component("^i~i | i:2 | i0i'");
+        let dot = parse_component("i*i~i | i:2 | i0i'").chain(parse_component("+i~. | i:2 | ii'0"));
+        let component = max_shift.chain(exp).chain(dot);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut snapshots = Vec::new();
+        let mut scales = Vec::new();
+        let mut scale_terms = Vec::new();
+        collect_online_actions(
+            &program.graph.nodes[0].inner.body,
+            &mut snapshots,
+            &mut scales,
+        );
+        collect_scale_terms(&program.graph.nodes[0].inner.body, &mut scale_terms);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(scales.len(), 1);
+        assert_eq!(scale_terms.len(), 1);
+        assert!(matches!(
+            scale_terms[0].0,
+            ScaleExpr::Unary {
+                op: crate::ir::common::Op::Pow,
+                ..
+            }
+        ));
+        assert!(matches!(
+            scale_terms[0].1,
+            ScaleExpr::Unary {
+                op: crate::ir::common::Op::Pow,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn lowers_scalar_fused_reduction_axis_with_online_correction_actions() {
         let normalize = crate::ir::component::Component::Identity
             .pair(parse_component("+i~. | i:8 | ii'"))
@@ -2251,6 +2378,23 @@ mod tests {
                 Action::Snapshot { write, .. } => snapshots.push(write),
                 Action::Scale { write, .. } => scales.push(write),
                 Action::Compute { .. } | Action::Init { .. } => {}
+            }
+        }
+    }
+
+    fn collect_scale_terms<'a>(
+        block: &'a crate::ir::kernel_program::Block,
+        scales: &mut Vec<(&'a ScaleExpr, &'a ScaleExpr)>,
+    ) {
+        for action in &block.0 {
+            match action {
+                Action::Loop { body, .. } => collect_scale_terms(body, scales),
+                Action::Scale {
+                    numerator,
+                    denominator,
+                    ..
+                } => scales.push((numerator, denominator)),
+                Action::Compute { .. } | Action::Init { .. } | Action::Snapshot { .. } => {}
             }
         }
     }
