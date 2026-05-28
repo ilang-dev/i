@@ -341,6 +341,7 @@ struct KernelBuilder<'a, 'b> {
     written: Vec<BufferId>,
     stage_aliases: BTreeMap<usize, usize>,
     emitted_stages: Vec<EmittedStageKey>,
+    applied_corrections: BTreeSet<(usize, BufferId, BufferId, usize)>,
 }
 
 impl<'a, 'b> KernelBuilder<'a, 'b> {
@@ -355,6 +356,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             written: Vec::new(),
             stage_aliases: BTreeMap::new(),
             emitted_stages: Vec::new(),
+            applied_corrections: BTreeSet::new(),
         }
     }
 
@@ -508,59 +510,81 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 let fused = self.emit_stage(producer.0, &stage_axes)?;
                 self.place_hoisted(
                     stage,
+                    stage_index,
                     output_buffer,
                     &stage_axes,
                     &local_loops,
                     &mut actions,
                     &mut hoisted,
+                    &mut corrections,
                     fused.hoisted,
                     parent_axes,
                 )?;
                 match self.compute_placement(stage, &local_loops, site)? {
                     Placement::Local(depth) => {
                         actions[depth].extend(fused.block.0);
+                        self.handle_online_corrections_at_stage(
+                            stage,
+                            stage_index,
+                            input_index,
+                            output_buffer,
+                            &stage_axes,
+                            &local_loops,
+                            &mut actions,
+                            &mut corrections,
+                            fused.corrections,
+                            Some(depth),
+                            parent_axes,
+                        )?;
+                    }
+                    Placement::Hoist(site) => {
                         if self.can_apply_online_corrections(stage, fused.corrections.as_slice()) {
-                            self.validate_corrections_ready(fused.corrections.as_slice())?;
-                            let write = self.lower_access(
+                            self.handle_online_corrections_at_stage(
+                                stage,
+                                stage_index,
+                                input_index,
                                 output_buffer,
-                                &stage.output.layout,
                                 &stage_axes,
+                                &local_loops,
+                                &mut actions,
+                                &mut corrections,
+                                fused.corrections,
+                                None,
                                 parent_axes,
                             )?;
-                            let scale_depth =
-                                depth.max(self.accumulator_output_depth(stage, &local_loops)?);
-                            let scales = fused
-                                .corrections
-                                .iter()
-                                .map(|correction| {
-                                    self.scale_action(
-                                        correction,
-                                        stage,
-                                        write.clone(),
-                                        &stage_axes,
-                                        parent_axes,
-                                    )
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            actions[scale_depth].extend(scales);
+                            hoisted.push(HoistedBlock {
+                                site,
+                                block: fused.block,
+                                corrections: Vec::new(),
+                            });
                         } else {
-                            corrections.extend(self.propagate_online_corrections(
-                                stage,
-                                input_index,
-                                fused.corrections,
-                            )?);
+                            hoisted.push(HoistedBlock {
+                                site,
+                                block: fused.block,
+                                corrections: self.propagate_online_corrections(
+                                    stage,
+                                    input_index,
+                                    fused.corrections,
+                                )?,
+                            });
                         }
                     }
-                    Placement::Hoist(site) => hoisted.push(HoistedBlock {
-                        site,
-                        block: fused.block,
-                        corrections: self.propagate_online_corrections(
-                            stage,
-                            input_index,
-                            fused.corrections,
-                        )?,
-                    }),
                 }
+            } else if let Source::Node(producer, OutputId(0)) = graph_node.inputs[input_index] {
+                let incoming = self.emitted_corrections(producer);
+                self.handle_online_corrections_at_stage(
+                    stage,
+                    stage_index,
+                    input_index,
+                    output_buffer,
+                    &stage_axes,
+                    &local_loops,
+                    &mut actions,
+                    &mut corrections,
+                    incoming,
+                    None,
+                    parent_axes,
+                )?;
             }
         }
         if let Some(correction) = online_correction {
@@ -589,10 +613,21 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 self.stage_aliases.insert(stage_index, existing.stage_index);
                 return Ok(EmittedStage {
                     block: Block(Vec::new()),
-                    hoisted: Vec::new(),
-                    corrections: Vec::new(),
+                    hoisted: existing
+                        .hoisted
+                        .iter()
+                        .map(|hoisted| HoistedBlock {
+                            site: hoisted.site,
+                            block: Block(Vec::new()),
+                            corrections: hoisted.corrections.clone(),
+                        })
+                        .collect(),
+                    corrections: existing.corrections.clone(),
                 });
             }
+            let mut key = key;
+            key.hoisted = hoisted.clone();
+            key.corrections = corrections.clone();
             self.emitted_stages.push(key);
         }
 
@@ -812,6 +847,8 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                     Source::Input(_) => source,
                 })
                 .collect(),
+            hoisted: Vec::new(),
+            corrections: Vec::new(),
         }
     }
 
@@ -911,11 +948,13 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
     fn place_hoisted(
         &mut self,
         stage: &Stage,
+        stage_index: usize,
         output_buffer: BufferId,
         stage_axes: &BTreeMap<AxisId, LoopInfo>,
         local_loops: &[(AxisId, LoopInfo)],
         actions: &mut [Vec<Action>],
         propagated: &mut Vec<HoistedBlock>,
+        corrections: &mut Vec<OnlineCorrection>,
         hoisted: Vec<HoistedBlock>,
         parent_axes: &BTreeMap<AxisId, LoopInfo>,
     ) -> Result<(), LowerError> {
@@ -933,9 +972,20 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                         )?;
                         let scale_depth =
                             depth.max(self.accumulator_output_depth(stage, local_loops)?);
-                        let scales = hoist
+                        let scale_corrections = hoist
                             .corrections
                             .iter()
+                            .filter(|correction| {
+                                self.applied_corrections.insert((
+                                    stage_index,
+                                    correction.old_buffer,
+                                    correction.new_buffer,
+                                    correction_kind_key(correction.kind),
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+                        let scales = scale_corrections
+                            .into_iter()
                             .map(|correction| {
                                 self.scale_action(
                                     correction,
@@ -947,6 +997,9 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                             })
                             .collect::<Result<Vec<_>, _>>()?;
                         actions[scale_depth].extend(scales);
+                        if stage_index != self.root {
+                            corrections.extend(hoist.corrections.clone());
+                        }
                     } else {
                         let propagated =
                             self.propagate_online_corrections(stage, 0, hoist.corrections)?;
@@ -957,11 +1010,61 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                         }
                     }
                 }
-                Placement::Hoist(site) => propagated.push(HoistedBlock {
-                    site,
-                    block: hoist.block,
-                    corrections: self.propagate_online_corrections(stage, 0, hoist.corrections)?,
-                }),
+                Placement::Hoist(site) => {
+                    if self.can_apply_online_corrections(stage, hoist.corrections.as_slice()) {
+                        self.validate_corrections_ready(hoist.corrections.as_slice())?;
+                        let write = self.lower_access(
+                            output_buffer,
+                            &stage.output.layout,
+                            stage_axes,
+                            parent_axes,
+                        )?;
+                        let scale_depth = self.accumulator_output_depth(stage, local_loops)?;
+                        let scale_corrections = hoist
+                            .corrections
+                            .iter()
+                            .filter(|correction| {
+                                self.applied_corrections.insert((
+                                    stage_index,
+                                    correction.old_buffer,
+                                    correction.new_buffer,
+                                    correction_kind_key(correction.kind),
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+                        let scales = scale_corrections
+                            .into_iter()
+                            .map(|correction| {
+                                self.scale_action(
+                                    correction,
+                                    stage,
+                                    write.clone(),
+                                    stage_axes,
+                                    parent_axes,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        actions[scale_depth].extend(scales);
+                        if stage_index != self.root {
+                            corrections.extend(hoist.corrections.clone());
+                        }
+                        propagated.push(HoistedBlock {
+                            site,
+                            block: hoist.block,
+                            corrections: Vec::new(),
+                        });
+                    } else {
+                        propagated.push(HoistedBlock {
+                            site,
+                            block: hoist.block,
+                            corrections: self.propagate_online_corrections(
+                                stage,
+                                0,
+                                hoist.corrections,
+                            )?,
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -1287,6 +1390,68 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
         Ok(depth)
     }
 
+    fn handle_online_corrections_at_stage(
+        &mut self,
+        stage: &Stage,
+        stage_index: usize,
+        input_index: usize,
+        output_buffer: BufferId,
+        stage_axes: &BTreeMap<AxisId, LoopInfo>,
+        local_loops: &[(AxisId, LoopInfo)],
+        actions: &mut [Vec<Action>],
+        outgoing: &mut Vec<OnlineCorrection>,
+        incoming: Vec<OnlineCorrection>,
+        producer_depth: Option<usize>,
+        parent_axes: &BTreeMap<AxisId, LoopInfo>,
+    ) -> Result<(), LowerError> {
+        let incoming = dedup_online_corrections(incoming);
+        if incoming.is_empty() {
+            return Ok(());
+        }
+        if self.can_apply_online_corrections(stage, incoming.as_slice()) {
+            self.validate_corrections_ready(incoming.as_slice())?;
+            let write =
+                self.lower_access(output_buffer, &stage.output.layout, stage_axes, parent_axes)?;
+            let accumulator_depth = self.accumulator_output_depth(stage, local_loops)?;
+            let scale_depth = producer_depth
+                .map(|depth| depth.max(accumulator_depth))
+                .unwrap_or(accumulator_depth);
+            let scale_corrections = incoming
+                .iter()
+                .filter(|correction| {
+                    self.applied_corrections.insert((
+                        stage_index,
+                        correction.old_buffer,
+                        correction.new_buffer,
+                        correction_kind_key(correction.kind),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let scales = scale_corrections
+                .into_iter()
+                .map(|correction| {
+                    self.scale_action(correction, stage, write.clone(), stage_axes, parent_axes)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            actions[scale_depth].extend(scales);
+            if stage_index != self.root {
+                outgoing.extend(incoming);
+            }
+        } else {
+            outgoing.extend(self.propagate_online_corrections(stage, input_index, incoming)?);
+        }
+        Ok(())
+    }
+
+    fn emitted_corrections(&self, stage: NodeId) -> Vec<OnlineCorrection> {
+        let canonical = self.canonical_stage(stage);
+        self.emitted_stages
+            .iter()
+            .find(|emitted| emitted.stage_index == canonical.0)
+            .map(|emitted| emitted.corrections.clone())
+            .unwrap_or_default()
+    }
+
     fn propagate_online_corrections(
         &self,
         stage: &Stage,
@@ -1545,7 +1710,7 @@ struct OnlineCorrection {
     state: OnlineCorrectionState,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum OnlineCorrectionKind {
     Divisor,
     ExpShift,
@@ -1568,8 +1733,11 @@ struct EmittedStageKey {
     stage_index: usize,
     stage: Stage,
     inputs: Vec<Source>,
+    hoisted: Vec<HoistedBlock>,
+    corrections: Vec<OnlineCorrection>,
 }
 
+#[derive(Clone)]
 struct HoistedBlock {
     site: HoistSite,
     block: Block,
@@ -1609,6 +1777,27 @@ fn requires_online_reduction(stage: &Stage) -> bool {
         Axis::Pruned { index, .. } => !output_indexes.contains(index),
         Axis::Live { .. } => false,
     })
+}
+
+fn correction_kind_key(kind: OnlineCorrectionKind) -> usize {
+    match kind {
+        OnlineCorrectionKind::Divisor => 0,
+        OnlineCorrectionKind::ExpShift => 1,
+    }
+}
+
+fn dedup_online_corrections(corrections: Vec<OnlineCorrection>) -> Vec<OnlineCorrection> {
+    let mut deduped = Vec::new();
+    for correction in corrections {
+        if !deduped.iter().any(|existing: &OnlineCorrection| {
+            existing.kind == correction.kind
+                && existing.old_buffer == correction.old_buffer
+                && existing.new_buffer == correction.new_buffer
+        }) {
+            deduped.push(correction);
+        }
+    }
+    deduped
 }
 
 fn correction_shape_broadcasts_to_stage(correction: &OnlineCorrection, stage: &Stage) -> bool {
@@ -2087,6 +2276,55 @@ mod tests {
             BufferKind::Intermediate
         );
         assert_eq!(scales[0].index.len(), 2);
+    }
+
+    #[test]
+    fn lowers_composed_attention_online_corrections() {
+        let scores = parse_component("ij*kj~ikj | i:2,k:2 | kii'k'j")
+            .chain(parse_component("+ikj~ik | i:2,k:2 | kii'k'j0"));
+        let max_shift = crate::ir::component::Component::Identity
+            .fanout(parse_component(">ik~i | i:2,k:2 | ki0i'k'"))
+            .chain(parse_component("ik-i~ik | i:2,k:2 | ki01i'k'"));
+        let exp = parse_component("^ik~ik | i:2,k:2 | ki0i'k'");
+        let normalize = crate::ir::component::Component::Identity
+            .fanout(parse_component("+ik~i | i:2,k:2 | ki0i'k'"))
+            .chain(parse_component("ik/i~ik | i:2,k:2 | ki01i'k'"));
+        let matmul = parse_component("ik*kj~ijk | i:2,k:2 | ki0i'jk'")
+            .chain(parse_component("+ijk~ij | i:2,k:2 | kii'jk'0"));
+        let component = scores
+            .chain(max_shift)
+            .chain(exp)
+            .chain(normalize)
+            .chain(matmul);
+        let stage_program =
+            lower_node_graph_to_stage_program(&lower_component_to_graph(&component).unwrap())
+                .unwrap();
+
+        let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
+        let mut scale_terms = Vec::new();
+        collect_scale_terms(&program.graph.nodes[0].inner.body, &mut scale_terms);
+        let exp_scales = scale_terms
+            .iter()
+            .filter(|(numerator, denominator)| {
+                matches!(
+                    (numerator, denominator),
+                    (
+                        ScaleExpr::Unary {
+                            op: crate::ir::common::Op::Pow,
+                            ..
+                        },
+                        ScaleExpr::Unary {
+                            op: crate::ir::common::Op::Pow,
+                            ..
+                        }
+                    )
+                )
+            })
+            .count();
+
+        assert_eq!(program.graph.nodes.len(), 1);
+        assert_eq!(scale_terms.len(), 3);
+        assert_eq!(exp_scales, 2);
     }
 
     #[test]
