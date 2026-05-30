@@ -44,21 +44,21 @@ def np_attention(q, k, v):
 
 def i_attention(q, k, v):
     """FlashAttention. Produces a single kernel with minimal intermediate allocations."""
-    mm_t = i("ij*kj~ikj | i:16,k:16 | kii'k'j") >> i("+ikj~ik | i:16,k:16 | kii'k'j0")
-    row_max_shift = (I & i(">ik~i | i:16,k:16 | ki0i'k'")) >> i("ik-i~ik | i:16,k:16 | ki01i'k'")
-    exp = i("^ik~ik | i:16,k:16 | ki0i'k'")
-    row_normalize = (I & i("+ik~i | i:16,k:16 | ki0i'k'")) >> i("ik/i~ik | i:16,k:16 | ki01i'k'")
-    mm = i("ik*kj~ijk | i:16,k:16 | ki0i'jk'") >> i("+ijk~ij | i:16,k:16 | kii'jk'0")
+    mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
+    row_max_shift = (I & i(">ij~i | i:16,j:16 | ji0i'j'")) >> i("ij-i~ij | i:16,j:16 | ji01i'j'")
+    exp = i("^ij~ij | i:16,j:16 | ji0i'j'")
+    row_normalize = (I & i("+ij~i | i:16,j:16 | ji0i'j'")) >> i("ij/i~ij | i:16,j:16 | ji01i'j'")
+    mm = i("ij*jk~ikj | i:16,j:16 | ji0i'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")
     attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
     return attn.exec_numpy(q, k, v)
 
 def i_attuntion(q, k, v):
     """Naive attention. Produces 5 tiled kernels, allocating full intermediate buffers."""
-    mm_t = i("ij*kj~ikj | i:16,k:16 | kii'k'j") >> i("+ikj~ik | i:16,k:16 | kii'k'j0")
-    row_max_shift = (I & i(">ik~i | i:16,k:16 | kii'k'")) >> i("ik-i~ik | i:16,k:16 | 1kii'k'")
-    exp = i("^ik~ik | i:16,k:16 | kii'k'")
-    row_normalize = (I & i("+ik~i | i:16,k:16 | kii'k'")) >> i("ik/i~ik | i:16,k:16 | 1kii'k'")
-    mm = i("ik*kj~ijk | i:16,k:16 | kii'jk'") >> i("+ijk~ij | i:16,k:16 | kii'jk'0")
+    mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
+    row_max_shift = (I & i(">ij~i | i:16,j:16 | jii'j'")) >> i("ij-i~ij | i:16,j:16 | 1jii'j'")
+    exp = i("^ij~ij | i:16,j:16 | jii'j'")
+    row_normalize = (I & i("+ij~i | i:16,j:16 | jii'j'")) >> i("ij/i~ij | i:16,j:16 | 1jii'j'")
+    mm = i("ij*jk~ikj | i:16,j:16 | jii'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")
     attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
     return attn.exec_numpy(q, k, v)
 
