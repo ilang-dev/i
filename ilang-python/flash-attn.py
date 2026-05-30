@@ -1,4 +1,3 @@
-import time
 import numpy as np
 from ilang import Component as i, Tensor, I
 
@@ -44,6 +43,7 @@ def np_attention(q, k, v):
     return weights @ v
 
 def i_attention(q, k, v):
+    """FlashAttention. Produces a single kernel with minimal intermediate allocations."""
     mm_t = i("ij*kj~ikj | i:16,k:16 | kii'k'j") >> i("+ikj~ik | i:16,k:16 | kii'k'j0")
     row_max_shift = (I & i(">ik~i | i:16,k:16 | ki0i'k'")) >> i("ik-i~ik | i:16,k:16 | ki01i'k'")
     exp = i("^ik~ik | i:16,k:16 | ki0i'k'")
@@ -53,6 +53,7 @@ def i_attention(q, k, v):
     return attn.exec_numpy(q, k, v)
 
 def i_attuntion(q, k, v):
+    """Naive attention. Produces 5 tiled kernels, allocating full intermediate buffers."""
     mm_t = i("ij*kj~ikj | i:16,k:16 | kii'k'j") >> i("+ikj~ik | i:16,k:16 | kii'k'j0")
     row_max_shift = (I & i(">ik~i | i:16,k:16 | kii'k'")) >> i("ik-i~ik | i:16,k:16 | 1kii'k'")
     exp = i("^ik~ik | i:16,k:16 | kii'k'")
@@ -65,15 +66,11 @@ q, k, v = make_attention_inputs()
 
 np_out = np_attention(q,k,v)
 
-t = time.time()
 i_out = i_attention(q,k,v)
-print(f"flash-attn: {time.time() - t}")
 assert_allclose("attn", i_out, np_out)
+print("FlashAttention output matches NumPy reference to at least rtol=3e-4, atol=5e-5.")
 
-t = time.time()
 i_uut = i_attuntion(q,k,v)
-print(f"attn: {time.time() - t}")
 assert_allclose("attn", i_uut, np_out)
-
-print("looks good.")
+print("Naive Attention output matches NumPy reference to at least rtol=3e-4, atol=5e-5.")
 
