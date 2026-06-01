@@ -25,7 +25,7 @@ This project is at the proof-of-concept stage. There are significant gaps in the
 language, the generated code is not yet performant, and the repo carries a lot
 of AI agent debt.
 
-BUT, we have [Python frontend](ilang-python) -> [runtime](core) ->
+Right now, we have [Python frontend](ilang-python) -> [runtime](core) ->
 [compiler](compiler) -> [C backend](compiler/src/backends/c) working, 
 demonstrating the scheduling model, and allowing correctness verification
 against NumPy/etc.
@@ -53,9 +53,25 @@ the semantics and scheduling do not depend on them.
 really easy to do so. This means interfacing with existing infrastructure like
 Torch.
 
-# Try it out!
-Just clone the repo, build the `core` crate, and then run
-`ilang-python/flash-attn.py` or write your own 𝚒 code.
+# Master plan
+The first "bet" of 𝚒 as a project was that a simple scheduling model could
+admit FlashAttention-like target implementations. This bet has paid off although
+there is still the risk that things get messy as the language expands to express
+a broader set of tensor computations.
+
+The bet _now_ is that this simple scheduling model will make schedule _search_
+more tractable. A lot of tensor compilers do search, but they do it in a complex
+IR with too much configuration complexity. 𝚒 deliberately has fewer knobs to
+turn. The bet is that they are the _right_ knobs. The scheduling model being
+resident to the language (instead of an IR layer) means search won't happen
+somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
+trace from a Torch model) an 𝚒 component, and search simply finds you a better
+one.
+
+# Try it yourself!
+Just clone the repo, build the `core` crate, and then write some 𝚒 code. Take a
+look at the FlashAttention [demo](ilang-python/flash-attn.py) to see an example
+of some 𝚒 components.
 
 # Language
 
@@ -106,11 +122,12 @@ staged inside the schedule of the consumer. For example: `+ijk~ij | i:16,k:16 |
 iki'jk'0` stages the 0-th input producer at the innermost loop of the consumer.
 
 Staging producers in this way has three important lowering consequences:
-1) If semantically equivalent consumer and producer loops above the stage site
+
+1. If semantically equivalent consumer and producer loops above the stage site
 are compatibly split and aligned, the 𝚒 compiler will _fuse_ them. 
-2) If the fusion allows one or more dimensions of an intermediate buffer to be
+2. If the fusion allows one or more dimensions of an intermediate buffer to be
 reused, it will _fold_ away these dimensions.
-3) And finally, if a reduction is staged under a dependent reduction over the
+3. And finally, if a reduction is staged under a dependent reduction over the
 same semantic axis, the reduction will be lowered into an online corrected form
 (the caveat is that this only works for supported reduction pairs, but once
 supported, they are composable).
@@ -133,21 +150,6 @@ graphs called 𝚒 _components_.
 | `&`    | fanout  | `(f & g)(x) = (f(x), g(x))`     |
 | `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
 | `~`    | swap    | `(~f)(x, y) = f(y, x)`          |
-
-# Master plan
-The first "bet" of 𝚒 as a project was that a simple scheduling model could
-admit FlashAttention-like target implementations. This bet has basically paid
-off although there is still the risk that things get messy as the language
-expands to express a broader set of tensor computations.
-
-The bet _now_ is that this simple scheduling model will make schedule _search_
-more tractable. A lot of tensor compilers do search, but they do it in a complex
-IR with too much configuration complexity. 𝚒 deliberately has fewer knobs to
-turn. The bet is that they are the _right_ knobs. The scheduling model being
-resident to the language (instead of an IR layer) means search won't happen
-somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
-trace from a Torch model) an 𝚒 component, and search simply finds you a better
-one.
 
 ## Inspiration
 - [FlashAttention](https://arxiv.org/pdf/2205.14135)
