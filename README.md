@@ -26,9 +26,9 @@ language, the generated code is not yet performant, and the repo carries a lot
 of AI agent debt.
 
 Right now, we have [Python frontend](ilang-python) -> [runtime](core) ->
-[compiler](compiler) -> [C backend](compiler/src/backends/c) working, 
-demonstrating the scheduling model, and allowing correctness verification
-against NumPy/etc.
+[compiler](compiler) -> [C backend](compiler/src/backends/c) working on
+Linux+macOS, demonstrating the scheduling model, and allowing correctness
+verification against NumPy/etc.
 
 The 𝚒 compiler has no dependencies and generates a standalone dependency-free
 dynamic library. The 𝚒 runtime depends only on the compiler for the target
@@ -68,10 +68,17 @@ somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
 trace from a Torch model) an 𝚒 component, and search simply finds you a better
 one.
 
-# Try it
-Just clone the repo, `cargo build` the `core` crate, and then write some 𝚒
-code. Take a look/run at the FlashAttention [demo](ilang-python/flash-attn.py)
-to see an example of some 𝚒 components.
+# Running the FlashAttention [demo](ilang-python/flash-attn.py)
+
+Just `cargo build` the `core` crate and then run 
+[ilang-python/flash-attn.py](ilang-python/flash-attn.py) (you will need NumPy
+installed).
+
+This computes a reference value with NumPy and then computes the same value in
+𝚒 once with the naive schedule and then again with the FlashAttention schedule.
+The generate C code for FlashAttention is printed out for inspection. We then
+assert the 𝚒-computed values match the NumPy reference to a reasonable
+tolerance.
 
 # Language
 
