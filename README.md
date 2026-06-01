@@ -1,241 +1,160 @@
-𝚒 is a peculiar deep learning framework in the making. The thing that makes 𝚒
-different from other frameworks is that it does not have primitive tensor ops.
-Instead, it uses "index expressions" — a simple but powerful language for
-applying scalar operations over multidimensional domains. Index expressions,
-or 𝚒-expressions, are the atomic computation units which are then combined
-into computation graphs using a small set of combinators.
+𝚒 is an experimental tensor computation language with declarative semantics,
+explicit scheduling, and an extremely tiny surface area.
 
-The motivation for this peculiar language is two-fold. First, there is a
-certain aesthetic appeal to creating a sufficiently expressive framework from a
-small set of general components. And second, this description of computation is
-particularly amenable to important scheduling optimizations like fusion and
-tiling.
-
-𝚒-expressions
----
-
-𝚒-expressions look similar to einsum notation but do not perform implicit
-summation. They apply a _single_ scalar operation over a multidimensional
-domain defined by single-character indices. This forms a simple tensor
-operation, either pointwise or reduction or reshape. These expressions are then
-combined to form more complex operations. Here is a matrix multiply
-implemented with 𝚒's Python front-end:
+𝚒 programs use a small set of combinators to build up computation graphs not
+over primitive tensor ops, but over 𝚒 expressions — atomic einsum-like
+expressions describing a single scalar op densely applied over a
+multidimensional domain. 𝚒 expressions are paired with schedules consisting of
+loop splits, loop ordering, and input producer staging. Under the 𝚒 scheduling
+model, staging decisions have three predictable lowering consequences: loop
+fusion, storage folding, and online reduction correction. This allows 𝚒 to
+express sophisticated algorithms like numerically stable online blockwise
+[FlashAttention][FlashAttention]:
 
 ```python
-i("ik*kj~ijk") >> i("+ijk~ij")
+mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
+row_max_shift = (I & i(">ij~i | i:16,j:16 | ji0i'j'")) >> i("ij-i~ij | i:16,j:16 | ji01i'j'")
+exp = i("^ij~ij | i:16,j:16 | ji0i'j'")
+row_normalize = (I & i("+ij~i | i:16,j:16 | ji0i'j'")) >> i("ij/i~ij | i:16,j:16 | ji01i'j'")
+mm = i("ij*jk~ikj | i:16,j:16 | ji0i'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")
+attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
 ```
 
-It is comprised of a "partial matrix product" expression chained into a "layer
-accumulate" expression.
+# Status
+This project is at the proof-of-concept stage. There are significant gaps in the
+language, the generated code is not yet performant, and the repo carries a lot
+of AI agent debt.
 
-Breakdown of `ik*kj~ijk`:
-- `ik`: indices of the left input, 2 chars => 2-dimensional
-- `*`: applying scalar multiplication
-- `kj`: indices of the right input, repeated `k` enforces a shape constraint;
-  the 1 dimension of the left input corresponds to the same iteration domain as
-  the 0 dimension of the right input, the familiar shape constraint of matrix
-  multiplication.
-- `~` syntax separating inputs from outputs
-- `ijk` indices of the output, 3
-  chars => 3-dimensional, output shape inferable from input shapes
-- the iterative domain of this expression is given by `(i,j,k)`
+BUT, we have [Python frontend](ilang-python) -> [runtime](core) ->
+[compiler](compiler) -> [C backend](compiler/src/backends/c) working, 
+demonstrating the scheduling model, and allowing correctness verification
+against NumPy/etc.
 
-In Python, this expression corresponds to something like:
+The 𝚒 compiler has no dependencies and generates a standalone dependency-free
+dynamic library. The 𝚒 runtime depends only on the compiler for the target
+platform.
 
-``` python
-for i in range(in0.shape[0]):
-    for j in range(in1.shape[1]):
-        for k in range(in0.shape[1]):
-            out[i,j,k] = in0[i,k] * in1[k,j]
-```
+# Priorities
+The critical priorities to take 𝚒 from proof-of-concept to being legitimately
+useful on real-world workloads are the following:
 
-The second expression, `+ijk~ij`, is a reduction over the `k` dimension,
-indicated by `k` appearing to the left of the `~` but not to the right.
+1. **Language expressivity:** While 𝚒 can already express non-trivial tensor
+computations like MLPs and attention mechanisms, it still has real gaps
+including affine indexing, gather/scatter, prefix scan, logical/boolean ops,
+non-`f32` dtypes. Convolution is probably the most critical usability gap at
+present. The goal is to add language features in as principled a way as possible
+to keep 𝚒 small. We favor general and composable over bespoke constructs.
+2. **Backend maturity:** With the scheduling model demonstrated, most of the
+performance will come from having backends that target fast hardware (i.e.
+GPUs) and actually write _good_ code for them. Eventually hardware-specific
+intrinsics will likely percolate up to the language layer, but only such that
+the semantics and scheduling do not depend on them.
+3. **Interoperability:** If anyone is to actually use 𝚒 it needs to be made
+really easy to do so. This means interfacing with existing infrastructure like
+Torch.
+
+# Try it out!
+Just clone the repo, build the `core` crate, and then run
+`ilang-python/flash-attn.py` or write your own 𝚒 code.
+
+# Language
+
+𝚒 expressions
+---
+
+The semantic part of 𝚒 expressions looks similar to einsum notation but does
+not perform implicit summation. Reductions live in their own expressions. 𝚒
+expressions have a unary form (e.g. `-i~i`) and binary form (e.g. `i-i~i`).
+Repeated input indices constrain the inputs shapes. For example, `i-i~i`
+requires the left and right inputs be the same length. The shapes of the input
+dimensions inform the shapes of the output. For example, the output of `i-i~i`
+will be the same length as the inputs. Reductions are notated by input indices
+left absent from the output. For example, `+ij~i` performs a sum across the
+columns of the input.
 
 ops
 ---
 
-Here is the full list of ops.
+| symbol | name  | default | reducible |
+| ------ | ----- | ------- | --------- |
+| `+`    | `add` | 0       | ✓         |
+| `*`    | `mul` | 1       | ✓         |
+| `-`    | `sub` | 0       |           |
+| `/`    | `div` | 1       |           |
+| `>`    | `max` | -∞      | ✓         |
+| `<`    | `min` | ∞       | ✓         |
+| `^`    | `pow` | e       |           |
+| `$`    | `log` | e       |           |
 
-| category | symbol | name  | default | reducible | implemented |
-| -------- | ------ | ----- | ------- | --------- | ----------- |
-| numeric  | `+`    | `add` | 0       | ✓         | ✓           |
-|          | `*`    | `mul` | 1       | ✓         | ✓           |
-|          | `-`    | `sub` | 0       |           | ✓           |
-|          | `/`    | `div` | 1       |           | ✓           |
-|          | `>`    | `max` | -inf    | ✓         | ✓           |
-|          | `<`    | `min` | inf     | ✓         | ✓           |
-|          | `^`    | `pow` | e       |           | ✓           |
-|          | `$`    | `log` | e       |           | ✓           |
-| boolean  | `>>`   | `gt`  | 0       |           |             |
-|          | `>=`   | `gte` | 0       |           |             |
-|          | `<<`   | `lt`  | 0       |           |             |
-|          | `<=`   | `lte` | 0       |           |             |
-|          | `==`   | `eq`  | 0       |           |             |
-|          | `!=`   | `neq` | 0       |           |             |
-| logical  | `&&`   | `and` | 1       | ✓         |             |
-|          | `\|\|` | `or`  | 0       | ✓         |             |
-|          | `^^`   | `xor` | 0       | ✓         |             |
-|          | `!!`   | `not` | -       |           |             |
+Note: `pow` and `log` in unary form are just `exp` and `ln` respectively.
 
-𝚒-expression forms
+the 𝚒 scheduling model
 ---
+In general, 𝚒 expressions are written with three "segments" delimited by `|`.
+The first being the semantic expression described above, the second being a list
+of loop splits, and the third the schedule of loops and input staging
+directives.
 
-With the exception of `!!` (`not`), all 𝚒 ops can be written in pointwise
-binary form: `i☐i~i`. This includes `^` (`pow`) and `$` (`log`) where the
-left-hand-side is the base. All ops can also be written in pointwise unary
-form: `☐i~i`. These can seen as the binary form, but where the left-hand-side
-is taken to be the op's default value (given in the op table above). For
-example, `-i~i` can be interpretted as `0-i~i`. Finally, ops which are
-associative and have an identity value can be used as reductions, e.g.,
-`+ij~i`.
+A scheduled 𝚒 expressions looks like this: `+ijk~ij | i:16,k:16 | iki'jk'`.
+Here, the `i` and `k` axes are each split by a factor of 16 (tiling each loop
+with a tile width of 16) and the loops are ordered with the tile loops `i` and
+`k` on the outside and the element loops `i'`, `j`, and `k'` on the inside.
 
-A scalar input is written as `.` inside an input pattern. For example,
-`.*i~i` is scalar-vector multiplication and `i/.~i` is vector-scalar division.
-A scalar output is also written as `.`.
+If one 𝚒 expression (the _consumer_) takes another 𝚒 expression (the
+_producer_) as input in the computation graph, the producer's computation can be
+staged inside the schedule of the consumer. For example: `+ijk~ij | i:16,k:16 |
+iki'jk'0` stages the 0-th input producer at the innermost loop of the consumer.
 
-All reducible ops have default value equal to their identity. Non-reducible ops
-have a default value chosen to result in sane unary behavior. For example,
-`pow` and `log` have default value `e` so that `pow(base, x)` becomes `exp(x)`
-and `log(base, x)` becomes `ln(x)`.
+Staging producers in this way has three important lowering consequences:
+1) If semantically equivalent consumer and producer loops above the stage site
+are compatibly split and aligned, the 𝚒 compiler will _fuse_ them. 
+2) If the fusion allows one or more dimensions of an intermediate buffer to be
+reused, it will _fold_ away these dimensions.
+3) And finally, if a reduction is staged under a dependent reduction over the
+same semantic axis, the reduction will be lowered into an online corrected form
+(the caveat is that this only works for supported reduction pairs, but once
+supported, they are composable).
 
-Here are the various forms that 𝚒-expression can take including pointwise
-binary, pointwise unary, and reduction. Some ops are not valid in all forms and
-are omitted. Other ops are valid but are effectively no-ops. These are
-indicated as such, but left in for completeness.
-
-| form              | expr       | psuedo tensor notation |
-| ----------------- | ---------- | ---------------------- |
-| pointwise binary  | `i+i~i`    | `X+Y`                  |
-|                   | `i*i~i`    | `X*Y`                  |
-|                   | `i-i~i`    | `X-Y`                  |
-|                   | `i/i~i`    | `X/Y`                  |
-|                   | `i>i~i`    | `max(X,Y)`             |
-|                   | `i<i~i`    | `min(X,Y)`             |
-|                   | `i^i~i`    | `pow(base,X)`          |
-|                   | `i$i~i`    | `log(base,X)`          |
-|                   | `i>>i~i`   | `X>Y`                  |
-|                   | `i>=i~i`   | `X>=Y`                 |
-|                   | `i<<i~i`   | `X<Y`                  |
-|                   | `i<=i~i`   | `X<=Y`                 |
-|                   | `i==i~i`   | `X==Y`                 |
-|                   | `i!=i~i`   | `X!=Y`                 |
-|                   | `i&&i~i`   | `X&Y`                  |
-|                   | `i\|\|i~i` | `X\|Y`                 |
-|                   | `i^^i~i`   | `X^Y`                  |
-| pointwise unary   | `+i~i`     | `X` (no-op)            |
-|                   | `*i~i`     | `X` (no-op)            |
-|                   | `-i~i`     | `-X`                   |
-|                   | `/i~i`     | `1/X`                  |
-|                   | `>i~i`     | `max(0,X)`             |
-|                   | `<i~i`     | `min(0,X)`             |
-|                   | `^i~i`     | `exp(X)`               |
-|                   | `$i~i`     | `log(X)`               |
-|                   | `>>i~i`    | `X>0`                  |
-|                   | `>=i~i`    | `X>=0`                 |
-|                   | `<<i~i`    | `X<0`                  |
-|                   | `<=i~i`    | `X<=0`                 |
-|                   | `==i~i`    | `X==0`                 |
-|                   | `!=i~i`    | `X!=0`                 |
-|                   | `&&i~i`    | `X&1` (no-op)          |
-|                   | `\|\|i~i`  | `X\|0` (no-op)         |
-|                   | `^^i~i`    | `X^0` (no-op)          |
-|                   | `!!i~i`    | `!X`                   |
-| reduction         | `+ij~i`    | `X.sum(dim=0)`         |
-|                   | `*ij~i`    | `X.prod(dim=0)`        |
-|                   | `>ij~i`    | `X.max(dim=0)`         |
-|                   | `<ij~i`    | `X.min(dim=0)`         |
-|                   | `&&ij~i`   | `X.all(dim=0)`         |
-|                   | `\|\|ij~i` | `X.any(dim=0)`         |
-|                   | `^^ij~i`   | `X.xor_reduce(dim=0)`  |
+This scheduling model is the key difference between 𝚒 and other tensor
+compilers. These lowering decisions are [_predictable_ consequences of the
+model](https://pharr.org/matt/blog/2018/04/18/ispc-origins) rather than being
+opaque compiler optimizations buried in some complex IR somewhere.
 
 combinators
 ---
 
-𝚒 programs are represented as computation graphs, leaves being the inputs,
-roots being the outputs, and interior nodes being the intermediate results of
-the computation. Individual 𝚒-expression are treated as atomic computation
-graphs comprised of a single root and 1 or 2 leaves. The following combinators
-are the graph wiring tools that allow for the composition of 𝚒-expressions into
-arbitrarily complex computation graphs.
+The following combinators are used to compose 𝚒 expressions into computation
+graphs called 𝚒 _components_.
 
-`compose` wires the leaves of one graph to the roots of another. `chain` does
-the inverse, wiring the roots of one graph to the leaves of another. `fanout`
-merges the inputs of two graphs, intuitively performing two different
-computations on the same set of inputs. `pair` concatenates the roots and
-leaves of two graphs such that they together can be handled as a single graph.
-`swap` swaps the order of the first two roots of a single graph.
+| symbol | name    | semantics                       |
+| ------ | ------- | ------------------------------- |
+| `<<`   | compose | `(f << g)(x) = f(g(x))`         |
+| `>>`   | chain   | `(f >> g)(x) = g(f(x))`         |
+| `&`    | fanout  | `(f & g)(x) = (f(x), g(x))`     |
+| `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
+| `~`    | swap    | `(~f)(x, y) = f(y, x)`          |
 
-All of the combinators are well-defined for mixed arity. For example, `fanout`
-merges inputs pairwise left-to-right and simply leaves any unpaired inputs
-unmerged. Similarly, a mismatch between leaves and roots in compose leaves
-the unpaired leaves or roots in the graph.
+# Master plan
+The first "bet" of 𝚒 as a project was that a simple scheduling model could
+admit FlashAttention-like target implementations. This bet has basically paid
+off although there is still the risk that things get messy as the language
+expands to express a broader set of tensor computations.
 
-| symbol | name      | implemented |
-| ------ | --------- | ----------- |
-| `<<`   | `compose` | ✓           |
-| `>>`   | `chain`   | ✓           |
-| `&`    | `fanout`  | ✓           |
-| `\|`   | `pair`    | ✓           |
-| `~`    | `swap`    | ✓           |
-
-Here is an example using `fanout` and `chain` to create a program to normalize
-over the rows of a 2D input.
-
-```python
-row_sum = i("+ij~i")
-row_div = i("ij/i~ij")
-id = i("ij~ij")
-row_normalize = (id & row_sum) >> row_div
-```
-
-scheduling
----
-𝚒-expressions are declarative by default but can be extended with 𝚒's powerful
-scheduling primitives. These include:
-1. loop splitting
-2. loop reordering
-3. loop fusion
-
-NOTE
-- language notes
-  - character indices present in the output and one of the inputs but absent from
-    the other input are broadcasted, e.g., in the expression `ij+i~ij`, the `i` is
-    broadcasted _over_ `j`.
-  - distinguish between core i and framework/front-end
-  - implicit one-way boolean->numeric casting
-- present limitations of i
-  - no sparsity support (including affine indexing)
-  - no scatter/gather
-  - no support for scans / prefix operations (e.g. cumulative sum) or general
-    recurrences, where an iteration depends on the result of a previous
-    iteration
-- not yet implemented
-  - autograd
-- random
-  - i has no state and is used for describing pure multidimensional functions
-    of infinite domain
-  - i lowers the computation graph into a scheduled intermediate representation
-    with schedule elements like loop tiling, loop reordering, fusion, storage
-    folding. eventually this will include target-specific annotations like
-    TensorCores and SIMD vectorization
-  - i is designed to be portable across various backends. currently Rust and
-    CUDA backends are supported but ROCm, PTX, Triton, WGSL are planned as
-    well. additionally, i could be used as a compiler stack for custom hardware
-  - i is declarative with algorithm and scheduling specification completely
-    separate, inspired by Halide
-  - eventually i schedules will be searchable leading to extremely powerful
-    automated optimization over various metrics like wall-clock time (obvious
-    applications) and power (useful for edge AI for example)
+The bet _now_ is that this simple scheduling model will make schedule _search_
+more tractable. A lot of tensor compilers do search, but they do it in a complex
+IR with too much configuration complexity. 𝚒 deliberately has fewer knobs to
+turn. The bet is that they are the _right_ knobs. The scheduling model being
+resident to the language (instead of an IR layer) means search won't happen
+somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
+trace from a Torch model) an 𝚒 component, and search simply finds you a better
+one.
 
 ## Inspiration
-- [FlashAttention](https://arxiv.org/pdf/2205.14135) (hmm, could a compiler
-  learn/find FlashAttention?)
-- [TensorComprehensions](https://arxiv.org/pdf/1802.04730) (wow, terse DSLs are
-  cool af)
+- [FlashAttention](https://arxiv.org/pdf/2205.14135)
+- [TensorComprehensions](https://arxiv.org/pdf/1802.04730)
 - [Torch einsum](https://pytorch.org/docs/stable/generated/torch.einsum.html)
-  (damn, even more terse than TCs)
-- [Halide](https://people.csail.mit.edu/jrk/halide-pldi13.pdf) (decouple alg
-  description from scheduling, search for fast kernels)
-- [tinygrad](https://github.com/tinygrad/tinygrad) (simple good, search for
-  fast kernels)
+- [Halide](https://people.csail.mit.edu/jrk/halide-pldi13.pdf)
+- [tinygrad](https://github.com/tinygrad/tinygrad)
+
+
+[FlashAttention]: https://arxiv.org/abs/2205.14135
