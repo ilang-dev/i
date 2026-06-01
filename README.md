@@ -68,10 +68,10 @@ somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
 trace from a Torch model) an 𝚒 component, and search simply finds you a better
 one.
 
-# Try it yourself!
-Just clone the repo, build the `core` crate, and then write some 𝚒 code. Take a
-look at the FlashAttention [demo](ilang-python/flash-attn.py) to see an example
-of some 𝚒 components.
+# Try it
+Just clone the repo, `cargo build` the `core` crate, and then write some 𝚒
+code. Take a look/run at the FlashAttention [demo](ilang-python/flash-attn.py)
+to see an example of some 𝚒 components.
 
 # Language
 
@@ -151,7 +151,7 @@ graphs called 𝚒 _components_.
 | `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
 | `~`    | swap    | `(~f)(x, y) = f(y, x)`          |
 
-## Inspiration
+# Inspiration
 - [FlashAttention](https://arxiv.org/pdf/2205.14135)
 - [TensorComprehensions](https://arxiv.org/pdf/1802.04730)
 - [Torch einsum](https://pytorch.org/docs/stable/generated/torch.einsum.html)
