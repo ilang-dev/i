@@ -9,7 +9,7 @@ loop splits, loop ordering, and input producer staging. Under the 𝚒 schedulin
 model, staging decisions have three predictable lowering consequences: loop
 fusion, storage folding, and online reduction correction. This allows 𝚒 to
 express sophisticated algorithms like numerically stable online blockwise
-[FlashAttention][FlashAttention]:
+[FlashAttention](https://arxiv.org/abs/2205.14135):
 
 ```python
 mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
@@ -21,82 +21,93 @@ attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
 ```
 
 # Status
+
 This project is at the proof-of-concept stage. There are significant gaps in the
 language, the generated code is not yet performant, and the repo carries a lot
 of AI agent debt.
 
 Right now, we have [Python frontend](ilang-python) -> [runtime](core) ->
-[compiler](compiler) -> [C backend](compiler/src/backends/c) working on
-Linux+macOS, demonstrating the scheduling model, and allowing correctness
+[compiler](compiler) -> [C backend](compiler/src/backends/c) working on Linux
+and macOS, demonstrating the scheduling model, and allowing correctness
 verification against NumPy/etc.
 
-The 𝚒 compiler has no dependencies and generates a standalone dependency-free
-dynamic library. The 𝚒 runtime depends only on the compiler for the target
-platform.
+The 𝚒 compiler has no dependencies and generates a standalone dynamic library.
+The 𝚒 runtime depends only on the compiler for the target platform.
 
 # Priorities
+
 The critical priorities to take 𝚒 from proof-of-concept to being legitimately
 useful on real-world workloads are the following:
 
 1. **Language expressivity:** While 𝚒 can already express non-trivial tensor
 computations like MLPs and attention mechanisms, it still has real gaps
 including affine indexing, gather/scatter, prefix scan, logical/boolean ops,
-non-`f32` dtypes. Convolution is probably the most critical usability gap at
-present. The goal is to add language features in as principled a way as possible
-to keep 𝚒 small. We favor general and composable over bespoke constructs.
+and non-`f32` dtypes. Convolution is probably the most critical usability gap
+at present. The goal is to add language features in as principled a way as
+possible to keep 𝚒 small. We favor general and composable constructs over
+purpose-specific ones.
 2. **Backend maturity:** With the scheduling model demonstrated, most of the
 performance will come from having backends that target fast hardware (i.e.
 GPUs) and actually write _good_ code for them. Eventually hardware-specific
-intrinsics will likely percolate up to the language layer, but only such that
-the semantics and scheduling do not depend on them.
-3. **Interoperability:** If anyone is to actually use 𝚒 it needs to be made
+intrinsics will likely percolate up to the language layer, but only in such a
+way that the semantics and scheduling do not depend on them.
+3. **Interoperability:** If anyone is to actually use 𝚒, it needs to be made
 really easy to do so. This means interfacing with existing infrastructure like
 Torch.
 
 # Master plan
+
 The first "bet" of 𝚒 as a project was that a simple scheduling model could
-admit FlashAttention-like target implementations. This bet has paid off although
-there is still the risk that things get messy as the language expands to express
-a broader set of tensor computations.
+admit FlashAttention-like target implementations. This bet has paid off,
+although there is still the risk that things get messy as the language expands
+to express a broader set of tensor computations.
 
 The bet _now_ is that this simple scheduling model will make schedule _search_
 more tractable. A lot of tensor compilers do search, but they do it in a complex
 IR with too much configuration complexity. 𝚒 deliberately has fewer knobs to
 turn. The bet is that they are the _right_ knobs. The scheduling model being
-resident to the language (instead of an IR layer) means search won't happen
+resident in the language (instead of an IR layer) means search won't happen
 somewhere deep within the 𝚒 compiler, but over 𝚒 components. You write (or
 trace from a Torch model) an 𝚒 component, and search simply finds you a better
 one.
 
 # Running the FlashAttention [demo](ilang-python/flash-attn.py)
 
-Just `cargo build` the `core` crate and then run 
-[ilang-python/flash-attn.py](ilang-python/flash-attn.py) (you will need NumPy
-installed).
+You will need Rust, Python, and NumPy installed.
 
-This computes a reference value with NumPy and then computes the same value in
-𝚒 once with the naive schedule and then again with the FlashAttention schedule.
-The generate C code for FlashAttention is printed out for inspection. We then
-assert the 𝚒-computed values match the NumPy reference to a reasonable
-tolerance.
+```bash
+cargo build i-core
+python ilang-python/flash-attn.py
+```
+
+This computes a reference tensor with NumPy and then computes the same tensor
+in 𝚒, once with the naive schedule and then again with the FlashAttention
+schedule. The generated C code for FlashAttention is printed out for
+inspection. We then assert the 𝚒-computed values match the NumPy reference to a
+reasonable tolerance.
+
+There is an annotated version of the C output
+[here](ilang-python/annotated-flashattn.c).
 
 # Language
 
-𝚒 expressions
----
+## 𝚒 expressions
+
+In general, 𝚒 expressions are written with three "segments" delimited by `|`.
+The first is the semantic expression, the second is a list of loop splits, and
+the third is the schedule of loops and input staging directives.
 
 The semantic part of 𝚒 expressions looks similar to einsum notation but does
-not perform implicit summation. Reductions live in their own expressions. 𝚒
-expressions have a unary form (e.g. `-i~i`) and binary form (e.g. `i-i~i`).
-Repeated input indices constrain the inputs shapes. For example, `i-i~i`
+not perform implicit summation. All reductions happen in their own expressions.
+𝚒 expressions have a unary form (e.g. `-i~i`) and binary form (e.g. `i-i~i`).
+Repeated input indices constrain the input shapes. For example, `i-i~i`
 requires the left and right inputs be the same length. The shapes of the input
 dimensions inform the shapes of the output. For example, the output of `i-i~i`
-will be the same length as the inputs. Reductions are notated by input indices
-left absent from the output. For example, `+ij~i` performs a sum across the
-columns of the input.
+will be the same length as the inputs. Reductions are written by omitting input
+indices from the output. For example, `+ij~i` performs a sum across the second
+dimension of the input.
 
-ops
----
+## Ops
 
 | symbol | name  | default | reducible |
 | ------ | ----- | ------- | --------- |
@@ -109,16 +120,28 @@ ops
 | `^`    | `pow` | e       |           |
 | `$`    | `log` | e       |           |
 
-Note: `pow` and `log` in unary form are just `exp` and `ln` respectively.
+The unary forms of 𝚒 expressions are just the binary forms with the default
+value assumed on the left-hand side. The default value is chosen to be the
+reduction identity if there is one, otherwise a value that gives sane unary
+behavior. This way, we get `sub` -> `neg`, `div` -> `recip`, `pow` -> `exp`,
+`log` -> `ln`.
 
-the 𝚒 scheduling model
----
-In general, 𝚒 expressions are written with three "segments" delimited by `|`.
-The first being the semantic expression described above, the second being a list
-of loop splits, and the third the schedule of loops and input staging
-directives.
+## Combinators
 
-A scheduled 𝚒 expressions looks like this: `+ijk~ij | i:16,k:16 | iki'jk'`.
+The following combinators are used to compose 𝚒 expressions into computation
+graphs called 𝚒 _components_.
+
+| symbol | name    | semantics                       |
+| ------ | ------- | ------------------------------- |
+| `<<`   | compose | `(f << g)(x) = f(g(x))`         |
+| `>>`   | chain   | `(f >> g)(x) = g(f(x))`         |
+| `&`    | fanout  | `(f & g)(x) = (f(x), g(x))`     |
+| `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
+| `~`    | swap    | `(~f)(x, y) = f(y, x)`          |
+
+## The 𝚒 scheduling model
+
+A scheduled 𝚒 expression looks like this: `+ijk~ij | i:16,k:16 | iki'jk'`.
 Here, the `i` and `k` axes are each split by a factor of 16 (tiling each loop
 with a tile width of 16) and the loops are ordered with the tile loops `i` and
 `k` on the outside and the element loops `i'`, `j`, and `k'` on the inside.
@@ -135,7 +158,7 @@ are compatibly split and aligned, the 𝚒 compiler will _fuse_ them.
 2. If the fusion allows one or more dimensions of an intermediate buffer to be
 reused, it will _fold_ away these dimensions.
 3. And finally, if a reduction is staged under a dependent reduction over the
-same semantic axis, the reduction will be lowered into an online corrected form
+same semantic axis, the reduction will be lowered into an online-corrected form
 (the caveat is that this only works for supported reduction pairs, but once
 supported, they are composable).
 
@@ -144,26 +167,10 @@ compilers. These lowering decisions are [_predictable_ consequences of the
 model](https://pharr.org/matt/blog/2018/04/18/ispc-origins) rather than being
 opaque compiler optimizations buried in some complex IR somewhere.
 
-combinators
----
-
-The following combinators are used to compose 𝚒 expressions into computation
-graphs called 𝚒 _components_.
-
-| symbol | name    | semantics                       |
-| ------ | ------- | ------------------------------- |
-| `<<`   | compose | `(f << g)(x) = f(g(x))`         |
-| `>>`   | chain   | `(f >> g)(x) = g(f(x))`         |
-| `&`    | fanout  | `(f & g)(x) = (f(x), g(x))`     |
-| `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
-| `~`    | swap    | `(~f)(x, y) = f(y, x)`          |
-
 # Inspiration
+
 - [FlashAttention](https://arxiv.org/pdf/2205.14135)
 - [TensorComprehensions](https://arxiv.org/pdf/1802.04730)
 - [Torch einsum](https://pytorch.org/docs/stable/generated/torch.einsum.html)
 - [Halide](https://people.csail.mit.edu/jrk/halide-pldi13.pdf)
 - [tinygrad](https://github.com/tinygrad/tinygrad)
-
-
-[FlashAttention]: https://arxiv.org/abs/2205.14135
