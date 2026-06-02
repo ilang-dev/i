@@ -16,8 +16,8 @@ def _load_core():
 
     roots = [
         here.parent,
-        here.parent.parent / "target" / "debug",
         here.parent.parent / "target" / "release",
+        here.parent.parent / "target" / "debug",
     ]
     for root in roots:
         for name in names:
