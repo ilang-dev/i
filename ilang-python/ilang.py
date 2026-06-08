@@ -284,7 +284,7 @@ class Component:
     def __and__(self, other):
         return self.fanout(other)
 
-    def __matmul__(self, other):
+    def __or__(self, other):
         return self.pair(other)
 
     def __invert__(self):
