@@ -8,8 +8,8 @@ use crate::ir::graph::{
     Graph, InputId, Node as GraphNode, NodeId, Output as GraphOutput, OutputId, Source,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Iter, Kernel,
-    KernelProgram, LoopId, ScalarExpr, TailGuard,
+    Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferScope, BufferShape,
+    Iter, Kernel, KernelProgram, LoopId, LoopMode, ScalarExpr, TailGuard,
 };
 use crate::ir::stage::{
     Axis, AxisId, AxisRef as StageAxisRef, Layout, LayoutDim, ProgramShape, Shape, ShapeDim, Site,
@@ -104,6 +104,7 @@ impl<'a> Builder<'a> {
                 .push(Some(Source::Input(InputId(input))));
             self.buffers.push(Buffer {
                 kind: BufferKind::Input,
+                scope: BufferScope::Global,
                 shape: self.lower_program_shape(shape),
                 layout: BufferLayout(
                     (0..shape.0.len())
@@ -140,6 +141,7 @@ impl<'a> Builder<'a> {
             };
             self.buffers.push(Buffer {
                 kind,
+                scope: BufferScope::Global,
                 shape: self.lower_program_shape(&self.program.shapes.nodes[stage_index]),
                 layout: self.lower_output_buffer_layout(stage_index, buffer, &node.inner)?,
             });
@@ -294,6 +296,7 @@ impl<'a> Builder<'a> {
         self.buffer_sources.push(None);
         self.buffers.push(Buffer {
             kind: BufferKind::Intermediate,
+            scope: BufferScope::Global,
             shape: buffer.shape,
             layout: buffer.layout,
         });
@@ -711,6 +714,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 let (axis, info) = local_loops[depth].clone();
                 block.push(Action::Loop {
                     id: info.id,
+                    mode: LoopMode::Serial,
                     extent: emitter.lower_loop_extent(stage_index, stage, axis, info.clone())?,
                     guard: TailGuard(emitter.tail_guard(stage, info)),
                     body: build(
@@ -1476,6 +1480,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             axes.insert(axis, scale_axes[position].1.clone());
             Ok(Block(vec![Action::Loop {
                 id: info.id,
+                mode: LoopMode::Serial,
                 extent: emitter.lower_loop_extent(stage_index, stage, axis, info.clone())?,
                 guard: TailGuard(emitter.tail_guard(stage, info)),
                 body,

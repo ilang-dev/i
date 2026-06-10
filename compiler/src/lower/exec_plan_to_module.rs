@@ -302,6 +302,7 @@ impl KernelLowerer {
         match action {
             Action::Loop {
                 id,
+                mode: _,
                 extent,
                 guard,
                 body,

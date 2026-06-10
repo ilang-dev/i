@@ -290,11 +290,13 @@ impl<'a> Builder<'a> {
         match action {
             Action::Loop {
                 id,
+                mode,
                 extent,
                 guard,
                 body,
             } => Ok(Action::Loop {
                 id: *id,
+                mode: *mode,
                 extent: Extent {
                     source: DimRef {
                         buffer: self.lower_param(kernel, extent.source.buffer)?,
@@ -480,7 +482,8 @@ mod tests {
     use crate::ir::exec_plan::{Arg, BufferRef, Input, Intermediate, Output, Param, Step};
     use crate::ir::graph::{Graph, Input as GraphInput};
     use crate::ir::kernel_program::{
-        Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, KernelProgram,
+        Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferScope, BufferShape,
+        KernelProgram,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -758,6 +761,7 @@ mod tests {
         KernelProgram {
             buffers: vec![Buffer {
                 kind,
+                scope: BufferScope::Global,
                 shape: BufferShape(vec![DimRef {
                     buffer: BufferId(0),
                     dim: 0,
@@ -784,6 +788,7 @@ mod tests {
             buffers: vec![
                 Buffer {
                     kind: BufferKind::Input,
+                    scope: BufferScope::Global,
                     shape: BufferShape(vec![
                         DimRef {
                             buffer: BufferId(0),
@@ -813,6 +818,7 @@ mod tests {
                 },
                 Buffer {
                     kind: BufferKind::Output,
+                    scope: BufferScope::Global,
                     shape: BufferShape(vec![
                         DimRef {
                             buffer: BufferId(0),

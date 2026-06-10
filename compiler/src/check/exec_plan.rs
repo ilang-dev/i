@@ -566,7 +566,9 @@ mod tests {
         Arg, BufferRef, Buffers, Exec, ExecPlan, Input, InputBuffer, Intermediate,
         IntermediateBuffer, KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, TailGuard};
+    use crate::ir::kernel_program::{
+        Access, Action, Block, Iter, Kernel, LoopId, LoopMode, TailGuard,
+    };
 
     fn dim(input: usize, dim: usize) -> DimRef<Input> {
         DimRef {
@@ -595,6 +597,7 @@ mod tests {
                 }],
                 body: Block(vec![Action::Loop {
                     id: LoopId(0),
+                    mode: LoopMode::Serial,
                     extent: Extent {
                         source: DimRef {
                             buffer: Param {

@@ -18,6 +18,7 @@
 //! - `KernelProgram.outputs` gives program output buffers in user-visible
 //!   order.
 //! - `Buffer.kind` gives the graph boundary role of one logical buffer.
+//! - `Buffer.scope` gives the storage scope of one logical buffer.
 //! - `Buffer.shape` gives the semantic shape of one logical buffer.
 //! - `Buffer.layout` gives the allocation layout of one logical buffer.
 //! - `BufferShape` preserves semantic buffer dimension order.
@@ -33,6 +34,8 @@
 //! - `LoopId` values are kernel-local.
 //! - `LoopId(i)` names one loop in the same `Kernel`.
 //! - `LoopId` values are unique within one `Kernel`.
+//! - `LoopMode::Serial` requires counted-loop execution.
+//! - `LoopMode::Parallel` permits target parallel binding.
 //! - `Block` statements execute in order.
 //! - `Action::Loop` contains one nested loop body.
 //! - `Action::Init` initializes one scalar element of one write buffer.
@@ -85,6 +88,8 @@ pub struct Kernel<B = BufferId> {
 pub struct Buffer {
     /// Buffer role.
     pub kind: BufferKind,
+    /// Buffer storage scope.
+    pub scope: BufferScope,
     /// Buffer semantic shape.
     pub shape: BufferShape,
     /// Buffer allocation layout.
@@ -100,6 +105,17 @@ pub enum BufferKind {
     Intermediate,
     /// One program output buffer.
     Output,
+}
+
+/// Storage scope of one logical buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BufferScope {
+    /// One exec-owned allocation.
+    Global,
+    /// One cooperative-group allocation.
+    Group,
+    /// One execution-lane allocation.
+    Private,
 }
 
 /// Semantic shape of one logical buffer.
@@ -121,6 +137,8 @@ pub enum Action<B = BufferId> {
     Loop {
         /// Loop identifier.
         id: LoopId,
+        /// Loop execution mode.
+        mode: LoopMode,
         /// Loop extent.
         extent: Extent<B>,
         /// Loop tail guard.
@@ -192,6 +210,15 @@ pub struct BufferId(pub usize);
 /// Handle for one kernel loop.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LoopId(pub usize);
+
+/// Execution mode of one kernel loop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoopMode {
+    /// Counted-loop execution.
+    Serial,
+    /// Target parallel binding permitted.
+    Parallel,
+}
 
 /// Whether a loop has the canonical tail guard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

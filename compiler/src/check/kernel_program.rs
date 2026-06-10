@@ -311,8 +311,8 @@ mod tests {
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::graph::{Graph, Node, Output};
     use crate::ir::kernel_program::{
-        Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferShape, Kernel,
-        KernelProgram, LoopId, TailGuard,
+        Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferScope,
+        BufferShape, Kernel, KernelProgram, LoopId, LoopMode, TailGuard,
     };
 
     fn program() -> KernelProgram {
@@ -320,6 +320,7 @@ mod tests {
             buffers: vec![
                 Buffer {
                     kind: BufferKind::Input,
+                    scope: BufferScope::Global,
                     shape: BufferShape(vec![DimRef {
                         buffer: BufferId(0),
                         dim: 0,
@@ -334,6 +335,7 @@ mod tests {
                 },
                 Buffer {
                     kind: BufferKind::Output,
+                    scope: BufferScope::Global,
                     shape: BufferShape(vec![DimRef {
                         buffer: BufferId(0),
                         dim: 0,
@@ -356,6 +358,7 @@ mod tests {
                         writes: vec![BufferId(1)],
                         body: Block(vec![Action::Loop {
                             id: LoopId(0),
+                            mode: LoopMode::Serial,
                             extent: Extent {
                                 source: DimRef {
                                     buffer: BufferId(1),
@@ -451,6 +454,7 @@ mod tests {
             0,
             Action::Loop {
                 id: LoopId(0),
+                mode: LoopMode::Serial,
                 extent: extent.clone(),
                 guard: TailGuard(false),
                 body: Block(vec![]),
@@ -493,6 +497,7 @@ mod tests {
         let mut program = program();
         program.buffers.push(Buffer {
             kind: BufferKind::Intermediate,
+            scope: BufferScope::Global,
             shape: BufferShape(vec![DimRef {
                 buffer: BufferId(0),
                 dim: 0,
