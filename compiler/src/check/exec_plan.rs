@@ -2,8 +2,11 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ir::common::DimRef;
-use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Intermediate, KernelId, Param, Step};
-use crate::ir::kernel_program::{Access, Action, Block, Iter, Kernel, LoopId, ScalarExpr};
+use crate::ir::exec_plan::{
+    Arg, BoundKernel, BufferRef, ExecPlan, Input, Intermediate, KernelId, KernelRef, Local, Param,
+    Step,
+};
+use crate::ir::kernel_program::{Access, Action, Block, BufferScope, Iter, LoopId, ScalarExpr};
 
 pub fn validate_exec_plan(plan: &ExecPlan) -> Result<(), ValidationError> {
     validate_metadata(plan)?;
@@ -95,6 +98,8 @@ fn validate_kernels(plan: &ExecPlan) -> Result<(), ValidationError> {
     for (kernel_index, kernel) in plan.kernels.iter().enumerate() {
         validate_kernel_params(kernel)
             .map_err(|message| err(format!("kernel {} {}", kernel_index, message)))?;
+        validate_kernel_locals(plan, kernel)
+            .map_err(|message| err(format!("kernel {} {}", kernel_index, message)))?;
         let mut loops = BTreeSet::new();
         collect_loop_ids(&kernel.body, &mut loops)
             .map_err(|error| err(format!("kernel {} {}", kernel_index, error.message)))?;
@@ -102,7 +107,7 @@ fn validate_kernels(plan: &ExecPlan) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn validate_kernel_params(kernel: &Kernel<Param>) -> Result<(), String> {
+fn validate_kernel_params(kernel: &BoundKernel) -> Result<(), String> {
     for (index, param) in kernel.reads.iter().enumerate() {
         if *param
             != (Param {
@@ -122,6 +127,19 @@ fn validate_kernel_params(kernel: &Kernel<Param>) -> Result<(), String> {
         {
             return Err(format!("write {} is {:?}", index, param));
         }
+    }
+    Ok(())
+}
+
+fn validate_kernel_locals(plan: &ExecPlan, kernel: &BoundKernel) -> Result<(), String> {
+    for (local, buffer) in kernel.locals.iter().enumerate() {
+        if buffer.scope == BufferScope::Global {
+            return Err(format!("local {} is global", local));
+        }
+        validate_shape(plan, &buffer.buffer.shape)
+            .map_err(|message| format!("local {} shape {}", local, message))?;
+        validate_layout(plan, &buffer.buffer.layout)
+            .map_err(|message| format!("local {} layout {}", local, message))?;
     }
     Ok(())
 }
@@ -193,20 +211,20 @@ fn validate_dispatch(
     reads: &[BufferRef],
     writes: &[BufferRef],
 ) -> Result<(), String> {
-    let body = &plan.kernels[kernel.0];
-    if reads.len() != body.reads.len() {
+    let kernel_body = &plan.kernels[kernel.0];
+    if reads.len() != kernel_body.reads.len() {
         return Err(format!(
             "kernel {} has {} reads but dispatch binds {}",
             kernel.0,
-            body.reads.len(),
+            kernel_body.reads.len(),
             reads.len()
         ));
     }
-    if writes.len() != body.writes.len() {
+    if writes.len() != kernel_body.writes.len() {
         return Err(format!(
             "kernel {} has {} writes but dispatch binds {}",
             kernel.0,
-            body.writes.len(),
+            kernel_body.writes.len(),
             writes.len()
         ));
     }
@@ -217,12 +235,20 @@ fn validate_dispatch(
     }
 
     let mut loops = BTreeSet::new();
-    collect_loop_ids(&body.body, &mut loops).map_err(|error| error.message)?;
-    validate_block(plan, reads, writes, &loops, &BTreeSet::new(), &body.body)
+    collect_loop_ids(&kernel_body.body, &mut loops).map_err(|error| error.message)?;
+    validate_block(
+        plan,
+        kernel_body,
+        reads,
+        writes,
+        &loops,
+        &BTreeSet::new(),
+        &kernel_body.body,
+    )
 }
 
 fn collect_loop_ids(
-    block: &Block<Param>,
+    block: &Block<KernelRef>,
     loops: &mut BTreeSet<usize>,
 ) -> Result<(), ValidationError> {
     for action in &block.0 {
@@ -238,27 +264,28 @@ fn collect_loop_ids(
 
 fn validate_block(
     plan: &ExecPlan,
+    kernel: &BoundKernel,
     reads: &[BufferRef],
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    block: &Block<Param>,
+    block: &Block<KernelRef>,
 ) -> Result<(), String> {
     for action in &block.0 {
         match action {
             Action::Loop {
                 id, extent, body, ..
             } => {
-                validate_param_dim(plan, reads, writes, extent.source)
+                validate_ref_dim(plan, kernel, reads, writes, extent.source)
                     .map_err(|message| format!("loop {} extent {}", id.0, message))?;
                 let mut child_scope = scope.clone();
                 child_scope.insert(id.0);
-                validate_block(plan, reads, writes, loops, &child_scope, body)?;
+                validate_block(plan, kernel, reads, writes, loops, &child_scope, body)?;
             }
             Action::Init {
                 write, zero_checks, ..
             } => {
-                validate_write_access(plan, reads, writes, loops, scope, write)
+                validate_write_access(plan, kernel, reads, writes, loops, scope, write)
                     .map_err(|message| format!("init {}", message))?;
                 for loop_id in zero_checks {
                     validate_loop_ref(loops, scope, *loop_id)
@@ -268,23 +295,23 @@ fn validate_block(
             Action::Compute {
                 write, reads: ins, ..
             } => {
-                validate_write_access(plan, reads, writes, loops, scope, write)
+                validate_write_access(plan, kernel, reads, writes, loops, scope, write)
                     .map_err(|message| format!("compute write {}", message))?;
                 for (read_index, read) in ins.iter().enumerate() {
-                    validate_access(plan, reads, writes, loops, scope, read)
+                    validate_access(plan, kernel, reads, writes, loops, scope, read)
                         .map_err(|message| format!("compute read {} {}", read_index, message))?;
                 }
             }
             Action::Snapshot { write, read } => {
-                validate_write_access(plan, reads, writes, loops, scope, write)
+                validate_write_access(plan, kernel, reads, writes, loops, scope, write)
                     .map_err(|message| format!("snapshot write {}", message))?;
-                validate_access(plan, reads, writes, loops, scope, read)
+                validate_access(plan, kernel, reads, writes, loops, scope, read)
                     .map_err(|message| format!("snapshot read {}", message))?;
             }
             Action::Scale { write, factor } => {
-                validate_write_access(plan, reads, writes, loops, scope, write)
+                validate_write_access(plan, kernel, reads, writes, loops, scope, write)
                     .map_err(|message| format!("scale write {}", message))?;
-                validate_scale_expr(plan, reads, writes, loops, scope, factor)
+                validate_scale_expr(plan, kernel, reads, writes, loops, scope, factor)
                     .map_err(|message| format!("scale factor {}", message))?;
             }
         }
@@ -294,49 +321,55 @@ fn validate_block(
 
 fn validate_scale_expr(
     plan: &ExecPlan,
+    kernel: &BoundKernel,
     reads: &[BufferRef],
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    expr: &ScalarExpr<Param>,
+    expr: &ScalarExpr<KernelRef>,
 ) -> Result<(), String> {
     match expr {
-        ScalarExpr::Access(access) => validate_access(plan, reads, writes, loops, scope, access),
+        ScalarExpr::Access(access) => {
+            validate_access(plan, kernel, reads, writes, loops, scope, access)
+        }
         ScalarExpr::Unary { arg, .. } => {
-            validate_scale_expr(plan, reads, writes, loops, scope, arg)
+            validate_scale_expr(plan, kernel, reads, writes, loops, scope, arg)
         }
         ScalarExpr::Binary { lhs, rhs, .. } => {
-            validate_scale_expr(plan, reads, writes, loops, scope, lhs)?;
-            validate_scale_expr(plan, reads, writes, loops, scope, rhs)
+            validate_scale_expr(plan, kernel, reads, writes, loops, scope, lhs)?;
+            validate_scale_expr(plan, kernel, reads, writes, loops, scope, rhs)
         }
     }
 }
 
 fn validate_write_access(
     plan: &ExecPlan,
+    kernel: &BoundKernel,
     reads: &[BufferRef],
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    access: &Access<Param>,
+    access: &Access<KernelRef>,
 ) -> Result<(), String> {
-    validate_param(access.buffer, reads, writes)?;
-    if !matches!(access.buffer.arg, Arg::Writeable) {
-        return Err(format!("writes {:?} outside writeables", access.buffer));
+    validate_ref(access.buffer, kernel, reads, writes)?;
+    if let KernelRef::Param(param) = access.buffer {
+        if !matches!(param.arg, Arg::Writeable) {
+            return Err(format!("writes {:?} outside writeables", access.buffer));
+        }
     }
-    validate_access(plan, reads, writes, loops, scope, access)
+    validate_access(plan, kernel, reads, writes, loops, scope, access)
 }
 
 fn validate_access(
     plan: &ExecPlan,
+    kernel: &BoundKernel,
     reads: &[BufferRef],
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    access: &Access<Param>,
+    access: &Access<KernelRef>,
 ) -> Result<(), String> {
-    let buffer = resolve_param(access.buffer, reads, writes)?;
-    let layout_rank = buffer_layout_rank(plan, buffer)?;
+    let layout_rank = ref_layout_rank(plan, kernel, reads, writes, access.buffer)?;
     if access.index.len() != layout_rank {
         return Err(format!(
             "access has {} indexes for layout rank {}",
@@ -393,14 +426,14 @@ fn validate_loop_ref(
     Ok(())
 }
 
-fn validate_param_dim(
+fn validate_ref_dim(
     plan: &ExecPlan,
+    kernel: &BoundKernel,
     reads: &[BufferRef],
     writes: &[BufferRef],
-    dim: DimRef<Param>,
+    dim: DimRef<KernelRef>,
 ) -> Result<(), String> {
-    let buffer = resolve_param(dim.buffer, reads, writes)?;
-    let shape_rank = buffer_shape_rank(plan, buffer)?;
+    let shape_rank = ref_shape_rank(plan, kernel, reads, writes, dim.buffer)?;
     if dim.dim >= shape_rank {
         return Err(format!(
             "references nonexistent dim {} of {:?}",
@@ -410,8 +443,16 @@ fn validate_param_dim(
     Ok(())
 }
 
-fn validate_param(param: Param, reads: &[BufferRef], writes: &[BufferRef]) -> Result<(), String> {
-    resolve_param(param, reads, writes).map(|_| ())
+fn validate_ref(
+    reference: KernelRef,
+    kernel: &BoundKernel,
+    reads: &[BufferRef],
+    writes: &[BufferRef],
+) -> Result<(), String> {
+    match reference {
+        KernelRef::Param(param) => resolve_param(param, reads, writes).map(|_| ()),
+        KernelRef::Local(local) => validate_local(kernel, local),
+    }
 }
 
 fn resolve_param(
@@ -429,6 +470,13 @@ fn resolve_param(
             .copied()
             .ok_or_else(|| format!("references nonexistent writeable {}", param.ind)),
     }
+}
+
+fn validate_local(kernel: &BoundKernel, local: Local) -> Result<(), String> {
+    if local.0 >= kernel.locals.len() {
+        return Err(format!("references nonexistent local {}", local.0));
+    }
+    Ok(())
 }
 
 fn validate_input_dim(plan: &ExecPlan, input: Input, dim: usize) -> Result<(), String> {
@@ -539,6 +587,46 @@ fn buffer_layout_rank(plan: &ExecPlan, buffer: BufferRef) -> Result<usize, Strin
     }
 }
 
+fn ref_shape_rank(
+    plan: &ExecPlan,
+    kernel: &BoundKernel,
+    reads: &[BufferRef],
+    writes: &[BufferRef],
+    reference: KernelRef,
+) -> Result<usize, String> {
+    match reference {
+        KernelRef::Param(param) => {
+            let buffer = resolve_param(param, reads, writes)?;
+            buffer_shape_rank(plan, buffer)
+        }
+        KernelRef::Local(local) => kernel
+            .locals
+            .get(local.0)
+            .map(|buffer| buffer.buffer.shape.0.len())
+            .ok_or_else(|| format!("references nonexistent local {}", local.0)),
+    }
+}
+
+fn ref_layout_rank(
+    plan: &ExecPlan,
+    kernel: &BoundKernel,
+    reads: &[BufferRef],
+    writes: &[BufferRef],
+    reference: KernelRef,
+) -> Result<usize, String> {
+    match reference {
+        KernelRef::Param(param) => {
+            let buffer = resolve_param(param, reads, writes)?;
+            buffer_layout_rank(plan, buffer)
+        }
+        KernelRef::Local(local) => kernel
+            .locals
+            .get(local.0)
+            .map(|buffer| buffer.buffer.layout.0.len())
+            .ok_or_else(|| format!("references nonexistent local {}", local.0)),
+    }
+}
+
 fn err(message: impl Into<String>) -> ValidationError {
     ValidationError {
         message: message.into(),
@@ -563,11 +651,11 @@ mod tests {
     use super::validate_exec_plan;
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
-        Arg, BufferRef, Buffers, Exec, ExecPlan, Input, InputBuffer, Intermediate,
-        IntermediateBuffer, KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
+        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate,
+        KernelId, KernelRef, Layout, LocalBuffer, Output, Param, Shape, Step,
     };
     use crate::ir::kernel_program::{
-        Access, Action, Block, Iter, Kernel, LoopId, LoopMode, TailGuard,
+        Access, Action, Block, BufferScope, Iter, LoopId, LoopMode, TailGuard,
     };
 
     fn dim(input: usize, dim: usize) -> DimRef<Input> {
@@ -586,7 +674,7 @@ mod tests {
 
     fn plan() -> ExecPlan {
         ExecPlan {
-            kernels: vec![Kernel {
+            kernels: vec![BoundKernel {
                 reads: vec![Param {
                     arg: Arg::Readonly,
                     ind: 0,
@@ -595,15 +683,16 @@ mod tests {
                     arg: Arg::Writeable,
                     ind: 0,
                 }],
+                locals: vec![],
                 body: Block(vec![Action::Loop {
                     id: LoopId(0),
                     mode: LoopMode::Serial,
                     extent: Extent {
                         source: DimRef {
-                            buffer: Param {
+                            buffer: KernelRef::Param(Param {
                                 arg: Arg::Readonly,
                                 ind: 0,
-                            },
+                            }),
                             dim: 0,
                         },
                         kind: ExtentKind::Semantic,
@@ -612,29 +701,29 @@ mod tests {
                     body: Block(vec![Action::Compute {
                         op: Op::Add,
                         write: Access {
-                            buffer: Param {
+                            buffer: KernelRef::Param(Param {
                                 arg: Arg::Writeable,
                                 ind: 0,
-                            },
+                            }),
                             index: vec![Iter::Raw(LoopId(0))],
                         },
                         reads: vec![Access {
-                            buffer: Param {
+                            buffer: KernelRef::Param(Param {
                                 arg: Arg::Readonly,
                                 ind: 0,
-                            },
+                            }),
                             index: vec![Iter::Raw(LoopId(0))],
                         }],
                     }]),
                 }]),
             }],
             buffers: Buffers {
-                inputs: vec![InputBuffer {
+                inputs: vec![Buffer {
                     shape: Shape(vec![dim(0, 0)]),
                     layout: Layout(vec![extent(0, 0)]),
                 }],
                 intermediates: vec![],
-                outputs: vec![OutputBuffer {
+                outputs: vec![Buffer {
                     shape: Shape(vec![dim(0, 0)]),
                     layout: Layout(vec![extent(0, 0)]),
                 }],
@@ -653,6 +742,21 @@ mod tests {
     #[test]
     fn accepts_exec_plan() {
         assert!(validate_exec_plan(&plan()).is_ok());
+    }
+
+    #[test]
+    fn rejects_global_kernel_local() {
+        let mut plan = plan();
+        plan.kernels[0].locals.push(LocalBuffer {
+            scope: BufferScope::Global,
+            buffer: Buffer {
+                shape: Shape(vec![]),
+                layout: Layout(vec![]),
+            },
+        });
+
+        let error = validate_exec_plan(&plan).unwrap_err();
+        assert_eq!(error.to_string(), "kernel 0 local 0 is global");
     }
 
     #[test]
@@ -710,7 +814,7 @@ mod tests {
     #[test]
     fn rejects_unallocated_intermediate_dispatch() {
         let mut plan = plan();
-        plan.buffers.intermediates.push(IntermediateBuffer {
+        plan.buffers.intermediates.push(Buffer {
             shape: Shape(vec![dim(0, 0)]),
             layout: Layout(vec![extent(0, 0)]),
         });
@@ -765,7 +869,7 @@ mod tests {
     #[test]
     fn rejects_unfreed_intermediate() {
         let mut plan = plan();
-        plan.buffers.intermediates.push(IntermediateBuffer {
+        plan.buffers.intermediates.push(Buffer {
             shape: Shape(vec![dim(0, 0)]),
             layout: Layout(vec![extent(0, 0)]),
         });

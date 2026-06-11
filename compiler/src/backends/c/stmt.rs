@@ -71,6 +71,11 @@ fn render_stmt(stmt: &Stmt, env: &mut Env) -> String {
             env.insert(dst.clone(), Type::ViewMut);
             rendered
         }
+        Stmt::StackAlloc { dst, shape, layout } => {
+            let rendered = render_stack_alloc(dst, shape, layout);
+            env.insert(dst.clone(), Type::ViewMut);
+            rendered
+        }
         Stmt::Free(ident) => {
             format!("free({}.data);", render_ident(ident))
         }
@@ -126,6 +131,35 @@ fn render_alloc(dst: &Ident, shape: &[Expr], layout: &[Expr]) -> String {
         render_array_decl(&shape_ident, shape),
         layout.len(),
     )
+}
+
+fn render_stack_alloc(dst: &Ident, shape: &[Expr], layout: &[Expr]) -> String {
+    let ident = render_ident(dst);
+    let data_ident = format!("{ident}_data");
+    let layout_ident = format!("{ident}_layout");
+    let shape_ident = format!("{ident}_shape");
+    let layout_arg = array_arg(&layout_ident, layout);
+    let shape_arg = array_arg(&shape_ident, shape);
+    let size = static_layout_size(layout);
+
+    format!(
+        "float {data_ident}[{size}];\n{}\n{}\nViewMut {ident} = (ViewMut){{ .data = {data_ident}, .shape = {shape_arg}, .layout = {layout_arg} }};",
+        render_array_decl(&layout_ident, layout),
+        render_array_decl(&shape_ident, shape),
+    )
+}
+
+fn static_layout_size(layout: &[Expr]) -> usize {
+    if layout.is_empty() {
+        return 1;
+    }
+    layout
+        .iter()
+        .map(|expr| match expr {
+            Expr::Usize(value) => *value,
+            _ => panic!("stack allocation layout is not static"),
+        })
+        .product()
 }
 
 fn render_array_decl(ident: &str, values: &[Expr]) -> String {

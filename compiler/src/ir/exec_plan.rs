@@ -1,7 +1,7 @@
 //! Exec plan IR.
 //!
 //! This module defines the generated public execution plan of 𝚒.
-//! `ExecPlan` gives param-bound kernels, runtime buffers, public output
+//! `ExecPlan` gives kernels, runtime buffers, public output
 //! metadata, and ordered execution steps.
 //! `Shape` values give semantic dimensions in terms of program inputs.
 //! `Layout` values give physical allocation dimensions in terms of program
@@ -20,11 +20,15 @@
 //! - `Input(i)` names `ExecPlan.buffers.inputs[i]`.
 //! - `Intermediate(i)` names `ExecPlan.buffers.intermediates[i]`.
 //! - `Output(i)` names `ExecPlan.buffers.outputs[i]`.
-//! - `Kernel<Param>.reads` is the ordered `readonlys` parameter list.
-//! - `Kernel<Param>.writes` is the ordered `writeables` parameter list.
-//! - Every value in `Kernel<Param>.reads` has `Arg::Readonly`.
-//! - Every value in `Kernel<Param>.writes` has `Arg::Writeable`.
+//! - `BoundKernel.reads` is the ordered `readonlys` parameter list.
+//! - `BoundKernel.writes` is the ordered `writeables` parameter list.
+//! - Every value in `BoundKernel.reads` has `Arg::Readonly`.
+//! - Every value in `BoundKernel.writes` has `Arg::Writeable`.
+//! - `BoundKernel.locals` is ordered.
 //! - `Param { arg, ind }` names parameter `ind` of `arg`.
+//! - `Local(i)` names `BoundKernel.locals[i]`.
+//! - `KernelRef::Param(param)` names one kernel parameter.
+//! - `KernelRef::Local(local)` names one kernel-local buffer.
 //! - `Shape` preserves semantic dimension order.
 //! - `Layout` preserves physical allocation dimension order.
 //! - `Shape` and `Layout` dimensions are sourced from program inputs.
@@ -39,13 +43,13 @@
 //!
 
 use super::common::{DimRef, Extent};
-use super::kernel_program::Kernel;
+use super::kernel_program::{Block, BufferScope};
 
 /// One public execution plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecPlan {
-    /// Param-bound kernels in execution-plan order.
-    pub kernels: Vec<Kernel<Param>>,
+    /// Kernels in execution-plan order.
+    pub kernels: Vec<BoundKernel>,
     /// Runtime buffers.
     pub buffers: Buffers,
     /// Number of program outputs.
@@ -62,38 +66,42 @@ pub struct ExecPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Buffers {
     /// Program input buffers.
-    pub inputs: Vec<InputBuffer>,
+    pub inputs: Vec<Buffer>,
     /// Exec-owned intermediate buffers.
-    pub intermediates: Vec<IntermediateBuffer>,
+    pub intermediates: Vec<Buffer>,
     /// Program output buffers.
-    pub outputs: Vec<OutputBuffer>,
+    pub outputs: Vec<Buffer>,
 }
 
-/// One program input buffer.
+/// One execution-plan buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InputBuffer {
+pub struct Buffer {
     /// Buffer semantic shape.
     pub shape: Shape,
     /// Buffer allocation layout.
     pub layout: Layout,
 }
 
-/// One exec-owned intermediate buffer.
+/// One bound kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IntermediateBuffer {
-    /// Buffer semantic shape.
-    pub shape: Shape,
-    /// Buffer allocation layout.
-    pub layout: Layout,
+pub struct BoundKernel {
+    /// Kernel `readonlys` parameter list.
+    pub reads: Vec<Param>,
+    /// Kernel `writeables` parameter list.
+    pub writes: Vec<Param>,
+    /// Kernel-local buffers.
+    pub locals: Vec<LocalBuffer>,
+    /// Kernel body.
+    pub body: Block<KernelRef>,
 }
 
-/// One program output buffer.
+/// One kernel-local buffer.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutputBuffer {
-    /// Buffer semantic shape.
-    pub shape: Shape,
-    /// Buffer allocation layout.
-    pub layout: Layout,
+pub struct LocalBuffer {
+    /// Buffer storage scope.
+    pub scope: BufferScope,
+    /// Buffer metadata.
+    pub buffer: Buffer,
 }
 
 /// Semantic shape of one runtime buffer.
@@ -144,6 +152,19 @@ pub struct Param {
     /// Parameter index within the bucket.
     pub ind: usize,
 }
+
+/// Reference to one kernel buffer.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum KernelRef {
+    /// One kernel ABI parameter.
+    Param(Param),
+    /// One kernel-local buffer.
+    Local(Local),
+}
+
+/// Handle for one kernel-local buffer.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Local(pub usize);
 
 /// Ordered execution steps.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -349,4 +349,32 @@ mod tests {
             "f0(\n    (const View[]){\n      view_mut_as_view(&source)\n    },\n    (ViewMut[]){\n      source\n    }\n  );"
         ));
     }
+
+    #[test]
+    fn renders_stack_alloc() {
+        let module = Module {
+            count: function(
+                "count",
+                Signature::Count,
+                Block(vec![Stmt::Return(Some(Expr::Usize(0)))]),
+            ),
+            ranks: function("ranks", Signature::Ranks, Block(vec![Stmt::Return(None)])),
+            shapes: function("shapes", Signature::Shapes, Block(vec![Stmt::Return(None)])),
+            exec: function("exec", Signature::Exec, Block(vec![Stmt::Return(None)])),
+            kernels: vec![function(
+                "f0",
+                Signature::Kernel,
+                Block(vec![Stmt::StackAlloc {
+                    dst: id("l0"),
+                    shape: vec![],
+                    layout: vec![Expr::Usize(16), Expr::Usize(16)],
+                }]),
+            )],
+        };
+        let c = render(&module);
+
+        assert!(c.contains("float l0_data[256];"));
+        assert!(c.contains("const size_t l0_layout[] = {\n    16,\n    16\n  };"));
+        assert!(c.contains("ViewMut l0 = (ViewMut){ .data = l0_data"));
+    }
 }

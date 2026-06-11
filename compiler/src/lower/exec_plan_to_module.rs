@@ -4,10 +4,10 @@ use std::fmt;
 use crate::check::exec_plan::validate_exec_plan;
 use crate::check::module::validate_module;
 use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
-use crate::ir::exec_plan::{Arg, BufferRef, ExecPlan, Input, Param, Step};
-use crate::ir::kernel_program::{
-    Access, Action, Block as KernelBlock, Iter, Kernel, LoopId, ScalarExpr,
+use crate::ir::exec_plan::{
+    Arg, BoundKernel, BufferRef, ExecPlan, Input, KernelRef, Local, Param, Step,
 };
+use crate::ir::kernel_program::{Access, Action, Block as KernelBlock, Iter, LoopId, ScalarExpr};
 use crate::ir::module::{
     Block, Cast, Expr, Field, Fn, Ident, Module, Place, Signature, Stmt, Type,
 };
@@ -170,25 +170,27 @@ impl<'a> Builder<'a> {
             .collect()
     }
 
-    fn lower_kernel(&self, kernel_index: usize, kernel: &Kernel<Param>) -> Result<Fn, LowerError> {
+    fn lower_kernel(&self, kernel_index: usize, kernel: &BoundKernel) -> Result<Fn, LowerError> {
         let initialized = initialized_buffers(&kernel.body);
         let mut lower = KernelLowerer {
             initialized,
             loops: BTreeMap::new(),
-            semantic_dims: self.kernel_semantic_dims(kernel_index)?,
+            semantic_dims: self.kernel_semantic_dims(kernel_index, kernel)?,
         };
-        let body = lower.lower_block(&kernel.body)?;
+        let mut statements = lower.lower_locals(kernel)?;
+        statements.extend(lower.lower_block(&kernel.body)?.0);
         Ok(Fn {
             ident: kernel_ident(kernel_index),
             signature: Signature::Kernel,
-            body,
+            body: Block(statements),
         })
     }
 
     fn kernel_semantic_dims(
         &self,
         kernel_index: usize,
-    ) -> Result<Vec<(DimRef<Param>, DimRef<Input>)>, LowerError> {
+        kernel: &BoundKernel,
+    ) -> Result<Vec<(DimRef<KernelRef>, DimRef<Input>)>, LowerError> {
         let dispatch = self
             .plan
             .exec
@@ -213,12 +215,23 @@ impl<'a> Builder<'a> {
         for (ind, buffer) in dispatch.1.iter().copied().enumerate() {
             self.extend_param_semantic_dims(&mut dims, Arg::Writeable, ind, buffer)?;
         }
+        for (local, buffer) in kernel.locals.iter().enumerate() {
+            for (dim, source) in buffer.buffer.shape.0.iter().copied().enumerate() {
+                dims.push((
+                    DimRef {
+                        buffer: KernelRef::Local(Local(local)),
+                        dim,
+                    },
+                    source,
+                ));
+            }
+        }
         Ok(dims)
     }
 
     fn extend_param_semantic_dims(
         &self,
-        dims: &mut Vec<(DimRef<Param>, DimRef<Input>)>,
+        dims: &mut Vec<(DimRef<KernelRef>, DimRef<Input>)>,
         arg: Arg,
         ind: usize,
         buffer: BufferRef,
@@ -226,7 +239,7 @@ impl<'a> Builder<'a> {
         for (dim, source) in self.buffer_shape(buffer)?.0.iter().copied().enumerate() {
             dims.push((
                 DimRef {
-                    buffer: Param { arg, ind },
+                    buffer: KernelRef::Param(Param { arg, ind }),
                     dim,
                 },
                 source,
@@ -283,13 +296,53 @@ impl<'a> Builder<'a> {
 }
 
 struct KernelLowerer {
-    initialized: BTreeSet<Param>,
+    initialized: BTreeSet<KernelRef>,
     loops: BTreeMap<LoopId, LoopInfo>,
-    semantic_dims: Vec<(DimRef<Param>, DimRef<Input>)>,
+    semantic_dims: Vec<(DimRef<KernelRef>, DimRef<Input>)>,
 }
 
 impl KernelLowerer {
-    fn lower_block(&mut self, block: &KernelBlock<Param>) -> Result<Block, LowerError> {
+    fn lower_locals(&self, kernel: &BoundKernel) -> Result<Vec<Stmt>, LowerError> {
+        kernel
+            .locals
+            .iter()
+            .enumerate()
+            .map(|(local, buffer)| {
+                let shape = buffer
+                    .buffer
+                    .shape
+                    .0
+                    .iter()
+                    .copied()
+                    .map(|dim| self.input_dim(dim))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let layout = buffer
+                    .buffer
+                    .layout
+                    .0
+                    .iter()
+                    .enumerate()
+                    .map(|(dim, extent)| {
+                        let expr = extent_expr(self.input_dim(extent.source)?, &extent.kind);
+                        if !matches!(expr, Expr::Usize(_)) {
+                            return Err(LowerError::new(format!(
+                                "local {} layout dim {} is not static",
+                                local, dim
+                            )));
+                        }
+                        Ok(expr)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Stmt::StackAlloc {
+                    dst: local_ident(Local(local)),
+                    shape,
+                    layout,
+                })
+            })
+            .collect()
+    }
+
+    fn lower_block(&mut self, block: &KernelBlock<KernelRef>) -> Result<Block, LowerError> {
         block
             .0
             .iter()
@@ -298,7 +351,7 @@ impl KernelLowerer {
             .map(Block)
     }
 
-    fn lower_action(&mut self, action: &Action<Param>) -> Result<Stmt, LowerError> {
+    fn lower_action(&mut self, action: &Action<KernelRef>) -> Result<Stmt, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -321,7 +374,7 @@ impl KernelLowerer {
                     body = Block(vec![Stmt::If {
                         cond: Expr::Lt(
                             Box::new(self.reconstruct_extent_index(extent.source)?),
-                            Box::new(param_dim(extent.source)),
+                            Box::new(self.buffer_dim(extent.source)),
                         ),
                         body,
                     }]);
@@ -330,7 +383,7 @@ impl KernelLowerer {
 
                 Ok(Stmt::Loop {
                     iter,
-                    bound: extent_expr(param_dim(extent.source), &extent.kind),
+                    bound: extent_expr(self.buffer_dim(extent.source), &extent.kind),
                     body,
                 })
             }
@@ -380,7 +433,7 @@ impl KernelLowerer {
         }
     }
 
-    fn lower_scale_expr(&self, expr: &ScalarExpr<Param>) -> Result<Expr, LowerError> {
+    fn lower_scale_expr(&self, expr: &ScalarExpr<KernelRef>) -> Result<Expr, LowerError> {
         match expr {
             ScalarExpr::Access(access) => self.lower_read(access),
             ScalarExpr::Unary { op, arg } => scalar_op_expr(*op, vec![self.lower_scale_expr(arg)?]),
@@ -391,14 +444,14 @@ impl KernelLowerer {
         }
     }
 
-    fn lower_write(&self, access: &Access<Param>) -> Result<Place, LowerError> {
-        let buffer = param_place(access.buffer);
-        let index = self.flat_index(param_expr(access.buffer), &access.index)?;
+    fn lower_write(&self, access: &Access<KernelRef>) -> Result<Place, LowerError> {
+        let buffer = self.buffer_place(access.buffer);
+        let index = self.flat_index(self.buffer_expr(access.buffer), &access.index)?;
         Ok(index_place(field_place(buffer, Field::Data), index))
     }
 
-    fn lower_read(&self, access: &Access<Param>) -> Result<Expr, LowerError> {
-        let buffer = param_expr(access.buffer);
+    fn lower_read(&self, access: &Access<KernelRef>) -> Result<Expr, LowerError> {
+        let buffer = self.buffer_expr(access.buffer);
         let index = self.flat_index(buffer.clone(), &access.index)?;
         Ok(index_expr(field_expr(buffer, Field::Data), index))
     }
@@ -451,7 +504,7 @@ impl KernelLowerer {
             .ok_or_else(|| LowerError::new(format!("loop {} is not in scope", loop_id.0)))
     }
 
-    fn reconstruct_extent_index(&self, source: DimRef<Param>) -> Result<Expr, LowerError> {
+    fn reconstruct_extent_index(&self, source: DimRef<KernelRef>) -> Result<Expr, LowerError> {
         let semantic_source = self.semantic_dim(source);
         let mut infos = self
             .loops
@@ -491,10 +544,43 @@ impl KernelLowerer {
         Ok(reconstruct_index(iters, factors.as_slice()))
     }
 
-    fn semantic_dim(&self, source: DimRef<Param>) -> Option<DimRef<Input>> {
+    fn semantic_dim(&self, source: DimRef<KernelRef>) -> Option<DimRef<Input>> {
         self.semantic_dims
             .iter()
             .find_map(|(param, input)| (*param == source).then_some(*input))
+    }
+
+    fn input_dim(&self, dim: DimRef<Input>) -> Result<Expr, LowerError> {
+        self.semantic_dims
+            .iter()
+            .find_map(|(buffer, input)| (*input == dim).then_some(self.buffer_dim(*buffer)))
+            .ok_or_else(|| {
+                LowerError::new(format!(
+                    "input {} dim {} is not available in kernel",
+                    dim.buffer.0, dim.dim
+                ))
+            })
+    }
+
+    fn buffer_dim(&self, dim: DimRef<KernelRef>) -> Expr {
+        index_expr(
+            field_expr(self.buffer_expr(dim.buffer), Field::Shape),
+            Expr::Usize(dim.dim),
+        )
+    }
+
+    fn buffer_expr(&self, buffer: KernelRef) -> Expr {
+        match buffer {
+            KernelRef::Param(param) => param_expr(param),
+            KernelRef::Local(local) => Expr::Ident(local_ident(local)),
+        }
+    }
+
+    fn buffer_place(&self, buffer: KernelRef) -> Place {
+        match buffer {
+            KernelRef::Param(param) => param_place(param),
+            KernelRef::Local(local) => Place::Ident(local_ident(local)),
+        }
     }
 
     fn zero_check_condition(&self, loops: &[LoopId]) -> Result<Option<Expr>, LowerError> {
@@ -517,17 +603,17 @@ impl KernelLowerer {
 #[derive(Clone)]
 struct LoopInfo {
     iter: Ident,
-    source: DimRef<Param>,
+    source: DimRef<KernelRef>,
     kind: ExtentKind,
 }
 
-fn initialized_buffers(block: &KernelBlock<Param>) -> BTreeSet<Param> {
+fn initialized_buffers(block: &KernelBlock<KernelRef>) -> BTreeSet<KernelRef> {
     let mut initialized = BTreeSet::new();
     collect_initialized(block, &mut initialized);
     initialized
 }
 
-fn collect_initialized(block: &KernelBlock<Param>, initialized: &mut BTreeSet<Param>) {
+fn collect_initialized(block: &KernelBlock<KernelRef>, initialized: &mut BTreeSet<KernelRef>) {
     for action in &block.0 {
         match action {
             Action::Loop { body, .. } => collect_initialized(body, initialized),
@@ -657,13 +743,6 @@ fn param_parts(param: Param) -> (&'static str, usize) {
     }
 }
 
-fn param_dim(dim: DimRef<Param>) -> Expr {
-    index_expr(
-        field_expr(param_expr(dim.buffer), Field::Shape),
-        Expr::Usize(dim.dim),
-    )
-}
-
 fn place_expr(place: Place) -> Expr {
     match place {
         Place::Ident(ident) => Expr::Ident(ident),
@@ -739,6 +818,10 @@ fn intermediate_ident(intermediate: crate::ir::exec_plan::Intermediate) -> Ident
     id(format!("s{}", intermediate.0))
 }
 
+fn local_ident(local: Local) -> Ident {
+    id(format!("l{}", local.0))
+}
+
 fn output_ident(output: crate::ir::exec_plan::Output) -> Ident {
     id(format!("out{}", output.0))
 }
@@ -782,9 +865,10 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::Op;
     use crate::ir::exec_plan::{
-        Arg, BufferRef, Buffers, Exec, ExecPlan, KernelId, Output, OutputBuffer, Param, Shape, Step,
+        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, KernelId, KernelRef, Local,
+        LocalBuffer, Output, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{Access, Action, Kernel, ScalarExpr};
+    use crate::ir::kernel_program::{Access, Action, BufferScope, ScalarExpr};
     use crate::ir::module::{Block, Cast, Expr, Field, Ident, Place, Signature, Stmt, Type};
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::kernel_program_to_exec_plan::lower_kernel_program_to_exec_plan;
@@ -827,11 +911,12 @@ mod tests {
         }
     }
 
-    fn online_action_module(action: Action<Param>) -> crate::ir::module::Module {
+    fn online_action_module(action: Action<KernelRef>) -> crate::ir::module::Module {
         lower_exec_plan_to_module(&ExecPlan {
-            kernels: vec![Kernel {
+            kernels: vec![BoundKernel {
                 reads: vec![],
                 writes: vec![write_param(0), write_param(1), write_param(2)],
+                locals: vec![],
                 body: crate::ir::kernel_program::Block(vec![action]),
             }],
             buffers: Buffers {
@@ -855,8 +940,52 @@ mod tests {
         .unwrap()
     }
 
-    fn scalar_output() -> OutputBuffer {
-        OutputBuffer {
+    fn local_scalar_module() -> crate::ir::module::Module {
+        lower_exec_plan_to_module(&ExecPlan {
+            kernels: vec![BoundKernel {
+                reads: vec![],
+                writes: vec![write_param(0)],
+                locals: vec![LocalBuffer {
+                    scope: BufferScope::Private,
+                    buffer: scalar_output(),
+                }],
+                body: crate::ir::kernel_program::Block(vec![
+                    Action::Compute {
+                        op: Op::Add,
+                        write: Access {
+                            buffer: KernelRef::Local(Local(0)),
+                            index: vec![],
+                        },
+                        reads: vec![],
+                    },
+                    Action::Snapshot {
+                        write: scalar_access(write_param(0)),
+                        read: Access {
+                            buffer: KernelRef::Local(Local(0)),
+                            index: vec![],
+                        },
+                    },
+                ]),
+            }],
+            buffers: Buffers {
+                inputs: vec![],
+                intermediates: vec![],
+                outputs: vec![scalar_output()],
+            },
+            count: 1,
+            ranks: vec![0],
+            shapes: vec![Shape(vec![])],
+            exec: Exec(vec![Step::Dispatch {
+                kernel: KernelId(0),
+                reads: vec![],
+                writes: vec![BufferRef::Output(Output(0))],
+            }]),
+        })
+        .unwrap()
+    }
+
+    fn scalar_output() -> Buffer {
+        Buffer {
             shape: Shape(vec![]),
             layout: crate::ir::exec_plan::Layout(vec![]),
         }
@@ -869,9 +998,9 @@ mod tests {
         }
     }
 
-    fn scalar_access(param: Param) -> Access<Param> {
+    fn scalar_access(param: Param) -> Access<KernelRef> {
         Access {
-            buffer: param,
+            buffer: KernelRef::Param(param),
             index: vec![],
         }
     }
@@ -1140,6 +1269,21 @@ mod tests {
                 value: data_expr("writeables", 1)
             }
         );
+    }
+
+    #[test]
+    fn lowers_kernel_local_buffer_to_stack_alloc() {
+        let module = local_scalar_module();
+
+        assert!(matches!(
+            &module.kernels[0].body.0[0],
+            Stmt::StackAlloc { dst, shape, layout }
+                if *dst == id("l0") && shape.is_empty() && layout.is_empty()
+        ));
+        assert!(matches!(
+            &module.kernels[0].body.0[2],
+            Stmt::Set { dst, .. } if *dst == data_place("writeables", 0)
+        ));
     }
 
     #[test]

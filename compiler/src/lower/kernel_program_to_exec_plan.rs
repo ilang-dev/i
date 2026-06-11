@@ -5,11 +5,12 @@ use crate::check::exec_plan::validate_exec_plan;
 use crate::check::kernel_program::validate_kernel_program;
 use crate::ir::common::{DimRef, Extent};
 use crate::ir::exec_plan::{
-    Arg, BufferRef, Buffers, Exec, ExecPlan, Input, InputBuffer, Intermediate, IntermediateBuffer,
-    KernelId, Layout, Output, OutputBuffer, Param, Shape, Step,
+    Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate, KernelId,
+    KernelRef, Layout, Local, LocalBuffer, Output, Param, Shape, Step,
 };
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, BufferKind, Kernel, KernelProgram, ScalarExpr,
+    Access, Action, Block, BufferId, BufferKind, BufferScope, Kernel as ProgramKernel,
+    KernelProgram, ScalarExpr,
 };
 
 pub fn lower_kernel_program_to_exec_plan(program: &KernelProgram) -> Result<ExecPlan, LowerError> {
@@ -66,11 +67,12 @@ impl<'a> Builder<'a> {
                     self.buffer_refs[buffer_index] = Some(BufferRef::Input(Input(next_input)));
                     next_input += 1;
                 }
-                BufferKind::Intermediate => {
+                BufferKind::Intermediate if buffer.scope == BufferScope::Global => {
                     self.buffer_refs[buffer_index] =
                         Some(BufferRef::Intermediate(Intermediate(next_intermediate)));
                     next_intermediate += 1;
                 }
+                BufferKind::Intermediate => {}
                 BufferKind::Output => {}
             }
         }
@@ -116,28 +118,30 @@ impl<'a> Builder<'a> {
         let mut outputs = vec![None; self.program.outputs.len()];
 
         for (buffer_index, buffer) in self.program.buffers.iter().enumerate() {
-            match self.buffer_ref(BufferId(buffer_index))? {
-                BufferRef::Input(_) => inputs.push(InputBuffer {
-                    shape: self.lower_shape(BufferId(buffer_index))?,
-                    layout: self.lower_layout(BufferId(buffer_index))?,
-                }),
-                BufferRef::Intermediate(_) => intermediates.push(IntermediateBuffer {
-                    shape: self.lower_shape(BufferId(buffer_index))?,
-                    layout: self.lower_layout(BufferId(buffer_index))?,
-                }),
-                BufferRef::Output(output) => {
-                    outputs[output.0] = Some(OutputBuffer {
-                        shape: self.lower_shape(BufferId(buffer_index))?,
-                        layout: self.lower_layout(BufferId(buffer_index))?,
-                    });
-                }
-            }
-
             if buffer.shape.0.is_empty() && !buffer.layout.0.is_empty() {
                 return Err(LowerError::new(format!(
                     "buffer {} has scalar shape and non-scalar layout",
                     buffer_index
                 )));
+            }
+            if buffer.scope != BufferScope::Global {
+                continue;
+            }
+            match self.buffer_ref(BufferId(buffer_index))? {
+                BufferRef::Input(_) => inputs.push(Buffer {
+                    shape: self.lower_shape(BufferId(buffer_index))?,
+                    layout: self.lower_layout(BufferId(buffer_index))?,
+                }),
+                BufferRef::Intermediate(_) => intermediates.push(Buffer {
+                    shape: self.lower_shape(BufferId(buffer_index))?,
+                    layout: self.lower_layout(BufferId(buffer_index))?,
+                }),
+                BufferRef::Output(output) => {
+                    outputs[output.0] = Some(Buffer {
+                        shape: self.lower_shape(BufferId(buffer_index))?,
+                        layout: self.lower_layout(BufferId(buffer_index))?,
+                    });
+                }
             }
         }
 
@@ -214,7 +218,7 @@ impl<'a> Builder<'a> {
             )));
         }
 
-        if let BufferRef::Input(input) = self.buffer_ref(dim.buffer)? {
+        if let Ok(BufferRef::Input(input)) = self.buffer_ref(dim.buffer) {
             return Ok(DimRef {
                 buffer: input,
                 dim: dim.dim,
@@ -235,7 +239,7 @@ impl<'a> Builder<'a> {
         resolved
     }
 
-    fn lower_kernels(&self) -> Result<Vec<Kernel<Param>>, LowerError> {
+    fn lower_kernels(&self) -> Result<Vec<BoundKernel>, LowerError> {
         self.program
             .graph
             .nodes
@@ -248,45 +252,83 @@ impl<'a> Builder<'a> {
     fn lower_kernel(
         &self,
         kernel_index: usize,
-        kernel: &Kernel<BufferId>,
-    ) -> Result<Kernel<Param>, LowerError> {
-        Ok(Kernel {
-            reads: (0..kernel.reads.len())
+        kernel: &ProgramKernel<BufferId>,
+    ) -> Result<BoundKernel, LowerError> {
+        let locals = self.kernel_locals(kernel)?;
+        Ok(BoundKernel {
+            reads: (0..kernel
+                .reads
+                .iter()
+                .filter(|buffer| self.is_global(**buffer))
+                .count())
                 .map(|ind| Param {
                     arg: Arg::Readonly,
                     ind,
                 })
                 .collect(),
-            writes: (0..kernel.writes.len())
+            writes: (0..kernel
+                .writes
+                .iter()
+                .filter(|buffer| self.is_global(**buffer))
+                .count())
                 .map(|ind| Param {
                     arg: Arg::Writeable,
                     ind,
                 })
                 .collect(),
-            body: self.lower_block(kernel, &kernel.body).map_err(|error| {
-                LowerError::new(format!("kernel {} {}", kernel_index, error.message))
-            })?,
+            locals: locals.iter().map(|(_, buffer)| buffer.clone()).collect(),
+            body: self
+                .lower_block(kernel, locals.as_slice(), &kernel.body)
+                .map_err(|error| {
+                    LowerError::new(format!("kernel {} {}", kernel_index, error.message))
+                })?,
         })
+    }
+
+    fn kernel_locals(
+        &self,
+        kernel: &ProgramKernel<BufferId>,
+    ) -> Result<Vec<(BufferId, LocalBuffer)>, LowerError> {
+        let mut locals = Vec::new();
+        for buffer in kernel.reads.iter().chain(&kernel.writes).copied() {
+            if self.is_global(buffer) || locals.iter().any(|(id, _)| *id == buffer) {
+                continue;
+            }
+            let program_buffer = &self.program.buffers[buffer.0];
+            locals.push((
+                buffer,
+                LocalBuffer {
+                    scope: program_buffer.scope,
+                    buffer: Buffer {
+                        shape: self.lower_shape(buffer)?,
+                        layout: self.lower_layout(buffer)?,
+                    },
+                },
+            ));
+        }
+        Ok(locals)
     }
 
     fn lower_block(
         &self,
-        kernel: &Kernel<BufferId>,
+        kernel: &ProgramKernel<BufferId>,
+        locals: &[(BufferId, LocalBuffer)],
         block: &Block<BufferId>,
-    ) -> Result<Block<Param>, LowerError> {
+    ) -> Result<Block<KernelRef>, LowerError> {
         block
             .0
             .iter()
-            .map(|action| self.lower_action(kernel, action))
+            .map(|action| self.lower_action(kernel, locals, action))
             .collect::<Result<Vec<_>, _>>()
             .map(Block)
     }
 
     fn lower_action(
         &self,
-        kernel: &Kernel<BufferId>,
+        kernel: &ProgramKernel<BufferId>,
+        locals: &[(BufferId, LocalBuffer)],
         action: &Action<BufferId>,
-    ) -> Result<Action<Param>, LowerError> {
+    ) -> Result<Action<KernelRef>, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -299,13 +341,13 @@ impl<'a> Builder<'a> {
                 mode: *mode,
                 extent: Extent {
                     source: DimRef {
-                        buffer: self.lower_param(kernel, extent.source.buffer)?,
+                        buffer: self.lower_ref(kernel, locals, extent.source.buffer)?,
                         dim: extent.source.dim,
                     },
                     kind: extent.kind.clone(),
                 },
                 guard: *guard,
-                body: self.lower_block(kernel, body)?,
+                body: self.lower_block(kernel, locals, body)?,
             }),
             Action::Init {
                 op,
@@ -313,68 +355,87 @@ impl<'a> Builder<'a> {
                 zero_checks,
             } => Ok(Action::Init {
                 op: *op,
-                write: self.lower_access(kernel, write)?,
+                write: self.lower_access(kernel, locals, write)?,
                 zero_checks: zero_checks.clone(),
             }),
             Action::Compute { op, write, reads } => Ok(Action::Compute {
                 op: *op,
-                write: self.lower_access(kernel, write)?,
+                write: self.lower_access(kernel, locals, write)?,
                 reads: reads
                     .iter()
-                    .map(|access| self.lower_access(kernel, access))
+                    .map(|access| self.lower_access(kernel, locals, access))
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             Action::Snapshot { write, read } => Ok(Action::Snapshot {
-                write: self.lower_access(kernel, write)?,
-                read: self.lower_access(kernel, read)?,
+                write: self.lower_access(kernel, locals, write)?,
+                read: self.lower_access(kernel, locals, read)?,
             }),
             Action::Scale { write, factor } => Ok(Action::Scale {
-                write: self.lower_access(kernel, write)?,
-                factor: self.lower_scale_expr(kernel, factor)?,
+                write: self.lower_access(kernel, locals, write)?,
+                factor: self.lower_scale_expr(kernel, locals, factor)?,
             }),
         }
     }
 
     fn lower_scale_expr(
         &self,
-        kernel: &Kernel<BufferId>,
+        kernel: &ProgramKernel<BufferId>,
+        locals: &[(BufferId, LocalBuffer)],
         expr: &ScalarExpr<BufferId>,
-    ) -> Result<ScalarExpr<Param>, LowerError> {
+    ) -> Result<ScalarExpr<KernelRef>, LowerError> {
         match expr {
-            ScalarExpr::Access(access) => {
-                Ok(ScalarExpr::Access(self.lower_access(kernel, access)?))
-            }
+            ScalarExpr::Access(access) => Ok(ScalarExpr::Access(
+                self.lower_access(kernel, locals, access)?,
+            )),
             ScalarExpr::Unary { op, arg } => Ok(ScalarExpr::Unary {
                 op: *op,
-                arg: Box::new(self.lower_scale_expr(kernel, arg)?),
+                arg: Box::new(self.lower_scale_expr(kernel, locals, arg)?),
             }),
             ScalarExpr::Binary { op, lhs, rhs } => Ok(ScalarExpr::Binary {
                 op: *op,
-                lhs: Box::new(self.lower_scale_expr(kernel, lhs)?),
-                rhs: Box::new(self.lower_scale_expr(kernel, rhs)?),
+                lhs: Box::new(self.lower_scale_expr(kernel, locals, lhs)?),
+                rhs: Box::new(self.lower_scale_expr(kernel, locals, rhs)?),
             }),
         }
     }
 
     fn lower_access(
         &self,
-        kernel: &Kernel<BufferId>,
+        kernel: &ProgramKernel<BufferId>,
+        locals: &[(BufferId, LocalBuffer)],
         access: &Access<BufferId>,
-    ) -> Result<Access<Param>, LowerError> {
+    ) -> Result<Access<KernelRef>, LowerError> {
         Ok(Access {
-            buffer: self.lower_param(kernel, access.buffer)?,
+            buffer: self.lower_ref(kernel, locals, access.buffer)?,
             index: access.index.clone(),
         })
     }
 
+    fn lower_ref(
+        &self,
+        kernel: &ProgramKernel<BufferId>,
+        locals: &[(BufferId, LocalBuffer)],
+        buffer: BufferId,
+    ) -> Result<KernelRef, LowerError> {
+        if self.is_global(buffer) {
+            return self.lower_param(kernel, buffer).map(KernelRef::Param);
+        }
+        locals
+            .iter()
+            .position(|(candidate, _)| *candidate == buffer)
+            .map(|index| KernelRef::Local(Local(index)))
+            .ok_or_else(|| LowerError::new(format!("buffer {} is not a kernel local", buffer.0)))
+    }
+
     fn lower_param(
         &self,
-        kernel: &Kernel<BufferId>,
+        kernel: &ProgramKernel<BufferId>,
         buffer: BufferId,
     ) -> Result<Param, LowerError> {
         if let Some(ind) = kernel
             .reads
             .iter()
+            .filter(|candidate| self.is_global(**candidate))
             .position(|candidate| *candidate == buffer)
         {
             return Ok(Param {
@@ -385,6 +446,7 @@ impl<'a> Builder<'a> {
         if let Some(ind) = kernel
             .writes
             .iter()
+            .filter(|candidate| self.is_global(**candidate))
             .position(|candidate| *candidate == buffer)
         {
             return Ok(Param {
@@ -411,6 +473,7 @@ impl<'a> Builder<'a> {
                     .reads
                     .iter()
                     .copied()
+                    .filter(|buffer| self.is_global(*buffer))
                     .map(|buffer| self.buffer_ref(buffer))
                     .collect::<Result<Vec<_>, _>>()?,
                 writes: node
@@ -418,6 +481,7 @@ impl<'a> Builder<'a> {
                     .writes
                     .iter()
                     .copied()
+                    .filter(|buffer| self.is_global(*buffer))
                     .map(|buffer| self.buffer_ref(buffer))
                     .collect::<Result<Vec<_>, _>>()?,
             });
@@ -432,8 +496,14 @@ impl<'a> Builder<'a> {
         self.program
             .buffers
             .iter()
-            .filter(|buffer| buffer.kind == BufferKind::Intermediate)
+            .filter(|buffer| {
+                buffer.kind == BufferKind::Intermediate && buffer.scope == BufferScope::Global
+            })
             .count()
+    }
+
+    fn is_global(&self, buffer: BufferId) -> bool {
+        self.program.buffers[buffer.0].scope == BufferScope::Global
     }
 
     fn buffer_ref(&self, buffer: BufferId) -> Result<BufferRef, LowerError> {
@@ -478,12 +548,17 @@ impl std::error::Error for LowerError {}
 mod tests {
     use super::lower_kernel_program_to_exec_plan;
     use crate::front::parse_expr;
-    use crate::ir::common::{DimRef, Extent, ExtentKind};
-    use crate::ir::exec_plan::{Arg, BufferRef, Input, Intermediate, Output, Param, Step};
-    use crate::ir::graph::{Graph, Input as GraphInput};
+    use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
+    use crate::ir::exec_plan::{
+        Arg, BufferRef, Input, Intermediate, KernelRef, Local, Output, Param, Step,
+    };
+    use crate::ir::graph::{
+        Graph, Input as GraphInput, Node as GraphNode, NodeId, Output as GraphOutput, OutputId,
+        Source,
+    };
     use crate::ir::kernel_program::{
-        Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferScope, BufferShape,
-        KernelProgram,
+        Access, Action, Block, Buffer, BufferId, BufferKind, BufferLayout, BufferScope,
+        BufferShape, Kernel, KernelProgram,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -575,6 +650,38 @@ mod tests {
     }
 
     #[test]
+    fn lowers_private_intermediate_to_kernel_local() {
+        let plan = lower_kernel_program_to_exec_plan(&private_scalar_program()).unwrap();
+
+        assert_eq!(plan.buffers.intermediates.len(), 0);
+        assert_eq!(plan.kernels[0].locals.len(), 1);
+        assert_eq!(
+            plan.exec.0,
+            vec![Step::Dispatch {
+                kernel: crate::ir::exec_plan::KernelId(0),
+                reads: vec![BufferRef::Input(Input(0))],
+                writes: vec![BufferRef::Output(Output(0))]
+            }]
+        );
+
+        let Action::Compute { write, .. } = &plan.kernels[0].body.0[0] else {
+            unreachable!();
+        };
+        assert_eq!(write.buffer, KernelRef::Local(Local(0)));
+        let Action::Snapshot { read, write } = &plan.kernels[0].body.0[1] else {
+            unreachable!();
+        };
+        assert_eq!(read.buffer, KernelRef::Local(Local(0)));
+        assert_eq!(
+            write.buffer,
+            KernelRef::Param(Param {
+                arg: Arg::Writeable,
+                ind: 0
+            })
+        );
+    }
+
+    #[test]
     fn resolves_public_output_shape_to_input_dims() {
         let plan = lower_expr("+ij~ji");
 
@@ -640,17 +747,17 @@ mod tests {
         };
         assert_eq!(
             write.buffer,
-            Param {
+            KernelRef::Param(Param {
                 arg: Arg::Writeable,
                 ind: 0
-            }
+            })
         );
         assert_eq!(
             reads[0].buffer,
-            Param {
+            KernelRef::Param(Param {
                 arg: Arg::Readonly,
                 ind: 0
-            }
+            })
         );
     }
 
@@ -783,6 +890,67 @@ mod tests {
         }
     }
 
+    fn private_scalar_program() -> KernelProgram {
+        KernelProgram {
+            buffers: vec![
+                Buffer {
+                    kind: BufferKind::Input,
+                    scope: BufferScope::Global,
+                    shape: BufferShape(vec![]),
+                    layout: BufferLayout(vec![]),
+                },
+                Buffer {
+                    kind: BufferKind::Intermediate,
+                    scope: BufferScope::Private,
+                    shape: BufferShape(vec![]),
+                    layout: BufferLayout(vec![]),
+                },
+                Buffer {
+                    kind: BufferKind::Output,
+                    scope: BufferScope::Global,
+                    shape: BufferShape(vec![]),
+                    layout: BufferLayout(vec![]),
+                },
+            ],
+            outputs: vec![BufferId(2)],
+            graph: Graph {
+                inputs: vec![GraphInput],
+                nodes: vec![GraphNode {
+                    inner: Kernel {
+                        reads: vec![BufferId(0)],
+                        writes: vec![BufferId(1), BufferId(2)],
+                        body: Block(vec![
+                            Action::Compute {
+                                op: Op::Add,
+                                write: Access {
+                                    buffer: BufferId(1),
+                                    index: vec![],
+                                },
+                                reads: vec![Access {
+                                    buffer: BufferId(0),
+                                    index: vec![],
+                                }],
+                            },
+                            Action::Snapshot {
+                                write: Access {
+                                    buffer: BufferId(2),
+                                    index: vec![],
+                                },
+                                read: Access {
+                                    buffer: BufferId(1),
+                                    index: vec![],
+                                },
+                            },
+                        ]),
+                    },
+                    inputs: vec![Source::Input(crate::ir::graph::InputId(0))],
+                    outputs: vec![GraphOutput, GraphOutput],
+                }],
+                outputs: vec![Source::Node(NodeId(0), OutputId(1))],
+            },
+        }
+    }
+
     fn layout_resolution_program() -> KernelProgram {
         KernelProgram {
             buffers: vec![
@@ -866,7 +1034,7 @@ mod tests {
         }
     }
 
-    fn first_compute(block: &Block<Param>) -> &Action<Param> {
+    fn first_compute(block: &Block<KernelRef>) -> &Action<KernelRef> {
         for action in &block.0 {
             match action {
                 Action::Compute { .. } => return action,
@@ -879,7 +1047,7 @@ mod tests {
         unreachable!()
     }
 
-    fn first_init(block: &Block<Param>) -> &Action<Param> {
+    fn first_init(block: &Block<KernelRef>) -> &Action<KernelRef> {
         for action in &block.0 {
             match action {
                 Action::Init { .. } => return action,
@@ -892,14 +1060,18 @@ mod tests {
         unreachable!()
     }
 
-    fn contains_snapshot_and_scale(block: &Block<Param>) -> bool {
+    fn contains_snapshot_and_scale(block: &Block<KernelRef>) -> bool {
         let mut snapshot = false;
         let mut scale = false;
         collect_online_action_kinds(block, &mut snapshot, &mut scale);
         snapshot && scale
     }
 
-    fn collect_online_action_kinds(block: &Block<Param>, snapshot: &mut bool, scale: &mut bool) {
+    fn collect_online_action_kinds(
+        block: &Block<KernelRef>,
+        snapshot: &mut bool,
+        scale: &mut bool,
+    ) {
         for action in &block.0 {
             match action {
                 Action::Loop { body, .. } => collect_online_action_kinds(body, snapshot, scale),

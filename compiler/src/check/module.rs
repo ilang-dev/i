@@ -113,6 +113,15 @@ fn validate_block(
                 }
                 bind(scope, dst)?;
             }
+            Stmt::StackAlloc { dst, shape, layout } => {
+                if signature != Signature::Kernel {
+                    return Err("stack alloc appears outside kernel".to_string());
+                }
+                for expr in shape.iter().chain(layout) {
+                    validate_expr(scope, expr)?;
+                }
+                bind(scope, dst)?;
+            }
             Stmt::Free(ident) => {
                 if signature != Signature::Exec {
                     return Err("free appears outside exec".to_string());

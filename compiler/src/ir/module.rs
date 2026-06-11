@@ -20,6 +20,7 @@
 //! - `Stmt::Let` binds one local ident.
 //! - `Stmt::Set` writes one assignable location.
 //! - `Stmt::Alloc` allocates one runtime buffer.
+//! - `Stmt::StackAlloc` allocates one function-local buffer.
 //! - `Stmt::Free` releases one runtime buffer.
 //! - `Stmt::Dispatch` calls one kernel function.
 //! - `Stmt::Dispatch.reads` is ordered as kernel `readonlys`.
@@ -107,6 +108,15 @@ pub enum Stmt {
     },
     /// One runtime buffer allocation.
     Alloc {
+        /// Allocated buffer identifier.
+        dst: Ident,
+        /// Semantic shape dimensions.
+        shape: Vec<Expr>,
+        /// Physical layout dimensions.
+        layout: Vec<Expr>,
+    },
+    /// One function-local buffer allocation.
+    StackAlloc {
         /// Allocated buffer identifier.
         dst: Ident,
         /// Semantic shape dimensions.

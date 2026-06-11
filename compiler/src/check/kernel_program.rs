@@ -4,7 +4,8 @@ use std::fmt;
 use crate::check::graph::validate_graph;
 use crate::ir::common::DimRef;
 use crate::ir::kernel_program::{
-    Access, Action, Block, BufferId, Iter, Kernel, KernelProgram, LoopId, ScalarExpr,
+    Access, Action, Block, BufferId, BufferKind, BufferScope, Iter, Kernel, KernelProgram, LoopId,
+    ScalarExpr,
 };
 
 pub fn validate_kernel_program(program: &KernelProgram) -> Result<(), ValidationError> {
@@ -15,6 +16,8 @@ pub fn validate_kernel_program(program: &KernelProgram) -> Result<(), Validation
 
 fn validate_buffers(program: &KernelProgram) -> Result<(), ValidationError> {
     for (buffer_index, buffer) in program.buffers.iter().enumerate() {
+        validate_buffer_scope(buffer.kind, buffer.scope)
+            .map_err(|message| err(format!("buffer {} {}", buffer_index, message)))?;
         for dim in &buffer.shape.0 {
             validate_dim_ref(program, *dim)
                 .map_err(|message| err(format!("buffer {} shape {}", buffer_index, message)))?;
@@ -25,6 +28,15 @@ fn validate_buffers(program: &KernelProgram) -> Result<(), ValidationError> {
         }
     }
     Ok(())
+}
+
+fn validate_buffer_scope(kind: BufferKind, scope: BufferScope) -> Result<(), String> {
+    match (kind, scope) {
+        (BufferKind::Input | BufferKind::Output, BufferScope::Global) => Ok(()),
+        (BufferKind::Input, _) => Err("input buffer must be global".to_string()),
+        (BufferKind::Output, _) => Err("output buffer must be global".to_string()),
+        (BufferKind::Intermediate, _) => Ok(()),
+    }
 }
 
 fn validate_outputs(program: &KernelProgram) -> Result<(), ValidationError> {
@@ -405,6 +417,46 @@ mod tests {
 
         let error = validate_kernel_program(&program).unwrap_err();
         assert_eq!(error.to_string(), "output references nonexistent buffer 2");
+    }
+
+    #[test]
+    fn rejects_local_input_buffer() {
+        let mut program = program();
+        program.buffers[0].scope = BufferScope::Private;
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(error.to_string(), "buffer 0 input buffer must be global");
+    }
+
+    #[test]
+    fn rejects_local_output_buffer() {
+        let mut program = program();
+        program.buffers[1].scope = BufferScope::Group;
+
+        let error = validate_kernel_program(&program).unwrap_err();
+        assert_eq!(error.to_string(), "buffer 1 output buffer must be global");
+    }
+
+    #[test]
+    fn accepts_local_intermediate_buffer() {
+        let mut program = program();
+        program.buffers.push(Buffer {
+            kind: BufferKind::Intermediate,
+            scope: BufferScope::Private,
+            shape: BufferShape(vec![DimRef {
+                buffer: BufferId(0),
+                dim: 0,
+            }]),
+            layout: BufferLayout(vec![Extent {
+                source: DimRef {
+                    buffer: BufferId(2),
+                    dim: 0,
+                },
+                kind: ExtentKind::Semantic,
+            }]),
+        });
+
+        assert!(validate_kernel_program(&program).is_ok());
     }
 
     #[test]
