@@ -73,6 +73,7 @@ impl<'a> Builder<'a> {
             }
             self.lower_kernel(stage_index)?;
         }
+        self.assign_buffer_scopes();
         let graph_outputs = outputs
             .iter()
             .copied()
@@ -94,6 +95,27 @@ impl<'a> Builder<'a> {
                 outputs: graph_outputs,
             },
         })
+    }
+
+    fn assign_buffer_scopes(&mut self) {
+        let mut kernel_uses: BTreeMap<BufferId, BTreeSet<usize>> = BTreeMap::new();
+        for (kernel_index, node) in self.kernel_nodes.iter().enumerate() {
+            for buffer in node.inner.reads.iter().chain(&node.inner.writes).copied() {
+                kernel_uses.entry(buffer).or_default().insert(kernel_index);
+            }
+        }
+
+        for (buffer_index, buffer) in self.buffers.iter_mut().enumerate() {
+            if buffer.kind != BufferKind::Intermediate {
+                continue;
+            }
+            let used_by_one_kernel = kernel_uses
+                .get(&BufferId(buffer_index))
+                .is_some_and(|uses| uses.len() == 1);
+            if used_by_one_kernel && layout_is_static(&buffer.layout) {
+                buffer.scope = BufferScope::Group;
+            }
+        }
     }
 
     fn build_input_buffers(&mut self) {
@@ -1772,6 +1794,13 @@ fn collect_scalar_expr_buffer_uses(expr: &ScalarExpr, accessed: &mut BTreeSet<Bu
     }
 }
 
+fn layout_is_static(layout: &BufferLayout) -> bool {
+    layout
+        .0
+        .iter()
+        .all(|extent| matches!(extent.kind, ExtentKind::Split { .. }))
+}
+
 fn resolve_parent_axis(
     parent_axes: &BTreeMap<AxisId, LoopInfo>,
     axis: StageAxisRef,
@@ -2107,7 +2136,7 @@ mod tests {
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
     use crate::ir::kernel_program::{
-        Action, BufferId, BufferKind, BufferLayout, Iter, LoopId, ScalarExpr,
+        Action, BufferId, BufferKind, BufferLayout, BufferScope, Iter, LoopId, ScalarExpr,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -2195,6 +2224,7 @@ mod tests {
         let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
 
         assert_eq!(program.graph.nodes.len(), 2);
+        assert_eq!(program.buffers[2].scope, BufferScope::Global);
         assert_eq!(
             program.graph.nodes[1].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
@@ -2332,6 +2362,7 @@ mod tests {
         let program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
 
         assert_eq!(program.buffers[2].layout, BufferLayout(vec![]));
+        assert_eq!(program.buffers[2].scope, BufferScope::Group);
     }
 
     #[test]
@@ -2353,6 +2384,7 @@ mod tests {
                 kind: ExtentKind::Semantic,
             }])
         );
+        assert_eq!(program.buffers[2].scope, BufferScope::Global);
     }
 
     #[test]

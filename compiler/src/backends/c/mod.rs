@@ -201,10 +201,12 @@ mod tests {
         );
         let c = render_component(&normalize.chain(dot));
 
-        assert!(c.contains("writeables[1].data[0] = 0.0f;\n  for (size_t i0 = 0;"));
+        assert!(c.contains("l1.data[0] = 0.0f;\n  for (size_t i0 = 0;"));
         assert!(!c.contains("if (i0 == 0)"));
-        assert!(c.contains("writeables[0].data[0] = writeables[1].data[0];"));
-        assert!(!c.contains("writeables[0].data[0] = 0.0f;"));
+        assert!(c.contains(
+            "writeables[0].data[0] = writeables[0].data[0] * (l0.data[0] / l1.data[0]);"
+        ));
+        assert!(c.contains("writeables[0].data[0] = 0.0f;"));
     }
 
     #[test]
@@ -222,7 +224,7 @@ mod tests {
         );
         let c = render_component(&row_normalize.chain(mm));
 
-        assert!(c.contains("for (size_t i0 = 0; i0 < (writeables[3].shape[2] + 8 - 1) / 8; ++i0)"));
+        assert!(c.contains("for (size_t i0 = 0; i0 < (l0.shape[2] + 8 - 1) / 8; ++i0)"));
         assert!(c.contains("writeables[0].data[i6] = writeables[1].data[i6];"));
         assert!(c.contains("i0 * 8 +"));
         assert!(!c.contains("i5 * 8 +\n              i5"));
@@ -253,7 +255,7 @@ mod tests {
             "] * (writeables[0].data[\n              i1 * 8 +\n              i2\n            ] / writeables[1].data[\n              i1 * 8 +\n              i2\n            ]);"
         ));
         assert!(c.contains(
-            "writeables[2].data[\n                  i2 * writeables[2].layout[1] +\n                  i4\n                ]"
+            "l0.data[\n                  i2 * l0.layout[1] +\n                  i4\n                ]"
         ));
     }
 

@@ -795,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn allocates_snapshot_buffer_for_scalar_online_reduction() {
+    fn lowers_snapshot_buffers_for_scalar_online_reduction_to_kernel_locals() {
         let normalize = crate::ir::component::Component::Identity
             .pair(component::expr(
                 front::parse_expr("+i~. | i:8 | ii'").unwrap(),
@@ -812,7 +812,8 @@ mod tests {
         let kernel_program = lower_stage_program_to_kernel_program(&stage_program).unwrap();
         let exec_plan = lower_kernel_program_to_exec_plan(&kernel_program).unwrap();
 
-        assert_eq!(exec_plan.buffers.intermediates.len(), 4);
+        assert_eq!(exec_plan.buffers.intermediates.len(), 0);
+        assert_eq!(exec_plan.kernels[0].locals.len(), 4);
         assert!(contains_snapshot_and_scale(&exec_plan.kernels[0].body));
     }
 
