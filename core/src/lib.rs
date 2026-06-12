@@ -382,9 +382,7 @@ unsafe fn combine(
 }
 
 fn compile(component: &Component) -> Result<i_program, String> {
-    let source = render_component(component)?;
-    let dylib_path = build(&source)?;
-    load_program(dylib_path)
+    compile_cuda(component)
 }
 
 fn compile_cuda(component: &Component) -> Result<i_program, String> {
@@ -415,8 +413,7 @@ fn load_program(dylib_path: PathBuf) -> Result<i_program, String> {
 }
 
 fn render_component(component: &Component) -> Result<String, String> {
-    let module = lower_component_to_module(component)?;
-    Ok(compiler::backends::c::render(&module))
+    render_cuda_component(component)
 }
 
 fn render_cuda_component(component: &Component) -> Result<String, String> {
