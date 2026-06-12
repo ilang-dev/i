@@ -5,7 +5,7 @@ use crate::check::exec_plan::validate_exec_plan;
 use crate::check::module::validate_module;
 use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
 use crate::ir::exec_plan::{
-    Arg, BoundKernel, BufferRef, ExecPlan, Input, KernelRef, Local, LoopBind, Param, Step,
+    Arg, BoundKernel, BufferRef, ExecPlan, ExecutionDim, Input, KernelRef, Local, Param, Step,
 };
 use crate::ir::kernel_program::{Access, Action, Block as KernelBlock, Iter, LoopId, ScalarExpr};
 use crate::ir::module::{
@@ -175,10 +175,12 @@ impl<'a> Builder<'a> {
         let mut lower = KernelLowerer {
             initialized,
             loops: BTreeMap::new(),
+            loop_stack: Vec::new(),
             semantic_dims: self.kernel_semantic_dims(kernel_index, kernel)?,
         };
         let mut statements = lower.lower_locals(kernel)?;
-        statements.extend(lower.lower_block(&kernel.body)?.0);
+        let body = lower.lower_execution(kernel)?;
+        statements.extend(body.0);
         Ok(Fn {
             ident: kernel_ident(kernel_index),
             signature: Signature::Kernel,
@@ -298,6 +300,7 @@ impl<'a> Builder<'a> {
 struct KernelLowerer {
     initialized: BTreeSet<KernelRef>,
     loops: BTreeMap<LoopId, LoopInfo>,
+    loop_stack: Vec<LoopId>,
     semantic_dims: Vec<(DimRef<KernelRef>, DimRef<Input>)>,
 }
 
@@ -342,10 +345,60 @@ impl KernelLowerer {
             .collect()
     }
 
-    fn lower_block(
+    fn lower_execution(&mut self, kernel: &BoundKernel) -> Result<Block, LowerError> {
+        self.lower_execution_group(kernel, 0)
+    }
+
+    fn lower_execution_group(
         &mut self,
-        block: &KernelBlock<KernelRef, LoopBind>,
+        kernel: &BoundKernel,
+        index: usize,
     ) -> Result<Block, LowerError> {
+        if index == kernel.execution.groups.len() {
+            return self.lower_execution_lane(kernel, 0);
+        }
+        self.lower_execution_dim(&kernel.execution.groups[index], |this| {
+            this.lower_execution_group(kernel, index + 1)
+        })
+    }
+
+    fn lower_execution_lane(
+        &mut self,
+        kernel: &BoundKernel,
+        index: usize,
+    ) -> Result<Block, LowerError> {
+        if index == kernel.execution.lanes.len() {
+            return self.lower_block(&kernel.body);
+        }
+        self.lower_execution_dim(&kernel.execution.lanes[index], |this| {
+            this.lower_execution_lane(kernel, index + 1)
+        })
+    }
+
+    fn lower_execution_dim<F>(&mut self, dim: &ExecutionDim, body: F) -> Result<Block, LowerError>
+    where
+        F: FnOnce(&mut Self) -> Result<Block, LowerError>,
+    {
+        let iter = self.push_loop(dim.id, dim.extent.source, dim.extent.kind.clone());
+        let mut body = body(self)?;
+        if dim.guard.0 {
+            body = Block(vec![Stmt::If {
+                cond: Expr::Lt(
+                    Box::new(self.reconstruct_extent_index(dim.extent.source)?),
+                    Box::new(self.buffer_dim(dim.extent.source)),
+                ),
+                body,
+            }]);
+        }
+        self.pop_loop(dim.id);
+        Ok(Block(vec![Stmt::Loop {
+            iter,
+            bound: extent_expr(self.buffer_dim(dim.extent.source), &dim.extent.kind),
+            body,
+        }]))
+    }
+
+    fn lower_block(&mut self, block: &KernelBlock<KernelRef>) -> Result<Block, LowerError> {
         block
             .0
             .iter()
@@ -354,7 +407,7 @@ impl KernelLowerer {
             .map(Block)
     }
 
-    fn lower_action(&mut self, action: &Action<KernelRef, LoopBind>) -> Result<Stmt, LowerError> {
+    fn lower_action(&mut self, action: &Action<KernelRef>) -> Result<Stmt, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -364,14 +417,7 @@ impl KernelLowerer {
                 body,
             } => {
                 let iter = loop_ident(*id);
-                self.loops.insert(
-                    *id,
-                    LoopInfo {
-                        iter: iter.clone(),
-                        source: extent.source,
-                        kind: extent.kind.clone(),
-                    },
-                );
+                self.push_loop(*id, extent.source, extent.kind.clone());
                 let mut body = self.lower_block(body)?;
                 if guard.0 {
                     body = Block(vec![Stmt::If {
@@ -382,7 +428,7 @@ impl KernelLowerer {
                         body,
                     }]);
                 }
-                self.loops.remove(id);
+                self.pop_loop(*id);
 
                 Ok(Stmt::Loop {
                     iter,
@@ -434,6 +480,26 @@ impl KernelLowerer {
                 })
             }
         }
+    }
+
+    fn push_loop(&mut self, id: LoopId, source: DimRef<KernelRef>, kind: ExtentKind) -> Ident {
+        let iter = loop_ident(id);
+        self.loops.insert(
+            id,
+            LoopInfo {
+                iter: iter.clone(),
+                source,
+                kind,
+            },
+        );
+        self.loop_stack.push(id);
+        iter
+    }
+
+    fn pop_loop(&mut self, id: LoopId) {
+        let popped = self.loop_stack.pop();
+        debug_assert_eq!(popped, Some(id));
+        self.loops.remove(&id);
     }
 
     fn lower_scale_expr(&self, expr: &ScalarExpr<KernelRef>) -> Result<Expr, LowerError> {
@@ -509,18 +575,40 @@ impl KernelLowerer {
 
     fn reconstruct_extent_index(&self, source: DimRef<KernelRef>) -> Result<Expr, LowerError> {
         let semantic_source = self.semantic_dim(source);
-        let mut infos = self
-            .loops
-            .values()
-            .filter(|info| {
-                if let Some(source) = semantic_source {
-                    self.semantic_dim(info.source) == Some(source)
-                } else {
-                    info.source == source
-                }
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut infos = Vec::new();
+        for loop_id in self.loop_stack.iter().rev().copied() {
+            let info = self
+                .loops
+                .get(&loop_id)
+                .ok_or_else(|| LowerError::new(format!("loop {} is not in scope", loop_id.0)))?;
+            let matches = if let Some(source) = semantic_source {
+                self.semantic_dim(info.source) == Some(source)
+            } else {
+                info.source == source
+            };
+            if !matches {
+                continue;
+            }
+            infos.push(info.clone());
+            if matches!(info.kind, ExtentKind::Base(_)) {
+                break;
+            }
+        }
+        infos.reverse();
+        if infos.is_empty() {
+            infos = self
+                .loops
+                .values()
+                .filter(|info| {
+                    if let Some(source) = semantic_source {
+                        self.semantic_dim(info.source) == Some(source)
+                    } else {
+                        info.source == source
+                    }
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+        }
         infos.sort_by_key(|info| extent_order(&info.kind));
         let iters = infos
             .iter()
@@ -610,16 +698,13 @@ struct LoopInfo {
     kind: ExtentKind,
 }
 
-fn initialized_buffers(block: &KernelBlock<KernelRef, LoopBind>) -> BTreeSet<KernelRef> {
+fn initialized_buffers(block: &KernelBlock<KernelRef>) -> BTreeSet<KernelRef> {
     let mut initialized = BTreeSet::new();
     collect_initialized(block, &mut initialized);
     initialized
 }
 
-fn collect_initialized(
-    block: &KernelBlock<KernelRef, LoopBind>,
-    initialized: &mut BTreeSet<KernelRef>,
-) {
+fn collect_initialized(block: &KernelBlock<KernelRef>, initialized: &mut BTreeSet<KernelRef>) {
     for action in &block.0 {
         match action {
             Action::Loop { body, .. } => collect_initialized(body, initialized),
@@ -868,11 +953,12 @@ impl std::error::Error for LowerError {}
 #[cfg(test)]
 mod tests {
     use super::lower_exec_plan_to_module;
+    use crate::backends::c;
     use crate::front::parse_expr;
     use crate::ir::common::Op;
     use crate::ir::exec_plan::{
-        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, KernelId, KernelRef, Local,
-        LocalBuffer, LoopBind, Output, Param, Shape, Step,
+        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, ExecutionShape, KernelId,
+        KernelRef, Local, LocalBuffer, Output, Param, Shape, Step,
     };
     use crate::ir::kernel_program::{Access, Action, BufferScope, ScalarExpr};
     use crate::ir::module::{Block, Cast, Expr, Field, Ident, Place, Signature, Stmt, Type};
@@ -917,12 +1003,13 @@ mod tests {
         }
     }
 
-    fn online_action_module(action: Action<KernelRef, LoopBind>) -> crate::ir::module::Module {
+    fn online_action_module(action: Action<KernelRef>) -> crate::ir::module::Module {
         lower_exec_plan_to_module(&ExecPlan {
             kernels: vec![BoundKernel {
                 reads: vec![],
                 writes: vec![write_param(0), write_param(1), write_param(2)],
                 locals: vec![],
+                execution: empty_execution(),
                 body: crate::ir::kernel_program::Block(vec![action]),
             }],
             buffers: Buffers {
@@ -955,6 +1042,7 @@ mod tests {
                     scope: BufferScope::Private,
                     buffer: scalar_output(),
                 }],
+                execution: empty_execution(),
                 body: crate::ir::kernel_program::Block(vec![
                     Action::Compute {
                         op: Op::Add,
@@ -988,6 +1076,13 @@ mod tests {
             }]),
         })
         .unwrap()
+    }
+
+    fn empty_execution() -> ExecutionShape {
+        ExecutionShape {
+            groups: vec![],
+            lanes: vec![],
+        }
     }
 
     fn scalar_output() -> Buffer {
@@ -1188,6 +1283,15 @@ mod tests {
         };
 
         assert!(matches!(cond, Expr::Lt(_, _)));
+    }
+
+    #[test]
+    fn reconstructs_interleaved_split_tail_guards_from_current_loop_nest() {
+        let module = lower_expr("+ij~i | i:16,j:16 | jii'j'");
+        let c = c::render(&module);
+
+        assert!(c.contains("if (i0 * 16 + i3 < readonlys[0].shape[1])"));
+        assert!(!c.contains("if (i3 < readonlys[0].shape[1])"));
     }
 
     #[test]

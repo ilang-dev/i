@@ -5,8 +5,9 @@ use crate::check::exec_plan::validate_exec_plan;
 use crate::check::kernel_program::validate_kernel_program;
 use crate::ir::common::{DimRef, Extent, ExtentKind};
 use crate::ir::exec_plan::{
-    Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate, KernelId,
-    KernelRef, Layout, Local, LocalBuffer, LoopBind, Output, Param, Shape, Step,
+    Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, ExecutionDim, ExecutionShape,
+    Input, Intermediate, KernelId, KernelRef, Layout, Local, LocalBuffer, Output, Param, Shape,
+    Step,
 };
 use crate::ir::kernel_program::{
     Access, Action, Block, BufferId, BufferKind, BufferScope, Kernel as ProgramKernel,
@@ -255,6 +256,21 @@ impl<'a> Builder<'a> {
         kernel: &ProgramKernel<BufferId>,
     ) -> Result<BoundKernel, LowerError> {
         let locals = self.kernel_locals(kernel)?;
+        let mut execution = ExecutionShape {
+            groups: Vec::new(),
+            lanes: Vec::new(),
+        };
+        let body = self
+            .lower_block(
+                kernel,
+                locals.as_slice(),
+                &kernel.body,
+                &mut BindingState::new(),
+                &mut execution,
+            )
+            .map_err(|error| {
+                LowerError::new(format!("kernel {} {}", kernel_index, error.message))
+            })?;
         Ok(BoundKernel {
             reads: (0..kernel
                 .reads
@@ -277,16 +293,8 @@ impl<'a> Builder<'a> {
                 })
                 .collect(),
             locals: locals.iter().map(|(_, buffer)| buffer.clone()).collect(),
-            body: self
-                .lower_block(
-                    kernel,
-                    locals.as_slice(),
-                    &kernel.body,
-                    &mut BindingState::new(),
-                )
-                .map_err(|error| {
-                    LowerError::new(format!("kernel {} {}", kernel_index, error.message))
-                })?,
+            execution,
+            body,
         })
     }
 
@@ -320,13 +328,13 @@ impl<'a> Builder<'a> {
         locals: &[(BufferId, LocalBuffer)],
         block: &Block<BufferId>,
         bindings: &mut BindingState,
-    ) -> Result<Block<KernelRef, LoopBind>, LowerError> {
-        block
-            .0
-            .iter()
-            .map(|action| self.lower_action(kernel, locals, action, bindings))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Block)
+        execution: &mut ExecutionShape,
+    ) -> Result<Block<KernelRef>, LowerError> {
+        let mut actions = Vec::new();
+        for action in &block.0 {
+            actions.extend(self.lower_action(kernel, locals, action, bindings, execution)?);
+        }
+        Ok(Block(actions))
     }
 
     fn lower_action(
@@ -335,7 +343,8 @@ impl<'a> Builder<'a> {
         locals: &[(BufferId, LocalBuffer)],
         action: &Action<BufferId>,
         bindings: &mut BindingState,
-    ) -> Result<Action<KernelRef, LoopBind>, LowerError> {
+        execution: &mut ExecutionShape,
+    ) -> Result<Vec<Action<KernelRef>>, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -346,48 +355,84 @@ impl<'a> Builder<'a> {
             } => {
                 let bind = bindings.bind(*mode, extent);
                 let mut body_bindings = bindings.child(bind);
-                Ok(Action::Loop {
-                    id: *id,
-                    mode: bind,
-                    extent: Extent {
-                        source: DimRef {
-                            buffer: self.lower_ref(kernel, locals, extent.source.buffer)?,
-                            dim: extent.source.dim,
-                        },
-                        kind: extent.kind.clone(),
+                let extent = Extent {
+                    source: DimRef {
+                        buffer: self.lower_ref(kernel, locals, extent.source.buffer)?,
+                        dim: extent.source.dim,
                     },
-                    guard: *guard,
-                    body: self.lower_block(kernel, locals, body, &mut body_bindings)?,
-                })
+                    kind: extent.kind.clone(),
+                };
+                match bind {
+                    Binding::Group { dim } => {
+                        push_execution_dim(
+                            &mut execution.groups,
+                            dim,
+                            ExecutionDim {
+                                id: *id,
+                                extent,
+                                guard: *guard,
+                            },
+                        )?;
+                        Ok(self
+                            .lower_block(kernel, locals, body, &mut body_bindings, execution)?
+                            .0)
+                    }
+                    Binding::Lane { dim } => {
+                        push_execution_dim(
+                            &mut execution.lanes,
+                            dim,
+                            ExecutionDim {
+                                id: *id,
+                                extent,
+                                guard: *guard,
+                            },
+                        )?;
+                        Ok(self
+                            .lower_block(kernel, locals, body, &mut body_bindings, execution)?
+                            .0)
+                    }
+                    Binding::Serial => Ok(vec![Action::Loop {
+                        id: *id,
+                        mode: LoopMode::Serial,
+                        extent,
+                        guard: *guard,
+                        body: self.lower_block(
+                            kernel,
+                            locals,
+                            body,
+                            &mut body_bindings,
+                            execution,
+                        )?,
+                    }]),
+                }
             }
             Action::Init {
                 op,
                 write,
                 zero_checks,
-            } => Ok(Action::Init {
+            } => Ok(vec![Action::Init {
                 op: *op,
                 write: self.lower_access(kernel, locals, write)?,
                 zero_checks: zero_checks.clone(),
-            }),
-            Action::Compute { op, write, reads } => Ok(Action::Compute {
+            }]),
+            Action::Compute { op, write, reads } => Ok(vec![Action::Compute {
                 op: *op,
                 write: self.lower_access(kernel, locals, write)?,
                 reads: reads
                     .iter()
                     .map(|access| self.lower_access(kernel, locals, access))
                     .collect::<Result<Vec<_>, _>>()?,
-            }),
-            Action::Snapshot { write, read } => Ok(Action::Snapshot {
+            }]),
+            Action::Snapshot { write, read } => Ok(vec![Action::Snapshot {
                 write: self.lower_access(kernel, locals, write)?,
                 read: self.lower_access(kernel, locals, read)?,
-            }),
-            Action::Scale { write, factor } => Ok(Action::Scale {
+            }]),
+            Action::Scale { write, factor } => Ok(vec![Action::Scale {
                 write: self.lower_access(kernel, locals, write)?,
                 factor: self.lower_scale_expr(kernel, locals, factor)?,
-            }),
+            }]),
         }
     }
-
     fn lower_scale_expr(
         &self,
         kernel: &ProgramKernel<BufferId>,
@@ -542,9 +587,9 @@ impl BindingState {
         }
     }
 
-    fn bind(&mut self, mode: LoopMode, extent: &Extent<BufferId>) -> LoopBind {
+    fn bind(&mut self, mode: LoopMode, extent: &Extent<BufferId>) -> Binding {
         if mode == LoopMode::Serial || !self.active {
-            return LoopBind::Serial;
+            return Binding::Serial;
         }
 
         let source_dim = extent.source.dim;
@@ -554,40 +599,63 @@ impl BindingState {
         }
     }
 
-    fn bind_group(&mut self, source_dim: usize) -> LoopBind {
+    fn bind_group(&mut self, source_dim: usize) -> Binding {
         if let Some(dim) = self.group_dims.get(&source_dim) {
-            return LoopBind::Group { dim: *dim };
+            return Binding::Group { dim: *dim };
         }
         if self.group_dims.len() >= 3 {
             self.active = false;
-            return LoopBind::Serial;
+            return Binding::Serial;
         }
         let dim = self.group_dims.len();
         self.group_dims.insert(source_dim, dim);
-        LoopBind::Group { dim }
+        Binding::Group { dim }
     }
 
-    fn bind_lane(&mut self, source_dim: usize) -> LoopBind {
+    fn bind_lane(&mut self, source_dim: usize) -> Binding {
         if self.lane_dims.contains_key(&source_dim) {
             self.active = false;
-            return LoopBind::Serial;
+            return Binding::Serial;
         }
         if self.lane_dims.len() >= 3 {
             self.active = false;
-            return LoopBind::Serial;
+            return Binding::Serial;
         }
         let dim = self.lane_dims.len();
         self.lane_dims.insert(source_dim, dim);
-        LoopBind::Lane { dim }
+        Binding::Lane { dim }
     }
 
-    fn child(&self, bind: LoopBind) -> Self {
+    fn child(&self, bind: Binding) -> Self {
         let mut child = self.clone();
-        if bind == LoopBind::Serial {
+        if bind == Binding::Serial {
             child.active = false;
         }
         child
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Binding {
+    Serial,
+    Group { dim: usize },
+    Lane { dim: usize },
+}
+
+fn push_execution_dim(
+    dims: &mut Vec<ExecutionDim>,
+    dim: usize,
+    execution_dim: ExecutionDim,
+) -> Result<(), LowerError> {
+    if dims.len() != dim {
+        return Err(LowerError::new(format!(
+            "execution dim {} follows {} dims",
+            dim,
+            dims.len()
+        )));
+    }
+    dims.push(execution_dim);
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -625,7 +693,7 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
-        Arg, BufferRef, Input, Intermediate, KernelRef, Local, LoopBind, Output, Param, Step,
+        Arg, BufferRef, Input, Intermediate, KernelRef, Local, Output, Param, Step,
     };
     use crate::ir::graph::{
         Graph, Input as GraphInput, Node as GraphNode, NodeId, Output as GraphOutput, OutputId,
@@ -853,50 +921,34 @@ mod tests {
     #[test]
     fn binds_unsplit_output_loops_to_lanes_and_reduction_loops_to_serial() {
         let plan = lower_expr("+ijk~ij");
-        let mut binds = Vec::new();
-        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+        let mut body_loops = Vec::new();
+        collect_body_loop_ids(&plan.kernels[0].body, &mut body_loops);
 
-        assert_eq!(
-            binds,
-            vec![
-                LoopBind::Lane { dim: 0 },
-                LoopBind::Lane { dim: 1 },
-                LoopBind::Serial,
-            ]
-        );
+        assert!(plan.kernels[0].execution.groups.is_empty());
+        assert_eq!(execution_ids(&plan.kernels[0].execution.lanes), vec![0, 1]);
+        assert_eq!(body_loops, vec![2]);
     }
 
     #[test]
     fn binds_split_output_loops_to_group_and_lane() {
         let plan = lower_expr("ik~ik|i:8|ii'k");
-        let mut binds = Vec::new();
-        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+        let mut body_loops = Vec::new();
+        collect_body_loop_ids(&plan.kernels[0].body, &mut body_loops);
 
-        assert_eq!(
-            binds,
-            vec![
-                LoopBind::Group { dim: 0 },
-                LoopBind::Lane { dim: 0 },
-                LoopBind::Lane { dim: 1 },
-            ]
-        );
+        assert_eq!(execution_ids(&plan.kernels[0].execution.groups), vec![0]);
+        assert_eq!(execution_ids(&plan.kernels[0].execution.lanes), vec![1, 2]);
+        assert!(body_loops.is_empty());
     }
 
     #[test]
     fn serializes_extra_split_levels_after_lane_binding() {
         let plan = lower_expr("ik~ik|i:2:4|ii'i''k");
-        let mut binds = Vec::new();
-        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+        let mut body_loops = Vec::new();
+        collect_body_loop_ids(&plan.kernels[0].body, &mut body_loops);
 
-        assert_eq!(
-            binds,
-            vec![
-                LoopBind::Group { dim: 0 },
-                LoopBind::Lane { dim: 0 },
-                LoopBind::Serial,
-                LoopBind::Serial,
-            ]
-        );
+        assert_eq!(execution_ids(&plan.kernels[0].execution.groups), vec![0]);
+        assert_eq!(execution_ids(&plan.kernels[0].execution.lanes), vec![1]);
+        assert_eq!(body_loops, vec![2, 3]);
     }
 
     #[test]
@@ -1162,7 +1214,7 @@ mod tests {
         }
     }
 
-    fn first_compute(block: &Block<KernelRef, LoopBind>) -> &Action<KernelRef, LoopBind> {
+    fn first_compute(block: &Block<KernelRef>) -> &Action<KernelRef> {
         for action in &block.0 {
             match action {
                 Action::Compute { .. } => return action,
@@ -1175,7 +1227,7 @@ mod tests {
         unreachable!()
     }
 
-    fn first_init(block: &Block<KernelRef, LoopBind>) -> &Action<KernelRef, LoopBind> {
+    fn first_init(block: &Block<KernelRef>) -> &Action<KernelRef> {
         for action in &block.0 {
             match action {
                 Action::Init { .. } => return action,
@@ -1188,7 +1240,7 @@ mod tests {
         unreachable!()
     }
 
-    fn contains_snapshot_and_scale(block: &Block<KernelRef, LoopBind>) -> bool {
+    fn contains_snapshot_and_scale(block: &Block<KernelRef>) -> bool {
         let mut snapshot = false;
         let mut scale = false;
         collect_online_action_kinds(block, &mut snapshot, &mut scale);
@@ -1196,7 +1248,7 @@ mod tests {
     }
 
     fn collect_online_action_kinds(
-        block: &Block<KernelRef, LoopBind>,
+        block: &Block<KernelRef>,
         snapshot: &mut bool,
         scale: &mut bool,
     ) {
@@ -1210,12 +1262,16 @@ mod tests {
         }
     }
 
-    fn collect_loop_binds(block: &Block<KernelRef, LoopBind>, binds: &mut Vec<LoopBind>) {
+    fn collect_body_loop_ids(block: &Block<KernelRef>, ids: &mut Vec<usize>) {
         for action in &block.0 {
-            if let Action::Loop { mode, body, .. } = action {
-                binds.push(*mode);
-                collect_loop_binds(body, binds);
+            if let Action::Loop { id, body, .. } = action {
+                ids.push(id.0);
+                collect_body_loop_ids(body, ids);
             }
         }
+    }
+
+    fn execution_ids(dims: &[crate::ir::exec_plan::ExecutionDim]) -> Vec<usize> {
+        dims.iter().map(|dim| dim.id.0).collect()
     }
 }

@@ -3,10 +3,12 @@ use std::fmt;
 
 use crate::ir::common::DimRef;
 use crate::ir::exec_plan::{
-    Arg, BoundKernel, BufferRef, ExecPlan, Input, Intermediate, KernelId, KernelRef, Local,
-    LoopBind, Param, Step,
+    Arg, BoundKernel, BufferRef, ExecPlan, Input, Intermediate, KernelId, KernelRef, Local, Param,
+    Step,
 };
-use crate::ir::kernel_program::{Access, Action, Block, BufferScope, Iter, LoopId, ScalarExpr};
+use crate::ir::kernel_program::{
+    Access, Action, Block, BufferScope, Iter, LoopId, LoopMode, ScalarExpr,
+};
 
 pub fn validate_exec_plan(plan: &ExecPlan) -> Result<(), ValidationError> {
     validate_metadata(plan)?;
@@ -101,6 +103,8 @@ fn validate_kernels(plan: &ExecPlan) -> Result<(), ValidationError> {
         validate_kernel_locals(plan, kernel)
             .map_err(|message| err(format!("kernel {} {}", kernel_index, message)))?;
         let mut loops = BTreeSet::new();
+        validate_execution(kernel, &mut loops)
+            .map_err(|message| err(format!("kernel {} execution {}", kernel_index, message)))?;
         collect_loop_ids(&kernel.body, &mut loops)
             .map_err(|error| err(format!("kernel {} {}", kernel_index, error.message)))?;
     }
@@ -140,6 +144,32 @@ fn validate_kernel_locals(plan: &ExecPlan, kernel: &BoundKernel) -> Result<(), S
             .map_err(|message| format!("local {} shape {}", local, message))?;
         validate_layout(plan, &buffer.buffer.layout)
             .map_err(|message| format!("local {} layout {}", local, message))?;
+    }
+    Ok(())
+}
+
+fn validate_execution(kernel: &BoundKernel, loops: &mut BTreeSet<usize>) -> Result<(), String> {
+    if kernel.execution.groups.len() > 3 {
+        return Err(format!("has {} group dims", kernel.execution.groups.len()));
+    }
+    if kernel.execution.lanes.len() > 3 {
+        return Err(format!("has {} lane dims", kernel.execution.lanes.len()));
+    }
+    for (dim, execution_dim) in kernel.execution.groups.iter().enumerate() {
+        if !loops.insert(execution_dim.id.0) {
+            return Err(format!(
+                "group dim {} repeats loop id {}",
+                dim, execution_dim.id.0
+            ));
+        }
+    }
+    for (dim, execution_dim) in kernel.execution.lanes.iter().enumerate() {
+        if !loops.insert(execution_dim.id.0) {
+            return Err(format!(
+                "lane dim {} repeats loop id {}",
+                dim, execution_dim.id.0
+            ));
+        }
     }
     Ok(())
 }
@@ -235,6 +265,9 @@ fn validate_dispatch(
     }
 
     let mut loops = BTreeSet::new();
+    validate_execution(kernel_body, &mut loops)?;
+    validate_execution_extents(plan, kernel_body, reads, writes)?;
+    let execution_scope = loops.clone();
     collect_loop_ids(&kernel_body.body, &mut loops).map_err(|error| error.message)?;
     validate_block(
         plan,
@@ -242,13 +275,30 @@ fn validate_dispatch(
         reads,
         writes,
         &loops,
-        &BTreeSet::new(),
+        &execution_scope,
         &kernel_body.body,
     )
 }
 
+fn validate_execution_extents(
+    plan: &ExecPlan,
+    kernel: &BoundKernel,
+    reads: &[BufferRef],
+    writes: &[BufferRef],
+) -> Result<(), String> {
+    for (dim, execution_dim) in kernel.execution.groups.iter().enumerate() {
+        validate_ref_dim(plan, kernel, reads, writes, execution_dim.extent.source)
+            .map_err(|message| format!("group dim {} extent {}", dim, message))?;
+    }
+    for (dim, execution_dim) in kernel.execution.lanes.iter().enumerate() {
+        validate_ref_dim(plan, kernel, reads, writes, execution_dim.extent.source)
+            .map_err(|message| format!("lane dim {} extent {}", dim, message))?;
+    }
+    Ok(())
+}
+
 fn collect_loop_ids(
-    block: &Block<KernelRef, LoopBind>,
+    block: &Block<KernelRef>,
     loops: &mut BTreeSet<usize>,
 ) -> Result<(), ValidationError> {
     for action in &block.0 {
@@ -269,13 +319,20 @@ fn validate_block(
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    block: &Block<KernelRef, LoopBind>,
+    block: &Block<KernelRef>,
 ) -> Result<(), String> {
     for action in &block.0 {
         match action {
             Action::Loop {
-                id, extent, body, ..
+                id,
+                mode,
+                extent,
+                body,
+                ..
             } => {
+                if *mode != LoopMode::Serial {
+                    return Err(format!("loop {} is not serial", id.0));
+                }
                 validate_ref_dim(plan, kernel, reads, writes, extent.source)
                     .map_err(|message| format!("loop {} extent {}", id.0, message))?;
                 let mut child_scope = scope.clone();
@@ -651,10 +708,12 @@ mod tests {
     use super::validate_exec_plan;
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
-        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate,
-        KernelId, KernelRef, Layout, LocalBuffer, LoopBind, Output, Param, Shape, Step,
+        Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, ExecutionShape, Input,
+        Intermediate, KernelId, KernelRef, Layout, LocalBuffer, Output, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{Access, Action, Block, BufferScope, Iter, LoopId, TailGuard};
+    use crate::ir::kernel_program::{
+        Access, Action, Block, BufferScope, Iter, LoopId, LoopMode, TailGuard,
+    };
 
     fn dim(input: usize, dim: usize) -> DimRef<Input> {
         DimRef {
@@ -682,9 +741,13 @@ mod tests {
                     ind: 0,
                 }],
                 locals: vec![],
+                execution: ExecutionShape {
+                    groups: vec![],
+                    lanes: vec![],
+                },
                 body: Block(vec![Action::Loop {
                     id: LoopId(0),
-                    mode: LoopBind::Serial,
+                    mode: LoopMode::Serial,
                     extent: Extent {
                         source: DimRef {
                             buffer: KernelRef::Param(Param {

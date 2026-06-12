@@ -25,9 +25,10 @@
 //! - Every value in `BoundKernel.reads` has `Arg::Readonly`.
 //! - Every value in `BoundKernel.writes` has `Arg::Writeable`.
 //! - `BoundKernel.locals` is ordered.
-//! - `LoopBind::Serial` gives counted-loop execution.
-//! - `LoopBind::Group` binds one loop to a cooperative-group dimension.
-//! - `LoopBind::Lane` binds one loop to an execution-lane dimension.
+//! - `BoundKernel.execution` gives replicated execution contexts.
+//! - `ExecutionShape.groups` is ordered by group dimension.
+//! - `ExecutionShape.lanes` is ordered by lane dimension.
+//! - `ExecutionDim.id` names one execution-space index.
 //! - `Param { arg, ind }` names parameter `ind` of `arg`.
 //! - `Local(i)` names `BoundKernel.locals[i]`.
 //! - `KernelRef::Param(param)` names one kernel parameter.
@@ -46,7 +47,7 @@
 //!
 
 use super::common::{DimRef, Extent};
-use super::kernel_program::{Block, BufferScope};
+use super::kernel_program::{Block, BufferScope, LoopId, TailGuard};
 
 /// One public execution plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,8 +95,10 @@ pub struct BoundKernel {
     pub writes: Vec<Param>,
     /// Kernel-local buffers.
     pub locals: Vec<LocalBuffer>,
+    /// Kernel execution-space shape.
+    pub execution: ExecutionShape,
     /// Kernel body.
-    pub body: Block<KernelRef, LoopBind>,
+    pub body: Block<KernelRef>,
 }
 
 /// One kernel-local buffer.
@@ -169,21 +172,24 @@ pub enum KernelRef {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Local(pub usize);
 
-/// Execution binding of one kernel loop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LoopBind {
-    /// Counted-loop execution.
-    Serial,
-    /// Cooperative-group dimension.
-    Group {
-        /// Dimension number.
-        dim: usize,
-    },
-    /// Execution-lane dimension.
-    Lane {
-        /// Dimension number.
-        dim: usize,
-    },
+/// Shape of one kernel execution space.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionShape {
+    /// Cooperative-group dimensions.
+    pub groups: Vec<ExecutionDim>,
+    /// Execution-lane dimensions.
+    pub lanes: Vec<ExecutionDim>,
+}
+
+/// One execution-space dimension.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionDim {
+    /// Execution index identifier.
+    pub id: LoopId,
+    /// Execution extent.
+    pub extent: Extent<KernelRef>,
+    /// Execution tail guard.
+    pub guard: TailGuard,
 }
 
 /// Ordered execution steps.
