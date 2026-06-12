@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use compiler::ir::component::Component;
 use compiler::ir::module::Module;
+use compiler::ir::parallel_module::ParallelModule;
 
 #[repr(C)]
 pub struct i_tensor {
@@ -139,12 +140,42 @@ pub unsafe extern "C" fn i_code(component: *const i_component) -> *mut c_char {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn i_cuda_code(component: *const i_component) -> *mut c_char {
+    let Some(component) = component.as_ref() else {
+        set_error("null component");
+        return ptr::null_mut();
+    };
+
+    match render_cuda_component(&component.inner).and_then(|source| {
+        CString::new(source).map_err(|_| "source contains interior NUL".to_string())
+    }) {
+        Ok(source) => source.into_raw(),
+        Err(err) => {
+            set_error(err);
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn i_compile(component: *const i_component) -> *mut i_program {
     let Some(component) = component.as_ref() else {
         return null_with_error("null component");
     };
 
     match compile(&component.inner) {
+        Ok(program) => Box::into_raw(Box::new(program)),
+        Err(err) => null_with_error(err),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn i_cuda_compile(component: *const i_component) -> *mut i_program {
+    let Some(component) = component.as_ref() else {
+        return null_with_error("null component");
+    };
+
+    match compile_cuda(&component.inner) {
         Ok(program) => Box::into_raw(Box::new(program)),
         Err(err) => null_with_error(err),
     }
@@ -353,7 +384,16 @@ unsafe fn combine(
 fn compile(component: &Component) -> Result<i_program, String> {
     let source = render_component(component)?;
     let dylib_path = build(&source)?;
+    load_program(dylib_path)
+}
 
+fn compile_cuda(component: &Component) -> Result<i_program, String> {
+    let source = render_cuda_component(component)?;
+    let dylib_path = build_cuda(&source)?;
+    load_program(dylib_path)
+}
+
+fn load_program(dylib_path: PathBuf) -> Result<i_program, String> {
     unsafe {
         let library = Library::open(&dylib_path)?;
         let count = library.symbol::<unsafe extern "C" fn() -> usize>(c"count")?;
@@ -379,6 +419,11 @@ fn render_component(component: &Component) -> Result<String, String> {
     Ok(compiler::backends::c::render(&module))
 }
 
+fn render_cuda_component(component: &Component) -> Result<String, String> {
+    let module = lower_component_to_parallel_module(component)?;
+    compiler::backends::cuda::render(&module).map_err(|err| err.to_string())
+}
+
 fn lower_component_to_module(component: &Component) -> Result<Module, String> {
     let graph =
         compiler::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
@@ -389,6 +434,18 @@ fn lower_component_to_module(component: &Component) -> Result<Module, String> {
     let plan = compiler::lower::lower_kernel_program_to_exec_plan(&kernels)
         .map_err(|err| format!("{err:?}"))?;
     compiler::lower::lower_exec_plan_to_module(&plan).map_err(|err| format!("{err:?}"))
+}
+
+fn lower_component_to_parallel_module(component: &Component) -> Result<ParallelModule, String> {
+    let graph =
+        compiler::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
+    let stages = compiler::lower::lower_node_graph_to_stage_program(&graph)
+        .map_err(|err| format!("{err:?}"))?;
+    let kernels = compiler::lower::lower_stage_program_to_kernel_program(&stages)
+        .map_err(|err| format!("{err:?}"))?;
+    let plan = compiler::lower::lower_kernel_program_to_exec_plan(&kernels)
+        .map_err(|err| format!("{err:?}"))?;
+    compiler::lower::lower_exec_plan_to_parallel_module(&plan).map_err(|err| format!("{err:?}"))
 }
 
 fn build(source: &str) -> Result<PathBuf, String> {
@@ -409,6 +466,29 @@ fn build(source: &str) -> Result<PathBuf, String> {
     let _ = std::fs::remove_file(&source_path);
     if !exit.success() {
         return Err(format!("cc failed with status {exit}"));
+    }
+
+    Ok(dylib_path)
+}
+
+fn build_cuda(source: &str) -> Result<PathBuf, String> {
+    let stem = format!("ilang_cuda_{}", unique_string());
+    let source_path = std::env::temp_dir().join(format!("{stem}.cu"));
+    let dylib_path = std::env::temp_dir().join(format!("{stem}.{}", dylib_ext()));
+
+    std::fs::write(&source_path, source).map_err(|err| err.to_string())?;
+    let nvcc = std::env::var("ILANG_NVCC").unwrap_or_else(|_| "nvcc".to_string());
+    let exit = Command::new(nvcc)
+        .args(["-O3", "-shared", "-Xcompiler", "-fPIC"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&dylib_path)
+        .status()
+        .map_err(|err| err.to_string())?;
+
+    let _ = std::fs::remove_file(&source_path);
+    if !exit.success() {
+        return Err(format!("nvcc failed with status {exit}"));
     }
 
     Ok(dylib_path)

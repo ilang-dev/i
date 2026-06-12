@@ -75,8 +75,12 @@ _core.i_swap.argtypes = [ctypes.c_void_p]
 _core.i_swap.restype = ctypes.c_void_p
 _core.i_code.argtypes = [ctypes.c_void_p]
 _core.i_code.restype = ctypes.c_void_p
+_core.i_cuda_code.argtypes = [ctypes.c_void_p]
+_core.i_cuda_code.restype = ctypes.c_void_p
 _core.i_compile.argtypes = [ctypes.c_void_p]
 _core.i_compile.restype = ctypes.c_void_p
+_core.i_cuda_compile.argtypes = [ctypes.c_void_p]
+_core.i_cuda_compile.restype = ctypes.c_void_p
 _core.i_output_count.argtypes = [ctypes.c_void_p]
 _core.i_output_count.restype = ctypes.c_size_t
 _core.i_output_ranks.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
@@ -244,13 +248,18 @@ class Component:
             _ptr = _core.i_parse(src.encode())
         self._ptr = _check_ptr(_ptr)
         self._program = None
+        self._cuda_program = None
 
     def __del__(self):
         program = getattr(self, "_program", None)
+        cuda_program = getattr(self, "_cuda_program", None)
         ptr = getattr(self, "_ptr", None)
         if program:
             _core.i_program_free(program)
             self._program = None
+        if cuda_program:
+            _core.i_program_free(cuda_program)
+            self._cuda_program = None
         if ptr:
             _core.i_component_free(ptr)
             self._ptr = None
@@ -295,8 +304,20 @@ class Component:
             self._program = _check_ptr(_core.i_compile(self._ptr))
         return self._program
 
+    def _cuda_compile(self):
+        if self._cuda_program is None:
+            self._cuda_program = _check_ptr(_core.i_cuda_compile(self._ptr))
+        return self._cuda_program
+
     def _code(self):
         s = _check_ptr(_core.i_code(self._ptr))
+        try:
+            return ctypes.cast(s, ctypes.c_char_p).value.decode()
+        finally:
+            _core.i_string_free(s)
+
+    def _cuda_code(self):
+        s = _check_ptr(_core.i_cuda_code(self._ptr))
         try:
             return ctypes.cast(s, ctypes.c_char_p).value.decode()
         finally:
@@ -317,6 +338,13 @@ class Component:
 
     def exec(self, *inputs):
         program = self._compile()
+        return self._exec_program(program, *inputs)
+
+    def exec_cuda(self, *inputs):
+        program = self._cuda_compile()
+        return self._exec_program(program, *inputs)
+
+    def _exec_program(self, program, *inputs):
         input_arr, keepalive = _inputs(inputs)
         outputs = _core.i_exec(program, input_arr, len(inputs))
         if outputs.count == 0:
@@ -345,6 +373,13 @@ class Component:
 
     def into(self, outputs, *inputs):
         program = self._compile()
+        return self._into_program(program, outputs, *inputs)
+
+    def into_cuda(self, outputs, *inputs):
+        program = self._cuda_compile()
+        return self._into_program(program, outputs, *inputs)
+
+    def _into_program(self, program, outputs, *inputs):
         if not isinstance(outputs, (tuple, list)):
             outputs = (outputs,)
 
