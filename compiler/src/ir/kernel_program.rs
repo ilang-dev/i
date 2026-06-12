@@ -23,7 +23,8 @@
 //! - `Buffer.layout` gives the allocation layout of one logical buffer.
 //! - `BufferShape` preserves semantic buffer dimension order.
 //! - `BufferLayout` preserves physical buffer dimension order.
-//! - `Kernel<B>` is parameterized by buffer reference type.
+//! - `Kernel<B, L>` is parameterized by buffer reference type and loop mode
+//!   type.
 //! - `Kernel.reads` is the ordered `readonlys` parameter list.
 //! - `Kernel.writes` is the ordered `writeables` parameter list.
 //! - Every buffer accessed by a kernel appears in `Kernel.reads` or
@@ -74,13 +75,13 @@ pub struct KernelProgram {
 
 /// One planned kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Kernel<B = BufferId> {
+pub struct Kernel<B = BufferId, L = LoopMode> {
     /// Kernel `readonlys` parameter buffers.
     pub reads: Vec<B>,
     /// Kernel `writeables` parameter buffers.
     pub writes: Vec<B>,
     /// Kernel body.
-    pub body: Block<B>,
+    pub body: Block<B, L>,
 }
 
 /// One logical buffer.
@@ -128,23 +129,23 @@ pub struct BufferLayout(pub Vec<Extent<BufferId>>);
 
 /// One ordered block of kernel statements.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Block<B = BufferId>(pub Vec<Action<B>>);
+pub struct Block<B = BufferId, L = LoopMode>(pub Vec<Action<B, L>>);
 
 /// One kernel statement.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Action<B = BufferId> {
+pub enum Action<B = BufferId, L = LoopMode> {
     /// One counted loop.
     Loop {
         /// Loop identifier.
         id: LoopId,
         /// Loop execution mode.
-        mode: LoopMode,
+        mode: L,
         /// Loop extent.
         extent: Extent<B>,
         /// Loop tail guard.
         guard: TailGuard,
         /// Loop body.
-        body: Block<B>,
+        body: Block<B, L>,
     },
     /// One scalar initialization.
     Init {

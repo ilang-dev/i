@@ -3,8 +3,8 @@ use std::fmt;
 
 use crate::ir::common::DimRef;
 use crate::ir::exec_plan::{
-    Arg, BoundKernel, BufferRef, ExecPlan, Input, Intermediate, KernelId, KernelRef, Local, Param,
-    Step,
+    Arg, BoundKernel, BufferRef, ExecPlan, Input, Intermediate, KernelId, KernelRef, Local,
+    LoopBind, Param, Step,
 };
 use crate::ir::kernel_program::{Access, Action, Block, BufferScope, Iter, LoopId, ScalarExpr};
 
@@ -248,7 +248,7 @@ fn validate_dispatch(
 }
 
 fn collect_loop_ids(
-    block: &Block<KernelRef>,
+    block: &Block<KernelRef, LoopBind>,
     loops: &mut BTreeSet<usize>,
 ) -> Result<(), ValidationError> {
     for action in &block.0 {
@@ -269,7 +269,7 @@ fn validate_block(
     writes: &[BufferRef],
     loops: &BTreeSet<usize>,
     scope: &BTreeSet<usize>,
-    block: &Block<KernelRef>,
+    block: &Block<KernelRef, LoopBind>,
 ) -> Result<(), String> {
     for action in &block.0 {
         match action {
@@ -652,11 +652,9 @@ mod tests {
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
         Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate,
-        KernelId, KernelRef, Layout, LocalBuffer, Output, Param, Shape, Step,
+        KernelId, KernelRef, Layout, LocalBuffer, LoopBind, Output, Param, Shape, Step,
     };
-    use crate::ir::kernel_program::{
-        Access, Action, Block, BufferScope, Iter, LoopId, LoopMode, TailGuard,
-    };
+    use crate::ir::kernel_program::{Access, Action, Block, BufferScope, Iter, LoopId, TailGuard};
 
     fn dim(input: usize, dim: usize) -> DimRef<Input> {
         DimRef {
@@ -686,7 +684,7 @@ mod tests {
                 locals: vec![],
                 body: Block(vec![Action::Loop {
                     id: LoopId(0),
-                    mode: LoopMode::Serial,
+                    mode: LoopBind::Serial,
                     extent: Extent {
                         source: DimRef {
                             buffer: KernelRef::Param(Param {

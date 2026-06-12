@@ -1,16 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::check::exec_plan::validate_exec_plan;
 use crate::check::kernel_program::validate_kernel_program;
-use crate::ir::common::{DimRef, Extent};
+use crate::ir::common::{DimRef, Extent, ExtentKind};
 use crate::ir::exec_plan::{
     Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, Input, Intermediate, KernelId,
-    KernelRef, Layout, Local, LocalBuffer, Output, Param, Shape, Step,
+    KernelRef, Layout, Local, LocalBuffer, LoopBind, Output, Param, Shape, Step,
 };
 use crate::ir::kernel_program::{
     Access, Action, Block, BufferId, BufferKind, BufferScope, Kernel as ProgramKernel,
-    KernelProgram, ScalarExpr,
+    KernelProgram, LoopMode, ScalarExpr,
 };
 
 pub fn lower_kernel_program_to_exec_plan(program: &KernelProgram) -> Result<ExecPlan, LowerError> {
@@ -278,7 +278,12 @@ impl<'a> Builder<'a> {
                 .collect(),
             locals: locals.iter().map(|(_, buffer)| buffer.clone()).collect(),
             body: self
-                .lower_block(kernel, locals.as_slice(), &kernel.body)
+                .lower_block(
+                    kernel,
+                    locals.as_slice(),
+                    &kernel.body,
+                    &mut BindingState::new(),
+                )
                 .map_err(|error| {
                     LowerError::new(format!("kernel {} {}", kernel_index, error.message))
                 })?,
@@ -314,11 +319,12 @@ impl<'a> Builder<'a> {
         kernel: &ProgramKernel<BufferId>,
         locals: &[(BufferId, LocalBuffer)],
         block: &Block<BufferId>,
-    ) -> Result<Block<KernelRef>, LowerError> {
+        bindings: &mut BindingState,
+    ) -> Result<Block<KernelRef, LoopBind>, LowerError> {
         block
             .0
             .iter()
-            .map(|action| self.lower_action(kernel, locals, action))
+            .map(|action| self.lower_action(kernel, locals, action, bindings))
             .collect::<Result<Vec<_>, _>>()
             .map(Block)
     }
@@ -328,7 +334,8 @@ impl<'a> Builder<'a> {
         kernel: &ProgramKernel<BufferId>,
         locals: &[(BufferId, LocalBuffer)],
         action: &Action<BufferId>,
-    ) -> Result<Action<KernelRef>, LowerError> {
+        bindings: &mut BindingState,
+    ) -> Result<Action<KernelRef, LoopBind>, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -336,19 +343,23 @@ impl<'a> Builder<'a> {
                 extent,
                 guard,
                 body,
-            } => Ok(Action::Loop {
-                id: *id,
-                mode: *mode,
-                extent: Extent {
-                    source: DimRef {
-                        buffer: self.lower_ref(kernel, locals, extent.source.buffer)?,
-                        dim: extent.source.dim,
+            } => {
+                let bind = bindings.bind(*mode, extent);
+                let mut body_bindings = bindings.child(bind);
+                Ok(Action::Loop {
+                    id: *id,
+                    mode: bind,
+                    extent: Extent {
+                        source: DimRef {
+                            buffer: self.lower_ref(kernel, locals, extent.source.buffer)?,
+                            dim: extent.source.dim,
+                        },
+                        kind: extent.kind.clone(),
                     },
-                    kind: extent.kind.clone(),
-                },
-                guard: *guard,
-                body: self.lower_block(kernel, locals, body)?,
-            }),
+                    guard: *guard,
+                    body: self.lower_block(kernel, locals, body, &mut body_bindings)?,
+                })
+            }
             Action::Init {
                 op,
                 write,
@@ -516,6 +527,70 @@ impl<'a> Builder<'a> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct BindingState {
+    active: bool,
+    group_dims: BTreeMap<usize, usize>,
+    lane_dims: BTreeMap<usize, usize>,
+}
+
+impl BindingState {
+    fn new() -> Self {
+        Self {
+            active: true,
+            group_dims: BTreeMap::new(),
+            lane_dims: BTreeMap::new(),
+        }
+    }
+
+    fn bind(&mut self, mode: LoopMode, extent: &Extent<BufferId>) -> LoopBind {
+        if mode == LoopMode::Serial || !self.active {
+            return LoopBind::Serial;
+        }
+
+        let source_dim = extent.source.dim;
+        match extent.kind {
+            ExtentKind::Base(_) => self.bind_group(source_dim),
+            ExtentKind::Semantic | ExtentKind::Split { .. } => self.bind_lane(source_dim),
+        }
+    }
+
+    fn bind_group(&mut self, source_dim: usize) -> LoopBind {
+        if let Some(dim) = self.group_dims.get(&source_dim) {
+            return LoopBind::Group { dim: *dim };
+        }
+        if self.group_dims.len() >= 3 {
+            self.active = false;
+            return LoopBind::Serial;
+        }
+        let dim = self.group_dims.len();
+        self.group_dims.insert(source_dim, dim);
+        LoopBind::Group { dim }
+    }
+
+    fn bind_lane(&mut self, source_dim: usize) -> LoopBind {
+        if self.lane_dims.contains_key(&source_dim) {
+            self.active = false;
+            return LoopBind::Serial;
+        }
+        if self.lane_dims.len() >= 3 {
+            self.active = false;
+            return LoopBind::Serial;
+        }
+        let dim = self.lane_dims.len();
+        self.lane_dims.insert(source_dim, dim);
+        LoopBind::Lane { dim }
+    }
+
+    fn child(&self, bind: LoopBind) -> Self {
+        let mut child = self.clone();
+        if bind == LoopBind::Serial {
+            child.active = false;
+        }
+        child
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LowerError {
     pub message: String,
 }
@@ -550,7 +625,7 @@ mod tests {
     use crate::front::parse_expr;
     use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
     use crate::ir::exec_plan::{
-        Arg, BufferRef, Input, Intermediate, KernelRef, Local, Output, Param, Step,
+        Arg, BufferRef, Input, Intermediate, KernelRef, Local, LoopBind, Output, Param, Step,
     };
     use crate::ir::graph::{
         Graph, Input as GraphInput, Node as GraphNode, NodeId, Output as GraphOutput, OutputId,
@@ -769,7 +844,59 @@ mod tests {
             unreachable!();
         };
 
-        assert_eq!(zero_checks, &vec![crate::ir::kernel_program::LoopId(2)]);
+        assert_eq!(
+            zero_checks.as_slice(),
+            &[crate::ir::kernel_program::LoopId(2)]
+        );
+    }
+
+    #[test]
+    fn binds_unsplit_output_loops_to_lanes_and_reduction_loops_to_serial() {
+        let plan = lower_expr("+ijk~ij");
+        let mut binds = Vec::new();
+        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+
+        assert_eq!(
+            binds,
+            vec![
+                LoopBind::Lane { dim: 0 },
+                LoopBind::Lane { dim: 1 },
+                LoopBind::Serial,
+            ]
+        );
+    }
+
+    #[test]
+    fn binds_split_output_loops_to_group_and_lane() {
+        let plan = lower_expr("ik~ik|i:8|ii'k");
+        let mut binds = Vec::new();
+        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+
+        assert_eq!(
+            binds,
+            vec![
+                LoopBind::Group { dim: 0 },
+                LoopBind::Lane { dim: 0 },
+                LoopBind::Lane { dim: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn serializes_extra_split_levels_after_lane_binding() {
+        let plan = lower_expr("ik~ik|i:2:4|ii'i''k");
+        let mut binds = Vec::new();
+        collect_loop_binds(&plan.kernels[0].body, &mut binds);
+
+        assert_eq!(
+            binds,
+            vec![
+                LoopBind::Group { dim: 0 },
+                LoopBind::Lane { dim: 0 },
+                LoopBind::Serial,
+                LoopBind::Serial,
+            ]
+        );
     }
 
     #[test]
@@ -1035,7 +1162,7 @@ mod tests {
         }
     }
 
-    fn first_compute(block: &Block<KernelRef>) -> &Action<KernelRef> {
+    fn first_compute(block: &Block<KernelRef, LoopBind>) -> &Action<KernelRef, LoopBind> {
         for action in &block.0 {
             match action {
                 Action::Compute { .. } => return action,
@@ -1048,7 +1175,7 @@ mod tests {
         unreachable!()
     }
 
-    fn first_init(block: &Block<KernelRef>) -> &Action<KernelRef> {
+    fn first_init(block: &Block<KernelRef, LoopBind>) -> &Action<KernelRef, LoopBind> {
         for action in &block.0 {
             match action {
                 Action::Init { .. } => return action,
@@ -1061,7 +1188,7 @@ mod tests {
         unreachable!()
     }
 
-    fn contains_snapshot_and_scale(block: &Block<KernelRef>) -> bool {
+    fn contains_snapshot_and_scale(block: &Block<KernelRef, LoopBind>) -> bool {
         let mut snapshot = false;
         let mut scale = false;
         collect_online_action_kinds(block, &mut snapshot, &mut scale);
@@ -1069,7 +1196,7 @@ mod tests {
     }
 
     fn collect_online_action_kinds(
-        block: &Block<KernelRef>,
+        block: &Block<KernelRef, LoopBind>,
         snapshot: &mut bool,
         scale: &mut bool,
     ) {
@@ -1079,6 +1206,15 @@ mod tests {
                 Action::Snapshot { .. } => *snapshot = true,
                 Action::Scale { .. } => *scale = true,
                 Action::Init { .. } | Action::Compute { .. } => {}
+            }
+        }
+    }
+
+    fn collect_loop_binds(block: &Block<KernelRef, LoopBind>, binds: &mut Vec<LoopBind>) {
+        for action in &block.0 {
+            if let Action::Loop { mode, body, .. } = action {
+                binds.push(*mode);
+                collect_loop_binds(body, binds);
             }
         }
     }

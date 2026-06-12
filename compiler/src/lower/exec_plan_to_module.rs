@@ -5,7 +5,7 @@ use crate::check::exec_plan::validate_exec_plan;
 use crate::check::module::validate_module;
 use crate::ir::common::{DimRef, Extent, ExtentKind, Op};
 use crate::ir::exec_plan::{
-    Arg, BoundKernel, BufferRef, ExecPlan, Input, KernelRef, Local, Param, Step,
+    Arg, BoundKernel, BufferRef, ExecPlan, Input, KernelRef, Local, LoopBind, Param, Step,
 };
 use crate::ir::kernel_program::{Access, Action, Block as KernelBlock, Iter, LoopId, ScalarExpr};
 use crate::ir::module::{
@@ -342,7 +342,10 @@ impl KernelLowerer {
             .collect()
     }
 
-    fn lower_block(&mut self, block: &KernelBlock<KernelRef>) -> Result<Block, LowerError> {
+    fn lower_block(
+        &mut self,
+        block: &KernelBlock<KernelRef, LoopBind>,
+    ) -> Result<Block, LowerError> {
         block
             .0
             .iter()
@@ -351,7 +354,7 @@ impl KernelLowerer {
             .map(Block)
     }
 
-    fn lower_action(&mut self, action: &Action<KernelRef>) -> Result<Stmt, LowerError> {
+    fn lower_action(&mut self, action: &Action<KernelRef, LoopBind>) -> Result<Stmt, LowerError> {
         match action {
             Action::Loop {
                 id,
@@ -607,13 +610,16 @@ struct LoopInfo {
     kind: ExtentKind,
 }
 
-fn initialized_buffers(block: &KernelBlock<KernelRef>) -> BTreeSet<KernelRef> {
+fn initialized_buffers(block: &KernelBlock<KernelRef, LoopBind>) -> BTreeSet<KernelRef> {
     let mut initialized = BTreeSet::new();
     collect_initialized(block, &mut initialized);
     initialized
 }
 
-fn collect_initialized(block: &KernelBlock<KernelRef>, initialized: &mut BTreeSet<KernelRef>) {
+fn collect_initialized(
+    block: &KernelBlock<KernelRef, LoopBind>,
+    initialized: &mut BTreeSet<KernelRef>,
+) {
     for action in &block.0 {
         match action {
             Action::Loop { body, .. } => collect_initialized(body, initialized),
@@ -866,7 +872,7 @@ mod tests {
     use crate::ir::common::Op;
     use crate::ir::exec_plan::{
         Arg, BoundKernel, Buffer, BufferRef, Buffers, Exec, ExecPlan, KernelId, KernelRef, Local,
-        LocalBuffer, Output, Param, Shape, Step,
+        LocalBuffer, LoopBind, Output, Param, Shape, Step,
     };
     use crate::ir::kernel_program::{Access, Action, BufferScope, ScalarExpr};
     use crate::ir::module::{Block, Cast, Expr, Field, Ident, Place, Signature, Stmt, Type};
@@ -911,7 +917,7 @@ mod tests {
         }
     }
 
-    fn online_action_module(action: Action<KernelRef>) -> crate::ir::module::Module {
+    fn online_action_module(action: Action<KernelRef, LoopBind>) -> crate::ir::module::Module {
         lower_exec_plan_to_module(&ExecPlan {
             kernels: vec![BoundKernel {
                 reads: vec![],

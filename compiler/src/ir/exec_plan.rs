@@ -25,6 +25,9 @@
 //! - Every value in `BoundKernel.reads` has `Arg::Readonly`.
 //! - Every value in `BoundKernel.writes` has `Arg::Writeable`.
 //! - `BoundKernel.locals` is ordered.
+//! - `LoopBind::Serial` gives counted-loop execution.
+//! - `LoopBind::Group` binds one loop to a cooperative-group dimension.
+//! - `LoopBind::Lane` binds one loop to an execution-lane dimension.
 //! - `Param { arg, ind }` names parameter `ind` of `arg`.
 //! - `Local(i)` names `BoundKernel.locals[i]`.
 //! - `KernelRef::Param(param)` names one kernel parameter.
@@ -92,7 +95,7 @@ pub struct BoundKernel {
     /// Kernel-local buffers.
     pub locals: Vec<LocalBuffer>,
     /// Kernel body.
-    pub body: Block<KernelRef>,
+    pub body: Block<KernelRef, LoopBind>,
 }
 
 /// One kernel-local buffer.
@@ -165,6 +168,23 @@ pub enum KernelRef {
 /// Handle for one kernel-local buffer.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Local(pub usize);
+
+/// Execution binding of one kernel loop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoopBind {
+    /// Counted-loop execution.
+    Serial,
+    /// Cooperative-group dimension.
+    Group {
+        /// Dimension number.
+        dim: usize,
+    },
+    /// Execution-lane dimension.
+    Lane {
+        /// Dimension number.
+        dim: usize,
+    },
+}
 
 /// Ordered execution steps.
 #[derive(Clone, Debug, Eq, PartialEq)]

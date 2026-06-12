@@ -736,7 +736,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
                 let (axis, info) = local_loops[depth].clone();
                 block.push(Action::Loop {
                     id: info.id,
-                    mode: LoopMode::Serial,
+                    mode: loop_mode(stage, info.index),
                     extent: emitter.lower_loop_extent(stage_index, stage, axis, info.clone())?,
                     guard: TailGuard(emitter.tail_guard(stage, info)),
                     body: build(
@@ -1502,7 +1502,7 @@ impl<'a, 'b> KernelBuilder<'a, 'b> {
             axes.insert(axis, scale_axes[position].1.clone());
             Ok(Block(vec![Action::Loop {
                 id: info.id,
-                mode: LoopMode::Serial,
+                mode: loop_mode(stage, info.index),
                 extent: emitter.lower_loop_extent(stage_index, stage, axis, info.clone())?,
                 guard: TailGuard(emitter.tail_guard(stage, info)),
                 body,
@@ -1791,6 +1791,14 @@ fn collect_scalar_expr_buffer_uses(expr: &ScalarExpr, accessed: &mut BTreeSet<Bu
             collect_scalar_expr_buffer_uses(lhs, accessed);
             collect_scalar_expr_buffer_uses(rhs, accessed);
         }
+    }
+}
+
+fn loop_mode(stage: &Stage, index: crate::ir::common::Index) -> LoopMode {
+    if stage.output.shape.0.contains(&index) {
+        LoopMode::Parallel
+    } else {
+        LoopMode::Serial
     }
 }
 
@@ -2136,7 +2144,7 @@ mod tests {
     use crate::ir::common::{DimRef, Extent, ExtentKind};
     use crate::ir::graph::{NodeId, OutputId, Source};
     use crate::ir::kernel_program::{
-        Action, BufferId, BufferKind, BufferLayout, BufferScope, Iter, LoopId, ScalarExpr,
+        Action, BufferId, BufferKind, BufferLayout, BufferScope, Iter, LoopId, LoopMode, ScalarExpr,
     };
     use crate::lower::component_to_graph::lower_component_to_graph;
     use crate::lower::node_to_stage::lower_node_graph_to_stage_program;
@@ -2442,6 +2450,30 @@ mod tests {
         };
 
         assert_eq!(zero_checks, &vec![LoopId(2)]);
+    }
+
+    #[test]
+    fn marks_output_loops_parallel_and_reduction_loops_serial() {
+        let program = lower_stage_program_to_kernel_program(&lower_expr("+ijk~ij")).unwrap();
+        let mut modes = Vec::new();
+        collect_loop_modes(&program.graph.nodes[0].inner.body, &mut modes);
+
+        assert_eq!(
+            modes,
+            vec![LoopMode::Parallel, LoopMode::Parallel, LoopMode::Serial]
+        );
+    }
+
+    #[test]
+    fn marks_split_output_loops_parallel() {
+        let program = lower_stage_program_to_kernel_program(&lower_expr("ik~ik|i:8|ii'k")).unwrap();
+        let mut modes = Vec::new();
+        collect_loop_modes(&program.graph.nodes[0].inner.body, &mut modes);
+
+        assert_eq!(
+            modes,
+            vec![LoopMode::Parallel, LoopMode::Parallel, LoopMode::Parallel]
+        );
     }
 
     #[test]
@@ -2983,6 +3015,15 @@ mod tests {
             if let Action::Loop { guard, body, .. } = action {
                 guards.push(guard.0);
                 collect_loop_guards(body, guards);
+            }
+        }
+    }
+
+    fn collect_loop_modes(block: &crate::ir::kernel_program::Block, modes: &mut Vec<LoopMode>) {
+        for action in &block.0 {
+            if let Action::Loop { mode, body, .. } = action {
+                modes.push(*mode);
+                collect_loop_modes(body, modes);
             }
         }
     }
