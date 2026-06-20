@@ -1,5 +1,6 @@
 import ctypes
 import os
+import sys
 from pathlib import Path
 
 
@@ -12,7 +13,7 @@ def _load_core():
     names = {
         "darwin": ["libi_core.dylib"],
         "win32": ["i_core.dll"],
-    }.get(os.sys.platform, ["libi_core.so"])
+    }.get(sys.platform, ["libi_core.so"])
 
     roots = [
         here.parent,
@@ -137,7 +138,7 @@ def _flatten(x):
     if not x:
         return (0,), []
 
-    child_shape, data = _flatten(x[0])
+    child_shape, _data = _flatten(x[0])
     shape = (len(x),) + child_shape
     out = []
     for item in x:
@@ -312,20 +313,28 @@ class Component:
     def _code(self):
         s = _check_ptr(_core.i_code(self._ptr))
         try:
-            return ctypes.cast(s, ctypes.c_char_p).value.decode()
+            ptr = ctypes.cast(s, ctypes.c_char_p).value
+            if ptr is None:
+                raise RuntimeError("Failed to decode None pointer")
+            else:
+                return ptr.decode()
         finally:
             _core.i_string_free(s)
 
     def _cuda_code(self):
         s = _check_ptr(_core.i_cuda_code(self._ptr))
         try:
-            return ctypes.cast(s, ctypes.c_char_p).value.decode()
+            ptr = ctypes.cast(s, ctypes.c_char_p).value
+            if ptr is None:
+                raise RuntimeError("Failed to decode None pointer")
+            else:
+                return ptr.decode()
         finally:
             _core.i_string_free(s)
 
     def output_shapes(self, *inputs):
         program = self._compile()
-        input_arr, keepalive = _inputs(inputs)
+        input_arr, _keepalive = _inputs(inputs)
         count = _core.i_output_count(program)
         ranks = (ctypes.c_size_t * count)()
         _check(_core.i_output_ranks(program, ranks))
@@ -334,7 +343,9 @@ class Component:
             *(ctypes.cast(buf, ctypes.POINTER(ctypes.c_size_t)) for buf in shape_bufs)
         )
         _check(_core.i_output_shapes(program, input_arr, len(inputs), shape_ptrs))
-        return [tuple(buf[j] for j in range(ranks[i])) for i, buf in enumerate(shape_bufs)]
+        return [
+            tuple(buf[j] for j in range(ranks[i])) for i, buf in enumerate(shape_bufs)
+        ]
 
     def exec(self, *inputs):
         program = self._compile()
@@ -345,7 +356,7 @@ class Component:
         return self._exec_program(program, *inputs)
 
     def _exec_program(self, program, *inputs):
-        input_arr, keepalive = _inputs(inputs)
+        input_arr, _keepalive = _inputs(inputs)
         outputs = _core.i_exec(program, input_arr, len(inputs))
         if outputs.count == 0:
             _check(-1)
@@ -367,7 +378,9 @@ class Component:
         import torch
 
         shapes = self.output_shapes(*inputs)
-        outs = [torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes]
+        outs = [
+            torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes
+        ]
         self.into(outs if len(outs) != 1 else outs[0], *inputs)
         return outs[0] if len(outs) == 1 else tuple(outs)
 
@@ -383,7 +396,7 @@ class Component:
         if not isinstance(outputs, (tuple, list)):
             outputs = (outputs,)
 
-        input_arr, keepalive = _inputs(inputs)
+        input_arr, _keepalive = _inputs(inputs)
         out_views = []
         out_keepalive = []
         for out in outputs:
@@ -391,7 +404,11 @@ class Component:
             out_views.append(view)
             out_keepalive.append(keep)
         output_arr = (_CTensorMut * len(out_views))(*out_views)
-        _check(_core.i_exec_into(program, input_arr, len(inputs), output_arr, len(out_views)))
+        _check(
+            _core.i_exec_into(
+                program, input_arr, len(inputs), output_arr, len(out_views)
+            )
+        )
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
 
@@ -422,7 +439,7 @@ def _output(x):
     raise TypeError("outputs must be NumPy arrays or Torch CPU tensors")
 
 
-I = Component(_ptr=_core.i_identity())
+I = Component(_ptr=_core.i_identity())  # noqa: E741
 
 
 def i(src):
