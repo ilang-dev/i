@@ -476,7 +476,13 @@ fn build_cuda(source: &str) -> Result<PathBuf, String> {
     std::fs::write(&source_path, source).map_err(|err| err.to_string())?;
     let nvcc = std::env::var("ILANG_NVCC").unwrap_or_else(|_| "nvcc".to_string());
     let exit = Command::new(nvcc)
-        .args(["-O3", "-shared", "-Xcompiler", "-fPIC"])
+        .args([
+            "-O3",
+            "-shared",
+            "-Xcompiler",
+            "-fPIC",
+            "--diag-suppress=177",
+        ])
         .arg(&source_path)
         .arg("-o")
         .arg(&dylib_path)
