@@ -112,7 +112,7 @@ def i_mlp(x, w1, w2):
     mvp = i("ij*j~ij") >> i("+ij~i")
     amvp = mvp >> i(">i~i")
     I = i("ij~ij")  # noqa: E741
-    f = (I @ amvp) >> mvp
+    f = (I | amvp) >> mvp
     return f.exec(w2, w1, x)
 
 
