@@ -1,27 +1,31 @@
+from __future__ import annotations
+
 import ctypes
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
-def _load_core():
+def _load_core() -> ctypes.CDLL:
     override = os.environ.get("ILANG_CORE_LIB")
     if override:
         return ctypes.CDLL(override)
 
     here = Path(__file__).resolve()
-    names = {
+    names: dict[str, list[str]] = {
         "darwin": ["libi_core.dylib"],
         "win32": ["i_core.dll"],
-    }.get(sys.platform, ["libi_core.so"])
+    }
+    so_name: list[str] = names.get(sys.platform, ["libi_core.so"])
 
-    roots = [
+    roots: list[Path] = [
         here.parent,
         here.parent.parent / "target" / "release",
         here.parent.parent / "target" / "debug",
     ]
     for root in roots:
-        for name in names:
+        for name in so_name:
             path = root / name
             if path.exists():
                 return ctypes.CDLL(str(path))
@@ -29,7 +33,7 @@ def _load_core():
     raise RuntimeError("could not find i-core library; run `cargo build -p i-core`")
 
 
-_core = _load_core()
+_core: ctypes.CDLL = _load_core()
 
 
 class _CTensor(ctypes.Structure):
@@ -111,26 +115,28 @@ _core.i_error.argtypes = []
 _core.i_error.restype = ctypes.c_char_p
 
 
-def _check_ptr(ptr):
+def _check_ptr(ptr: ctypes.c_void_p | None) -> ctypes.c_void_p:
     if not ptr:
         err = _core.i_error()
         raise RuntimeError(err.decode() if err else "i-core error")
     return ptr
 
 
-def _check(code):
+def _check(code: int) -> None:
     if code != 0:
         err = _core.i_error()
         raise RuntimeError(err.decode() if err else "i-core error")
 
 
-def _shape_array(shape):
+def _shape_array(
+    shape: tuple[int, ...],
+) -> tuple[tuple[int, ...], Any]:
     shape = tuple(int(d) for d in shape)
-    arr = (ctypes.c_size_t * len(shape))(*shape)
+    arr: Any = (ctypes.c_size_t * len(shape))(*shape)
     return shape, arr
 
 
-def _flatten(x):
+def _flatten(x: Any) -> tuple[tuple[int, ...], list[float]]:
     if isinstance(x, (int, float)):
         return (), [float(x)]
     if not isinstance(x, (list, tuple)):
@@ -139,8 +145,8 @@ def _flatten(x):
         return (0,), []
 
     child_shape, _data = _flatten(x[0])
-    shape = (len(x),) + child_shape
-    out = []
+    shape: tuple[int, ...] = (len(x),) + child_shape
+    out: list[float] = []
     for item in x:
         item_shape, item_data = _flatten(item)
         if item_shape != child_shape:
@@ -150,22 +156,24 @@ def _flatten(x):
 
 
 class Tensor:
-    def __init__(self, x, shape=None):
+    def __init__(self, x: Any, shape: tuple[int, ...] | None = None) -> None:
         if shape is None:
             shape, data = _flatten(x)
         else:
             shape = tuple(int(d) for d in shape)
             data = [float(v) for v in x]
-        self.shape = tuple(shape)
-        self._len = len(data)
-        self._data = (ctypes.c_float * self._len)(*data)
+        self.shape: tuple[int, ...] = tuple(shape)
+        self._len: int = len(data)
+        self._data: Any = (ctypes.c_float * self._len)(*data)
         self._shape, self._shape_buf = _shape_array(self.shape)
-        self._owner = None
+        self._owner: _OwnedOutputs | None = None
 
     @classmethod
-    def _from_owned(cls, owner, index):
-        raw = owner.outputs.tensors[index]
-        self = cls.__new__(cls)
+    def _from_owned(cls, owner: _OwnedOutputs, index: int) -> Tensor:
+        outputs = owner.outputs
+        assert outputs is not None
+        raw = outputs.tensors[index]
+        self: Tensor = cls.__new__(cls)
         self.shape = tuple(raw.shape[i] for i in range(raw.rank))
         self._len = raw.len
         self._data = raw.data
@@ -174,24 +182,24 @@ class Tensor:
         return self
 
     @property
-    def data(self):
+    def data(self) -> list[float]:
         return [self._data[i] for i in range(self._len)]
 
-    def _view(self):
+    def _view(self) -> _CTensor:
         return _CTensor(self._data, self._shape_buf, len(self.shape))
 
-    def __del__(self):
+    def __del__(self) -> None:
         self._owner = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Tensor(shape={self.shape}, data={self.data})"
 
 
 class _OwnedOutputs:
-    def __init__(self, outputs):
-        self.outputs = outputs
+    def __init__(self, outputs: ctypes.Structure) -> None:
+        self.outputs: ctypes.Structure | None = outputs
 
-    def __del__(self):
+    def __del__(self) -> None:
         outputs = getattr(self, "outputs", None)
         if outputs is not None:
             self.outputs = None
@@ -199,12 +207,12 @@ class _OwnedOutputs:
 
 
 class _Input:
-    def __init__(self, tensor, keepalive):
-        self.tensor = tensor
-        self.keepalive = keepalive
+    def __init__(self, tensor: _CTensor, keepalive: tuple[Any, ...]) -> None:
+        self.tensor: _CTensor = tensor
+        self.keepalive: tuple[Any, ...] = keepalive
 
 
-def _input(x):
+def _input(x: Any) -> _Input:
     if isinstance(x, Tensor):
         return _Input(x._view(), x)
 
@@ -235,23 +243,27 @@ def _input(x):
     return _input(Tensor(x))
 
 
-def _inputs(xs):
-    views = [_input(x) for x in xs]
-    arr = (_CTensor * len(views))(*(v.tensor for v in views))
+def _inputs(
+    xs: list[Any] | tuple[Any, ...],
+) -> tuple[ctypes.Array[_CTensor], list[_Input]]:
+    views: list[_Input] = [_input(x) for x in xs]
+    arr: ctypes.Array[_CTensor] = (_CTensor * len(views))(*(v.tensor for v in views))
     return arr, views
 
 
 class Component:
-    def __init__(self, src=None, _ptr=None):
+    def __init__(
+        self, src: str | None = None, _ptr: ctypes.c_void_p | None = None
+    ) -> None:
         if _ptr is None:
             if src is None:
                 raise TypeError("Component needs source")
             _ptr = _core.i_parse(src.encode())
-        self._ptr = _check_ptr(_ptr)
-        self._program = None
-        self._cuda_program = None
+        self._ptr: ctypes.c_void_p | None = _check_ptr(_ptr)
+        self._program: ctypes.c_void_p | None = None
+        self._cuda_program: ctypes.c_void_p | None = None
 
-    def __del__(self):
+    def __del__(self) -> None:
         program = getattr(self, "_program", None)
         cuda_program = getattr(self, "_cuda_program", None)
         ptr = getattr(self, "_ptr", None)
@@ -265,80 +277,78 @@ class Component:
             _core.i_component_free(ptr)
             self._ptr = None
 
-    def _bin(self, other, fn):
+    def _bin(self, other: Component | str, fn: Any) -> Component:
         if not isinstance(other, Component):
             other = Component(other)
         return Component(_ptr=_check_ptr(fn(self._ptr, other._ptr)))
 
-    def chain(self, other):
+    def chain(self, other: Component | str) -> Component:
         return self._bin(other, _core.i_chain)
 
-    def compose(self, other):
+    def compose(self, other: Component | str) -> Component:
         return self._bin(other, _core.i_compose)
 
-    def fanout(self, other):
+    def fanout(self, other: Component | str) -> Component:
         return self._bin(other, _core.i_fanout)
 
-    def pair(self, other):
+    def pair(self, other: Component | str) -> Component:
         return self._bin(other, _core.i_pair)
 
-    def swap(self):
+    def swap(self) -> Component:
         return Component(_ptr=_check_ptr(_core.i_swap(self._ptr)))
 
-    def __rshift__(self, other):
+    def __rshift__(self, other: Component | str) -> Component:
         return self.chain(other)
 
-    def __lshift__(self, other):
+    def __lshift__(self, other: Component | str) -> Component:
         return self.compose(other)
 
-    def __and__(self, other):
+    def __and__(self, other: Component | str) -> Component:
         return self.fanout(other)
 
-    def __or__(self, other):
+    def __or__(self, other: Component | str) -> Component:
         return self.pair(other)
 
-    def __invert__(self):
+    def __invert__(self) -> Component:
         return self.swap()
 
-    def _compile(self):
+    def _compile(self) -> ctypes.c_void_p:
         if self._program is None:
             self._program = _check_ptr(_core.i_compile(self._ptr))
         return self._program
 
-    def _cuda_compile(self):
+    def _cuda_compile(self) -> ctypes.c_void_p:
         if self._cuda_program is None:
             self._cuda_program = _check_ptr(_core.i_cuda_compile(self._ptr))
         return self._cuda_program
 
-    def _code(self):
+    def _code(self) -> str:
         s = _check_ptr(_core.i_code(self._ptr))
         try:
             ptr = ctypes.cast(s, ctypes.c_char_p).value
             if ptr is None:
                 raise RuntimeError("Failed to decode None pointer")
-            else:
-                return ptr.decode()
+            return ptr.decode()
         finally:
             _core.i_string_free(s)
 
-    def _cuda_code(self):
+    def _cuda_code(self) -> str:
         s = _check_ptr(_core.i_cuda_code(self._ptr))
         try:
             ptr = ctypes.cast(s, ctypes.c_char_p).value
             if ptr is None:
                 raise RuntimeError("Failed to decode None pointer")
-            else:
-                return ptr.decode()
+            return ptr.decode()
         finally:
             _core.i_string_free(s)
 
-    def output_shapes(self, *inputs):
+    def output_shapes(self, *inputs: Any) -> list[tuple[int, ...]]:
         program = self._compile()
         input_arr, _keepalive = _inputs(inputs)
         count = _core.i_output_count(program)
         ranks = (ctypes.c_size_t * count)()
         _check(_core.i_output_ranks(program, ranks))
-        shape_bufs = [(ctypes.c_size_t * ranks[i])() for i in range(count)]
+        shape_bufs: list[Any] = [(ctypes.c_size_t * ranks[i])() for i in range(count)]
         shape_ptrs = (ctypes.POINTER(ctypes.c_size_t) * count)(
             *(ctypes.cast(buf, ctypes.POINTER(ctypes.c_size_t)) for buf in shape_bufs)
         )
@@ -347,63 +357,71 @@ class Component:
             tuple(buf[j] for j in range(ranks[i])) for i, buf in enumerate(shape_bufs)
         ]
 
-    def exec(self, *inputs):
+    def exec(self, *inputs: Any) -> Tensor | tuple[Tensor, ...]:
         program = self._compile()
         return self._exec_program(program, *inputs)
 
-    def exec_cuda(self, *inputs):
+    def exec_cuda(self, *inputs: Any) -> Tensor | tuple[Tensor, ...]:
         program = self._cuda_compile()
         return self._exec_program(program, *inputs)
 
-    def _exec_program(self, program, *inputs):
+    def _exec_program(
+        self, program: ctypes.c_void_p, *inputs: Any
+    ) -> Tensor | tuple[Tensor, ...]:
         input_arr, _keepalive = _inputs(inputs)
         outputs = _core.i_exec(program, input_arr, len(inputs))
         if outputs.count == 0:
             _check(-1)
         owner = _OwnedOutputs(outputs)
-        tensors = [Tensor._from_owned(owner, i) for i in range(outputs.count)]
+        tensors: list[Tensor] = [
+            Tensor._from_owned(owner, i) for i in range(outputs.count)
+        ]
         if len(tensors) == 1:
             return tensors[0]
         return tuple(tensors)
 
-    def exec_numpy(self, *inputs):
+    def exec_numpy(self, *inputs: Any) -> Any:
         import numpy as np
 
-        shapes = self.output_shapes(*inputs)
-        outs = [np.empty(shape, dtype=np.float32) for shape in shapes]
+        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs)
+        outs: list[np.ndarray] = [np.empty(shape, dtype=np.float32) for shape in shapes]
         self.into(outs if len(outs) != 1 else outs[0], *inputs)
         return outs[0] if len(outs) == 1 else tuple(outs)
 
-    def exec_torch(self, *inputs):
+    def exec_torch(self, *inputs: Any) -> Any:
         import torch
 
-        shapes = self.output_shapes(*inputs)
-        outs = [
+        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs)
+        outs: list[Any] = [
             torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes
         ]
         self.into(outs if len(outs) != 1 else outs[0], *inputs)
         return outs[0] if len(outs) == 1 else tuple(outs)
 
-    def into(self, outputs, *inputs):
+    def into(self, outputs: Any, *inputs: Any) -> Any:
         program = self._compile()
         return self._into_program(program, outputs, *inputs)
 
-    def into_cuda(self, outputs, *inputs):
+    def into_cuda(self, outputs: Any, *inputs: Any) -> Any:
         program = self._cuda_compile()
         return self._into_program(program, outputs, *inputs)
 
-    def _into_program(self, program, outputs, *inputs):
+    def _into_program(
+        self, program: ctypes.c_void_p, outputs: Any, *inputs: Any
+    ) -> Any:
         if not isinstance(outputs, (tuple, list)):
             outputs = (outputs,)
 
         input_arr, _keepalive = _inputs(inputs)
-        out_views = []
-        out_keepalive = []
+        out_views: list[_CTensorMut] = []
+        out_keepalive: list[tuple[Any, ...]] = []
         for out in outputs:
             view, keep = _output(out)
             out_views.append(view)
             out_keepalive.append(keep)
-        output_arr = (_CTensorMut * len(out_views))(*out_views)
+        output_arr: ctypes.Array[_CTensorMut] = (_CTensorMut * len(out_views))(
+            *out_views
+        )
         _check(
             _core.i_exec_into(
                 program, input_arr, len(inputs), output_arr, len(out_views)
@@ -412,7 +430,7 @@ class Component:
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
 
-def _output(x):
+def _output(x: Any) -> tuple[_CTensorMut, tuple[Any, ...]]:
     try:
         import numpy as np
 
@@ -442,5 +460,5 @@ def _output(x):
 I = Component(_ptr=_core.i_identity())  # noqa: E741
 
 
-def i(src):
+def i(src: str) -> Component:
     return Component(src)
