@@ -19,6 +19,7 @@
           cargo
           clippy
           python314Packages.numpy
+          python314Packages.torch
           ruff
           rust-analyzer
           rustc
