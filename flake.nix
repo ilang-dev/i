@@ -18,6 +18,7 @@
         packages = with stable; [
           cargo
           clippy
+          python314Packages.pip
           python314Packages.numpy
           python314Packages.torch
           ruff
