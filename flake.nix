@@ -6,21 +6,26 @@
   };
 
   outputs =
-    { self, stable-pkgs }:
+    {
+      self,
+      stable-pkgs,
+    }:
     let
       system = "x86_64-linux";
       stable = import stable-pkgs {
         inherit system;
       };
+      py = stable.python314.withPackages (ps: with ps; [
+        numpy
+        torch
+      ]);
     in
     {
       devShells.${system}.default = stable.mkShellNoCC {
         packages = with stable; [
           cargo
           clippy
-          python314Packages.pip
-          python314Packages.numpy
-          python314Packages.torch
+          py
           ruff
           rust-analyzer
           rustc
