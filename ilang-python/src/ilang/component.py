@@ -1,13 +1,49 @@
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from math import floor, log10, sqrt
 from typing import Any
 
 from . import ffi
 from .inputs import _inputs
 from .tensor import Tensor, _OwnedOutputs
 
-__all__ = ["Component", "I", "i"]
+__all__ = ["Bench", "Component", "I", "i"]
+
+
+@dataclass
+class Bench:
+    mean: timedelta
+    std: timedelta
+    n_warmups: int
+    n_runs: int
+    runs: list[timedelta]
+
+    def _human_time(self) -> str:
+        if self.mean.total_seconds() == 0:
+            mean_order = -6
+        else:
+            mean_order = floor(log10(self.mean.total_seconds()))
+        if mean_order <= -6:
+            scale = 9
+            unit = "ns"
+        elif mean_order <= -3:
+            scale = 6
+            unit = "μs"
+        elif mean_order <= 0:
+            scale = 3
+            unit = "ms"
+        else:
+            scale = 0
+            unit = "s"
+        mean_str = f"{round(self.mean.total_seconds() * 10**scale)}"
+        std_str = f"{round(self.std.total_seconds() * 10**scale)}"
+        return f"{mean_str}±{std_str} {unit}"
+
+    def __repr__(self) -> str:
+        return f"{self._human_time()}, warmups = {self.n_warmups}, runs = {self.n_runs}"
 
 
 class Component:
@@ -191,6 +227,39 @@ class Component:
             )
         )
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
+
+    def bench(
+        self,
+        inputs: list[Tensor],
+        n_warmups: int = 10,
+        n_runs: int = 100,
+    ) -> Bench:
+        for _ in range(n_warmups):
+            self.exec(*inputs)
+
+        runs = []
+        for _ in range(n_runs):
+            start = datetime.now()
+            self.exec(*inputs)
+            end = datetime.now()
+            runs.append(end - start)
+
+        mean = timedelta(seconds=sum([run.total_seconds() for run in runs]) / len(runs))
+        std = timedelta(
+            seconds=sqrt(
+                1
+                / (len(runs) - 1)
+                * sum([(r - mean).total_seconds() ** 2 for r in runs])
+            )
+        )
+
+        return Bench(
+            mean=mean,
+            std=std,
+            n_warmups=n_warmups,
+            n_runs=n_runs,
+            runs=runs,
+        )
 
 
 def _output(x: Any) -> tuple[ffi._CTensorMut, tuple[Any, ...]]:
