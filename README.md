@@ -61,7 +61,7 @@ verification against NumPy/etc.
 The 𝚒 compiler has no dependencies and generates a standalone dynamic library.
 The 𝚒 runtime depends only on the compiler for the target platform.
 
-# Running the FlashAttention [demo](ilang-python/flash-attn.py)
+# Running the FlashAttention [demo](ilang-python/examples/flash-attn.py)
 
 You will need Rust, Python, and NumPy installed.
 
