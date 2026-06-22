@@ -77,7 +77,7 @@ inspection. We then assert the 𝚒-computed values match the NumPy reference to
 reasonable tolerance.
 
 There is an annotated version of the C output
-[here](ilang-python/annotated-flashattn.c).
+[here](ilang-python/examples/annotated-flashattn.c).
 
 # Language
 
