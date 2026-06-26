@@ -156,17 +156,21 @@ class Component:
             tuple(buf[j] for j in range(ranks[i])) for i, buf in enumerate(shape_bufs)
         ]
 
-    def exec(self, *inputs: Any) -> Tensor | tuple[Tensor, ...]:
+    def exec(self, *inputs: Any, into: Any = None) -> Any:
+        target = _resolve_target(inputs, into)
         program = self._compile()
-        return self._exec_program(program, *inputs)
+        if target == "tensor":
+            return self._exec_owned(program, *inputs)
+        return self._exec_allocated(program, target, *inputs)
 
-    def exec_cuda(self, *inputs: Any) -> Tensor | tuple[Tensor, ...]:
+    def exec_cuda(self, *inputs: Any, into: Any = None) -> Any:
+        target = _resolve_target(inputs, into)
         program = self._cuda_compile()
-        return self._exec_program(program, *inputs)
+        if target == "tensor":
+            return self._exec_owned(program, *inputs)
+        return self._exec_allocated(program, target, *inputs)
 
-    def _exec_program(
-        self, program: ctypes.c_void_p, *inputs: Any
-    ) -> Tensor | tuple[Tensor, ...]:
+    def _exec_owned(self, program: ctypes.c_void_p, *inputs: Any) -> Any:
         input_arr, _keepalive = _inputs(inputs)
         outputs = ffi._core.i_exec(program, input_arr, len(inputs))
         if outputs.count == 0:
@@ -179,35 +183,25 @@ class Component:
             return tensors[0]
         return tuple(tensors)
 
-    def exec_numpy(self, *inputs: Any) -> Any:
-        import numpy as np
-
+    def _exec_allocated(self, program: ctypes.c_void_p, target: str, *inputs: Any) -> Any:
         shapes: list[tuple[int, ...]] = self.output_shapes(*inputs)
-        outs: list[np.ndarray] = [np.empty(shape, dtype=np.float32) for shape in shapes]
-        self.into(outs if len(outs) != 1 else outs[0], *inputs)
-        return outs[0] if len(outs) == 1 else tuple(outs)
+        if target == "numpy":
+            import numpy as np
 
-    def exec_torch(self, *inputs: Any) -> Any:
-        import torch
+            outs: list[Any] = [np.empty(shape, dtype=np.float32) for shape in shapes]
+        elif target == "torch":
+            import torch
 
-        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs)
-        outs: list[Any] = [
-            torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes
-        ]
-        self.into(outs if len(outs) != 1 else outs[0], *inputs)
-        return outs[0] if len(outs) == 1 else tuple(outs)
+            outs = [
+                torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes
+            ]
+        else:
+            raise TypeError(f"unknown execution target {target!r}")
 
-    def into(self, outputs: Any, *inputs: Any) -> Any:
-        program = self._compile()
-        return self._into_program(program, outputs, *inputs)
+        outputs = outs if len(outs) != 1 else outs[0]
+        return self._exec_into(program, outputs, *inputs)
 
-    def into_cuda(self, outputs: Any, *inputs: Any) -> Any:
-        program = self._cuda_compile()
-        return self._into_program(program, outputs, *inputs)
-
-    def _into_program(
-        self, program: ctypes.c_void_p, outputs: Any, *inputs: Any
-    ) -> Any:
+    def _exec_into(self, program: ctypes.c_void_p, outputs: Any, *inputs: Any) -> Any:
         if not isinstance(outputs, (tuple, list)):
             outputs = (outputs,)
 
@@ -260,6 +254,83 @@ class Component:
             n_runs=n_runs,
             runs=runs,
         )
+
+
+def _resolve_target(inputs: tuple[Any, ...], into: Any) -> str:
+    if into is not None:
+        for x in inputs:
+            _input_kind(x)
+        return _target_from_marker(into)
+
+    kinds = {_input_kind(x) for x in inputs}
+    if len(kinds) == 1:
+        return kinds.pop()
+    if not kinds:
+        raise TypeError("cannot infer execution target without inputs; pass into=...")
+    raise TypeError("cannot infer execution target from mixed input tensor types")
+
+
+def _target_from_marker(marker: Any) -> str:
+    if marker is Tensor:
+        return "tensor"
+
+    if isinstance(marker, str):
+        name = marker.lower()
+        if name in {"tensor", "ilang", "i"}:
+            return "tensor"
+        if name in {"numpy", "np"}:
+            return "numpy"
+        if name == "torch":
+            return "torch"
+
+    try:
+        import numpy as np
+
+        if marker is np.ndarray:
+            return "numpy"
+    except ImportError:
+        pass
+
+    try:
+        import torch
+
+        if marker is torch.Tensor:
+            return "torch"
+    except ImportError:
+        pass
+
+    raise TypeError("into must be i.Tensor, 'numpy', 'torch', np.ndarray, or torch.Tensor")
+
+
+def _input_kind(x: Any) -> str:
+    if isinstance(x, Tensor):
+        return "tensor"
+
+    try:
+        import numpy as np
+
+        if isinstance(x, np.ndarray):
+            if x.dtype != np.float32 or not x.flags.c_contiguous:
+                raise TypeError("NumPy inputs must be float32 and C-contiguous")
+            return "numpy"
+    except ImportError:
+        pass
+
+    try:
+        import torch
+
+        if isinstance(x, torch.Tensor):
+            if str(x.device) != "cpu":
+                raise TypeError("Torch tensors must be on CPU")
+            if str(x.dtype) != "torch.float32":
+                raise TypeError("Torch tensors must be float32")
+            if not x.is_contiguous():
+                raise TypeError("Torch tensors must be contiguous")
+            return "torch"
+    except ImportError:
+        pass
+
+    raise TypeError("inputs must be ilang.Tensor, NumPy arrays, or Torch CPU tensors")
 
 
 def _output(x: Any) -> tuple[ffi._CTensorMut, tuple[Any, ...]]:

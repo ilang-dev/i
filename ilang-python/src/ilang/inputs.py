@@ -23,12 +23,11 @@ def _input(x: Any) -> _Input:
         import numpy as np
 
         if isinstance(x, np.ndarray):
-            arr = x
-            if arr.dtype != np.float32 or not arr.flags.c_contiguous:
-                arr = np.ascontiguousarray(arr, dtype=np.float32)
-            shape, shape_buf = _shape_array(arr.shape)
-            data = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            return _Input(ffi._CTensor(data, shape_buf, len(shape)), (arr, shape_buf))
+            if x.dtype != np.float32 or not x.flags.c_contiguous:
+                raise TypeError("NumPy inputs must be float32 and C-contiguous")
+            shape, shape_buf = _shape_array(x.shape)
+            data = x.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            return _Input(ffi._CTensor(data, shape_buf, len(shape)), (x, shape_buf))
     except ImportError:
         pass
 
@@ -38,12 +37,12 @@ def _input(x: Any) -> _Input:
         if str(x.dtype) != "torch.float32":
             raise TypeError("Torch tensors must be float32")
         if not x.is_contiguous():
-            x = x.contiguous()
+            raise TypeError("Torch tensors must be contiguous")
         shape, shape_buf = _shape_array(tuple(x.shape))
         data = ctypes.cast(x.data_ptr(), ctypes.POINTER(ctypes.c_float))
         return _Input(ffi._CTensor(data, shape_buf, len(shape)), (x, shape_buf))
 
-    return _input(Tensor(x))
+    raise TypeError("inputs must be ilang.Tensor, NumPy arrays, or Torch CPU tensors")
 
 
 def _inputs(

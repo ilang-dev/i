@@ -61,7 +61,7 @@ def i_attention(q, k, v):
     attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
     print("FlashAttention generated code:\n")
     print(attn._code())
-    return attn.exec_numpy(q, k, v)
+    return attn.exec(q, k, v)
 
 
 def i_attuntion(q, k, v):
@@ -76,7 +76,7 @@ def i_attuntion(q, k, v):
     )
     mm = i("ij*jk~ikj | i:16,j:16 | jii'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")
     attn = mm_t >> row_max_shift >> exp >> row_normalize >> mm
-    return attn.exec_numpy(q, k, v)
+    return attn.exec(q, k, v)
 
 
 q, k, v = make_attention_inputs()
