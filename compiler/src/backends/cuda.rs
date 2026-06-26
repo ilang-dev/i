@@ -57,26 +57,14 @@ static size_t* copy_size_array(size_t n, const size_t* src) {{
   return dst;
 }}
 
-static View copy_input_to_device(const Tensor* t) {{
-  size_t n = count_shape(t->rank, t->shape);
-  float* data = NULL;
-  CUDA_CHECK(cudaMalloc((void**)&data, n * sizeof(float)));
-  CUDA_CHECK(cudaMemcpy(data, t->data, n * sizeof(float), cudaMemcpyHostToDevice));
+static View as_device_view(const Tensor* t) {{
   size_t* shape = copy_size_array(t->rank, t->shape);
-  return (View){{ .data = data, .shape = shape, .layout = shape }};
+  return (View){{ .data = t->data, .shape = shape, .layout = shape }};
 }}
 
-static ViewMut copy_output_to_device(const TensorMut* t) {{
-  size_t n = count_shape(t->rank, t->shape);
-  float* data = NULL;
-  CUDA_CHECK(cudaMalloc((void**)&data, n * sizeof(float)));
+static ViewMut as_device_view_mut(const TensorMut* t) {{
   size_t* shape = copy_size_array(t->rank, t->shape);
-  return (ViewMut){{ .data = data, .shape = shape, .layout = shape }};
-}}
-
-static void copy_output_to_host(const ViewMut* src, TensorMut* dst) {{
-  size_t n = count_shape(dst->rank, dst->shape);
-  CUDA_CHECK(cudaMemcpy(dst->data, src->data, n * sizeof(float), cudaMemcpyDeviceToHost));
+  return (ViewMut){{ .data = t->data, .shape = shape, .layout = shape }};
 }}
 
 static ViewMut alloc_view_mut(size_t ndims, const size_t* layout, const size_t* shape) {{
@@ -86,9 +74,13 @@ static ViewMut alloc_view_mut(size_t ndims, const size_t* layout, const size_t* 
   return (ViewMut){{ .data = data, .shape = copy_size_array(ndims, shape), .layout = copy_size_array(ndims, layout) }};
 }}
 
-static void free_view(View view) {{
-  CUDA_CHECK(cudaFree((void*)view.data));
+static void free_view_meta(View view) {{
   CUDA_CHECK(cudaFree((void*)view.shape));
+}}
+
+static void free_view_mut_meta(ViewMut view) {{
+  CUDA_CHECK(cudaFree((void*)view.shape));
+  if (view.layout != view.shape) CUDA_CHECK(cudaFree((void*)view.layout));
 }}
 
 static void free_view_mut(ViewMut view) {{
@@ -159,13 +151,13 @@ static View view_mut_as_view(const ViewMut* t) {{
         let mut lines = Vec::new();
         for input in 0..self.module.buffers.inputs.len() {
             lines.push(format!(
-                "View {} = copy_input_to_device(&inputs[{input}]);",
+                "View {} = as_device_view(&inputs[{input}]);",
                 input_ident(Input(input))
             ));
         }
         for output in 0..self.module.buffers.outputs.len() {
             lines.push(format!(
-                "ViewMut {} = copy_output_to_device(&outputs[{output}]);",
+                "ViewMut {} = as_device_view_mut(&outputs[{output}]);",
                 output_ident(crate::ir::exec_plan::Output(output))
             ));
         }
@@ -217,20 +209,15 @@ static View view_mut_as_view(const ViewMut* t) {{
             }
         }
 
+        lines.push("CUDA_CHECK(cudaDeviceSynchronize());".to_string());
         for output in 0..self.module.buffers.outputs.len() {
             lines.push(format!(
-                "copy_output_to_host(&{}, &outputs[{output}]);",
-                output_ident(crate::ir::exec_plan::Output(output))
-            ));
-        }
-        for output in 0..self.module.buffers.outputs.len() {
-            lines.push(format!(
-                "free_view_mut({});",
+                "free_view_mut_meta({});",
                 output_ident(crate::ir::exec_plan::Output(output))
             ));
         }
         for input in 0..self.module.buffers.inputs.len() {
-            lines.push(format!("free_view({});", input_ident(Input(input))));
+            lines.push(format!("free_view_meta({});", input_ident(Input(input))));
         }
         lines.push("return;".to_string());
 
@@ -336,7 +323,7 @@ static View view_mut_as_view(const ViewMut* t) {{
         lines.extend(lower.render_block(&kernel.body)?);
         lines.extend(lower.close_execution_guards(kernel));
         Ok(format!(
-            "__global__ void f{}(const View* readonlys, ViewMut* writeables) {{\n{}\n}}",
+            "static __global__ void f{}(const View* readonlys, ViewMut* writeables) {{\n{}\n}}",
             kernel_index,
             indent_lines(lines)
         ))
@@ -1150,7 +1137,7 @@ mod tests {
         let cu = render_expr("i+i~i | i:256 | ii'");
 
         assert!(cu.contains("extern \"C\" size_t count(void)"));
-        assert!(cu.contains("__global__ void f0"));
+        assert!(cu.contains("static __global__ void f0"));
         assert!(cu.contains("dim3 f0_grid"));
         assert!(cu.contains("dim3 f0_block(256, 1, 1);"));
         assert!(cu.contains("f0<<<f0_grid, f0_block>>>"));

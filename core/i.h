@@ -29,6 +29,11 @@ typedef struct {
   size_t count;
 } i_outputs;
 
+typedef enum {
+  I_DEVICE_CPU = 0,
+  I_DEVICE_CUDA = 1,
+} i_device;
+
 i_component* i_parse(const char* src);
 i_component* i_identity(void);
 i_component* i_chain(const i_component* left, const i_component* right);
@@ -39,6 +44,12 @@ i_component* i_swap(const i_component* component);
 
 char* i_code(const i_component* component);
 i_program* i_compile(const i_component* component);
+
+i_device i_program_device(const i_program* program);
+float* i_cuda_alloc(size_t len);
+void i_cuda_free(float* data);
+int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
+int i_cuda_copy_to_host(float* dst, const float* src, size_t len);
 
 size_t i_output_count(const i_program* program);
 int i_output_ranks(const i_program* program, size_t* ranks);

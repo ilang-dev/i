@@ -8,7 +8,7 @@ from typing import Any
 
 from . import ffi
 from .inputs import _inputs
-from .tensor import Tensor, _OwnedOutputs
+from .tensor import DEVICE, Tensor, _OwnedOutputs
 
 __all__ = ["Bench", "Component", "I", "i"]
 
@@ -139,8 +139,10 @@ class Component:
         finally:
             ffi._core.i_string_free(s)
 
-    def output_shapes(self, *inputs: Any) -> list[tuple[int, ...]]:
-        program = self._compile()
+    def output_shapes(
+        self, *inputs: Any, _program: ctypes.c_void_p | None = None
+    ) -> list[tuple[int, ...]]:
+        program = _program if _program is not None else self._compile()
         input_arr, _keepalive = _inputs(inputs)
         count = ffi._core.i_output_count(program)
         ranks = (ctypes.c_size_t * count)()
@@ -157,18 +159,11 @@ class Component:
         ]
 
     def exec(self, *inputs: Any, into: Any = None) -> Any:
-        target = _resolve_target(inputs, into)
-        program = self._compile()
-        if target == "tensor":
+        target, device = _resolve_target(inputs, into)
+        program = self._compile() if device is DEVICE.CPU else self._cuda_compile()
+        if target == "tensor" and device is DEVICE.CPU:
             return self._exec_owned(program, *inputs)
-        return self._exec_allocated(program, target, *inputs)
-
-    def exec_cuda(self, *inputs: Any, into: Any = None) -> Any:
-        target = _resolve_target(inputs, into)
-        program = self._cuda_compile()
-        if target == "tensor":
-            return self._exec_owned(program, *inputs)
-        return self._exec_allocated(program, target, *inputs)
+        return self._exec_allocated(program, target, device, *inputs)
 
     def _exec_owned(self, program: ctypes.c_void_p, *inputs: Any) -> Any:
         input_arr, _keepalive = _inputs(inputs)
@@ -183,18 +178,26 @@ class Component:
             return tensors[0]
         return tuple(tensors)
 
-    def _exec_allocated(self, program: ctypes.c_void_p, target: str, *inputs: Any) -> Any:
-        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs)
+    def _exec_allocated(
+        self, program: ctypes.c_void_p, target: str, device: DEVICE, *inputs: Any
+    ) -> Any:
+        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs, _program=program)
         if target == "numpy":
             import numpy as np
 
+            if device is not DEVICE.CPU:
+                raise TypeError("NumPy outputs only support CPU execution")
             outs: list[Any] = [np.empty(shape, dtype=np.float32) for shape in shapes]
         elif target == "torch":
             import torch
 
+            torch_device = "cuda" if device is DEVICE.CUDA else "cpu"
             outs = [
-                torch.empty(shape, dtype=torch.float32, device="cpu") for shape in shapes
+                torch.empty(shape, dtype=torch.float32, device=torch_device)
+                for shape in shapes
             ]
+        elif target == "tensor":
+            outs = [Tensor._empty(shape, device) for shape in shapes]
         else:
             raise TypeError(f"unknown execution target {target!r}")
 
@@ -256,15 +259,21 @@ class Component:
         )
 
 
-def _resolve_target(inputs: tuple[Any, ...], into: Any) -> str:
-    if into is not None:
-        for x in inputs:
-            _input_kind(x)
-        return _target_from_marker(into)
+def _resolve_target(inputs: tuple[Any, ...], into: Any) -> tuple[str, DEVICE]:
+    infos = [_input_info(x) for x in inputs]
+    devices = {device for _kind, device in infos}
+    if len(devices) != 1:
+        if not devices:
+            raise TypeError("cannot infer execution device without inputs")
+        raise TypeError("all inputs must be on the same device")
+    device = devices.pop()
 
-    kinds = {_input_kind(x) for x in inputs}
+    if into is not None:
+        return _target_from_marker(into), device
+
+    kinds = {kind for kind, _device in infos}
     if len(kinds) == 1:
-        return kinds.pop()
+        return kinds.pop(), device
     if not kinds:
         raise TypeError("cannot infer execution target without inputs; pass into=...")
     raise TypeError("cannot infer execution target from mixed input tensor types")
@@ -299,12 +308,14 @@ def _target_from_marker(marker: Any) -> str:
     except ImportError:
         pass
 
-    raise TypeError("into must be i.Tensor, 'numpy', 'torch', np.ndarray, or torch.Tensor")
+    raise TypeError(
+        "into must be i.Tensor, 'numpy', 'torch', np.ndarray, or torch.Tensor"
+    )
 
 
-def _input_kind(x: Any) -> str:
+def _input_info(x: Any) -> tuple[str, DEVICE]:
     if isinstance(x, Tensor):
-        return "tensor"
+        return "tensor", x.device
 
     try:
         import numpy as np
@@ -312,7 +323,7 @@ def _input_kind(x: Any) -> str:
         if isinstance(x, np.ndarray):
             if x.dtype != np.float32 or not x.flags.c_contiguous:
                 raise TypeError("NumPy inputs must be float32 and C-contiguous")
-            return "numpy"
+            return "numpy", DEVICE.CPU
     except ImportError:
         pass
 
@@ -320,17 +331,15 @@ def _input_kind(x: Any) -> str:
         import torch
 
         if isinstance(x, torch.Tensor):
-            if str(x.device) != "cpu":
-                raise TypeError("Torch tensors must be on CPU")
             if str(x.dtype) != "torch.float32":
                 raise TypeError("Torch tensors must be float32")
             if not x.is_contiguous():
                 raise TypeError("Torch tensors must be contiguous")
-            return "torch"
+            return "torch", DEVICE.CUDA if x.is_cuda else DEVICE.CPU
     except ImportError:
         pass
 
-    raise TypeError("inputs must be ilang.Tensor, NumPy arrays, or Torch CPU tensors")
+    raise TypeError("inputs must be ilang.Tensor, NumPy arrays, or Torch tensors")
 
 
 def _output(x: Any) -> tuple[ffi._CTensorMut, tuple[Any, ...]]:
@@ -346,18 +355,24 @@ def _output(x: Any) -> tuple[ffi._CTensorMut, tuple[Any, ...]]:
     except ImportError:
         pass
 
-    if hasattr(x, "data_ptr") and hasattr(x, "shape"):
-        if str(x.device) != "cpu":
-            raise TypeError("Torch outputs must be on CPU")
-        if str(x.dtype) != "torch.float32":
-            raise TypeError("Torch outputs must be float32")
-        if not x.is_contiguous():
-            raise TypeError("Torch outputs must be contiguous")
-        shape, shape_buf = _shape_array(tuple(x.shape))
-        data = ctypes.cast(x.data_ptr(), ctypes.POINTER(ctypes.c_float))
-        return ffi._CTensorMut(data, shape_buf, len(shape)), (x, shape_buf)
+    try:
+        import torch
 
-    raise TypeError("outputs must be NumPy arrays or Torch CPU tensors")
+        if isinstance(x, torch.Tensor):
+            if str(x.dtype) != "torch.float32":
+                raise TypeError("Torch outputs must be float32")
+            if not x.is_contiguous():
+                raise TypeError("Torch outputs must be contiguous")
+            shape, shape_buf = _shape_array(tuple(x.shape))
+            data = ctypes.cast(x.data_ptr(), ctypes.POINTER(ctypes.c_float))
+            return ffi._CTensorMut(data, shape_buf, len(shape)), (x, shape_buf)
+    except ImportError:
+        pass
+
+    if isinstance(x, Tensor):
+        return ffi._CTensorMut(x._data, x._shape_buf, len(x.shape)), (x,)
+
+    raise TypeError("outputs must be ilang.Tensor, NumPy arrays, or Torch tensors")
 
 
 def _shape_array(

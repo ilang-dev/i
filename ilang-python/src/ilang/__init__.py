@@ -1,6 +1,6 @@
 """Python front-end for 𝚒."""
 
 from .component import Bench, Component, I, i
-from .tensor import Tensor
+from .tensor import DEVICE, Tensor
 
-__all__ = ["Bench", "Component", "Tensor", "I", "i"]
+__all__ = ["Bench", "Component", "DEVICE", "Tensor", "I", "i"]
