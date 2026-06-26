@@ -52,8 +52,8 @@ static size_t count_shape(size_t ndims, const size_t* shape) {{
 static size_t* copy_size_array(size_t n, const size_t* src) {{
   if (n == 0) return NULL;
   size_t* dst = NULL;
-  CUDA_CHECK(cudaMallocManaged((void**)&dst, n * sizeof(size_t)));
-  for (size_t i = 0; i < n; ++i) dst[i] = src[i];
+  CUDA_CHECK(cudaMalloc((void**)&dst, n * sizeof(size_t)));
+  CUDA_CHECK(cudaMemcpy(dst, src, n * sizeof(size_t), cudaMemcpyHostToDevice));
   return dst;
 }}
 
@@ -243,24 +243,42 @@ static View view_mut_as_view(const ViewMut* t) {{
         let write_array = format!("f{}_writes", kernel_id.0);
         lines.push(format!("View* {read_array} = NULL;"));
         lines.push(format!("ViewMut* {write_array} = NULL;"));
-        lines.push(format!(
-            "CUDA_CHECK(cudaMallocManaged((void**)&{read_array}, {} * sizeof(View)));",
-            reads.len()
-        ));
-        lines.push(format!(
-            "CUDA_CHECK(cudaMallocManaged((void**)&{write_array}, {} * sizeof(ViewMut)));",
-            writes.len()
-        ));
+        if !reads.is_empty() {
+            lines.push(format!("View {read_array}_host[{}];", reads.len()));
+        }
+        if !writes.is_empty() {
+            lines.push(format!("ViewMut {write_array}_host[{}];", writes.len()));
+        }
         for (index, buffer) in reads.iter().enumerate() {
             lines.push(format!(
-                "{read_array}[{index}] = {};",
+                "{read_array}_host[{index}] = {};",
                 self.buffer_read_expr(*buffer)?
             ));
         }
         for (index, buffer) in writes.iter().enumerate() {
             lines.push(format!(
-                "{write_array}[{index}] = {};",
+                "{write_array}_host[{index}] = {};",
                 self.buffer_write_expr(*buffer)?
+            ));
+        }
+        if !reads.is_empty() {
+            lines.push(format!(
+                "CUDA_CHECK(cudaMalloc((void**)&{read_array}, {} * sizeof(View)));",
+                reads.len()
+            ));
+            lines.push(format!(
+                "CUDA_CHECK(cudaMemcpy({read_array}, {read_array}_host, {} * sizeof(View), cudaMemcpyHostToDevice));",
+                reads.len()
+            ));
+        }
+        if !writes.is_empty() {
+            lines.push(format!(
+                "CUDA_CHECK(cudaMalloc((void**)&{write_array}, {} * sizeof(ViewMut)));",
+                writes.len()
+            ));
+            lines.push(format!(
+                "CUDA_CHECK(cudaMemcpy({write_array}, {write_array}_host, {} * sizeof(ViewMut), cudaMemcpyHostToDevice));",
+                writes.len()
             ));
         }
 
@@ -300,8 +318,12 @@ static View view_mut_as_view(const ViewMut* t) {{
         ));
         lines.push("CUDA_CHECK(cudaGetLastError());".to_string());
         lines.push("CUDA_CHECK(cudaDeviceSynchronize());".to_string());
-        lines.push(format!("CUDA_CHECK(cudaFree({read_array}));"));
-        lines.push(format!("CUDA_CHECK(cudaFree({write_array}));"));
+        if !reads.is_empty() {
+            lines.push(format!("CUDA_CHECK(cudaFree({read_array}));"));
+        }
+        if !writes.is_empty() {
+            lines.push(format!("CUDA_CHECK(cudaFree({write_array}));"));
+        }
         Ok(lines)
     }
 

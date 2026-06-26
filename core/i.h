@@ -43,7 +43,15 @@ i_component* i_pair(const i_component* left, const i_component* right);
 i_component* i_swap(const i_component* component);
 
 char* i_code(const i_component* component);
+char* i_cuda_code(const i_component* component);
 i_program* i_compile(const i_component* component);
+i_program* i_cuda_compile(const i_component* component);
+
+i_device i_program_device(const i_program* program);
+float* i_cuda_alloc(size_t len);
+void i_cuda_free(float* data);
+int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
+int i_cuda_copy_to_host(float* dst, const float* src, size_t len);
 
 i_device i_program_device(const i_program* program);
 float* i_cuda_alloc(size_t len);

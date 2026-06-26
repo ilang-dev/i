@@ -1,17 +1,11 @@
+mod backends;
 mod loader;
 
-use loader::Library;
+use backends::{Device as i_device, Program as i_program};
+use compiler::ir::component::Component;
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
-use std::path::PathBuf;
-use std::process::Command;
 use std::ptr;
-use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use compiler::ir::component::Component;
-use compiler::ir::module::Module;
-use compiler::ir::parallel_module::ParallelModule;
 
 #[repr(C)]
 pub struct i_tensor {
@@ -36,14 +30,6 @@ pub struct i_owned_tensor {
 }
 
 #[repr(C)]
-#[allow(non_camel_case_types)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum i_device {
-    I_DEVICE_CPU = 0,
-    I_DEVICE_CUDA = 1,
-}
-
-#[repr(C)]
 pub struct i_outputs {
     pub tensors: *mut i_owned_tensor,
     pub count: usize,
@@ -53,31 +39,6 @@ pub struct i_outputs {
 pub struct i_component {
     inner: Component,
 }
-
-#[allow(non_camel_case_types)]
-pub struct i_program {
-    _library: Library,
-    path: PathBuf,
-    device: i_device,
-    count: unsafe extern "C" fn() -> usize,
-    ranks: unsafe extern "C" fn(*mut usize),
-    shapes: unsafe extern "C" fn(*const i_tensor, *mut *mut usize),
-    exec: unsafe extern "C" fn(*const i_tensor, *mut i_tensor_mut),
-}
-
-struct CudaTensorRuntime {
-    _library: Library,
-    path: PathBuf,
-    alloc: unsafe extern "C" fn(usize) -> *mut f32,
-    free: unsafe extern "C" fn(*mut f32),
-    copy_from_host: unsafe extern "C" fn(*mut f32, *const f32, usize),
-    copy_to_host: unsafe extern "C" fn(*mut f32, *const f32, usize),
-}
-
-unsafe impl Send for CudaTensorRuntime {}
-unsafe impl Sync for CudaTensorRuntime {}
-
-static CUDA_TENSOR_RUNTIME: OnceLock<CudaTensorRuntime> = OnceLock::new();
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -211,14 +172,14 @@ pub unsafe extern "C" fn i_program_device(program: *const i_program) -> i_device
         set_error("null program");
         return i_device::I_DEVICE_CPU;
     };
-    program.device
+    program.device()
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn i_cuda_alloc(len: usize) -> *mut f32 {
-    match cuda_tensor_runtime() {
+    match backends::cuda::runtime() {
         Ok(runtime) => {
-            let ptr = (runtime.alloc)(len);
+            let ptr = runtime.alloc(len);
             if ptr.is_null() {
                 set_error("cuda allocation failed");
             }
@@ -233,8 +194,8 @@ pub unsafe extern "C" fn i_cuda_free(data: *mut f32) {
     if data.is_null() {
         return;
     }
-    match cuda_tensor_runtime() {
-        Ok(runtime) => (runtime.free)(data),
+    match backends::cuda::runtime() {
+        Ok(runtime) => runtime.free(data),
         Err(err) => set_error(err),
     }
 }
@@ -245,9 +206,9 @@ pub unsafe extern "C" fn i_cuda_copy_from_host(dst: *mut f32, src: *const f32, l
         set_error("null cuda copy pointer");
         return -1;
     }
-    match cuda_tensor_runtime() {
+    match backends::cuda::runtime() {
         Ok(runtime) => {
-            (runtime.copy_from_host)(dst, src, len);
+            runtime.copy_from_host(dst, src, len);
             0
         }
         Err(err) => {
@@ -263,9 +224,9 @@ pub unsafe extern "C" fn i_cuda_copy_to_host(dst: *mut f32, src: *const f32, len
         set_error("null cuda copy pointer");
         return -1;
     }
-    match cuda_tensor_runtime() {
+    match backends::cuda::runtime() {
         Ok(runtime) => {
-            (runtime.copy_to_host)(dst, src, len);
+            runtime.copy_to_host(dst, src, len);
             0
         }
         Err(err) => {
@@ -281,7 +242,7 @@ pub unsafe extern "C" fn i_output_count(program: *const i_program) -> usize {
         set_error("null program");
         return 0;
     };
-    (program.count)()
+    program.count()
 }
 
 #[no_mangle]
@@ -294,7 +255,7 @@ pub unsafe extern "C" fn i_output_ranks(program: *const i_program, ranks: *mut u
         set_error("null ranks");
         return -1;
     }
-    (program.ranks)(ranks);
+    program.ranks(ranks);
     0
 }
 
@@ -317,7 +278,7 @@ pub unsafe extern "C" fn i_output_shapes(
         set_error("null shapes");
         return -1;
     }
-    (program.shapes)(inputs, shapes);
+    program.shapes(inputs, shapes);
     0
 }
 
@@ -337,7 +298,7 @@ pub unsafe extern "C" fn i_exec_into(
         set_error("null inputs");
         return -1;
     }
-    if output_count != (program.count)() {
+    if output_count != program.count() {
         set_error("wrong output count");
         return -1;
     }
@@ -345,7 +306,7 @@ pub unsafe extern "C" fn i_exec_into(
         set_error("null outputs");
         return -1;
     }
-    (program.exec)(inputs, outputs);
+    program.exec(inputs, outputs);
     0
 }
 
@@ -364,13 +325,13 @@ pub unsafe extern "C" fn i_exec(
         return empty_outputs();
     }
 
-    let count = (program.count)();
+    let count = program.count();
     let mut ranks = vec![0usize; count];
-    (program.ranks)(ranks.as_mut_ptr());
+    program.ranks(ranks.as_mut_ptr());
 
     let mut shapes: Vec<Vec<usize>> = ranks.iter().map(|rank| vec![0; *rank]).collect();
     let mut shape_ptrs: Vec<*mut usize> = shapes.iter_mut().map(Vec::as_mut_ptr).collect();
-    (program.shapes)(inputs, shape_ptrs.as_mut_ptr());
+    program.shapes(inputs, shape_ptrs.as_mut_ptr());
 
     let mut data: Vec<Vec<f32>> = shapes
         .iter()
@@ -387,7 +348,7 @@ pub unsafe extern "C" fn i_exec(
         })
         .collect();
 
-    (program.exec)(inputs, output_views.as_mut_ptr());
+    program.exec(inputs, output_views.as_mut_ptr());
 
     let mut outputs = Vec::with_capacity(count);
     for (mut data, mut shape) in data.into_iter().zip(shapes) {
@@ -476,202 +437,19 @@ unsafe fn combine(
 }
 
 fn compile(component: &Component) -> Result<i_program, String> {
-    let source = render_component(component)?;
-    let dylib_path = build(&source)?;
-    load_program(dylib_path, i_device::I_DEVICE_CPU)
+    backends::cpu::compile(component)
 }
 
 fn compile_cuda(component: &Component) -> Result<i_program, String> {
-    let source = render_cuda_component(component)?;
-    let dylib_path = build_cuda(&source)?;
-    load_program(dylib_path, i_device::I_DEVICE_CUDA)
-}
-
-fn load_program(dylib_path: PathBuf, device: i_device) -> Result<i_program, String> {
-    unsafe {
-        let library = Library::open(&dylib_path)?;
-        let count = library.symbol::<unsafe extern "C" fn() -> usize>(c"count")?;
-        let ranks = library.symbol::<unsafe extern "C" fn(*mut usize)>(c"ranks")?;
-        let shapes =
-            library.symbol::<unsafe extern "C" fn(*const i_tensor, *mut *mut usize)>(c"shapes")?;
-        let exec =
-            library.symbol::<unsafe extern "C" fn(*const i_tensor, *mut i_tensor_mut)>(c"exec")?;
-
-        Ok(i_program {
-            _library: library,
-            path: dylib_path,
-            count,
-            ranks,
-            shapes,
-            exec,
-            device,
-        })
-    }
+    backends::cuda::compile(component)
 }
 
 fn render_component(component: &Component) -> Result<String, String> {
-    let module = lower_component_to_module(component)?;
-    Ok(compiler::backends::c::render(&module))
+    backends::cpu::render(component)
 }
 
 fn render_cuda_component(component: &Component) -> Result<String, String> {
-    let module = lower_component_to_parallel_module(component)?;
-    compiler::backends::cuda::render(&module).map_err(|err| err.to_string())
-}
-
-fn lower_component_to_module(component: &Component) -> Result<Module, String> {
-    let graph =
-        compiler::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
-    let stages = compiler::lower::lower_node_graph_to_stage_program(&graph)
-        .map_err(|err| format!("{err:?}"))?;
-    let kernels = compiler::lower::lower_stage_program_to_kernel_program(&stages)
-        .map_err(|err| format!("{err:?}"))?;
-    let plan = compiler::lower::lower_kernel_program_to_exec_plan(&kernels)
-        .map_err(|err| format!("{err:?}"))?;
-    compiler::lower::lower_exec_plan_to_module(&plan).map_err(|err| format!("{err:?}"))
-}
-
-fn lower_component_to_parallel_module(component: &Component) -> Result<ParallelModule, String> {
-    let graph =
-        compiler::lower::lower_component_to_graph(component).map_err(|err| format!("{err:?}"))?;
-    let stages = compiler::lower::lower_node_graph_to_stage_program(&graph)
-        .map_err(|err| format!("{err:?}"))?;
-    let kernels = compiler::lower::lower_stage_program_to_kernel_program(&stages)
-        .map_err(|err| format!("{err:?}"))?;
-    let plan = compiler::lower::lower_kernel_program_to_exec_plan(&kernels)
-        .map_err(|err| format!("{err:?}"))?;
-    compiler::lower::lower_exec_plan_to_parallel_module(&plan).map_err(|err| format!("{err:?}"))
-}
-
-fn build(source: &str) -> Result<PathBuf, String> {
-    let stem = format!("ilang_{}", unique_string());
-    let source_path = std::env::temp_dir().join(format!("{stem}.c"));
-    let dylib_path = std::env::temp_dir().join(format!("{stem}.{}", dylib_ext()));
-
-    std::fs::write(&source_path, source).map_err(|err| err.to_string())?;
-    let exit = Command::new("cc")
-        .args(["-O3", "-shared", "-fPIC"])
-        .arg(&source_path)
-        .arg("-o")
-        .arg(&dylib_path)
-        .arg("-lm")
-        .status()
-        .map_err(|err| err.to_string())?;
-
-    let _ = std::fs::remove_file(&source_path);
-    if !exit.success() {
-        return Err(format!("cc failed with status {exit}"));
-    }
-
-    Ok(dylib_path)
-}
-
-fn build_cuda(source: &str) -> Result<PathBuf, String> {
-    let stem = format!("ilang_cuda_{}", unique_string());
-    let source_path = std::env::temp_dir().join(format!("{stem}.cu"));
-    let dylib_path = std::env::temp_dir().join(format!("{stem}.{}", dylib_ext()));
-
-    std::fs::write(&source_path, source).map_err(|err| err.to_string())?;
-    let nvcc = std::env::var("ILANG_NVCC").unwrap_or_else(|_| "nvcc".to_string());
-    let exit = Command::new(nvcc)
-        .args([
-            "-O3",
-            "-shared",
-            "-Xcompiler",
-            "-fPIC",
-            "--diag-suppress=177",
-            "--cudart=shared",
-        ])
-        .arg(&source_path)
-        .arg("-o")
-        .arg(&dylib_path)
-        .status()
-        .map_err(|err| err.to_string())?;
-
-    let _ = std::fs::remove_file(&source_path);
-    if !exit.success() {
-        return Err(format!("nvcc failed with status {exit}"));
-    }
-
-    Ok(dylib_path)
-}
-
-fn cuda_tensor_runtime() -> Result<&'static CudaTensorRuntime, String> {
-    if let Some(runtime) = CUDA_TENSOR_RUNTIME.get() {
-        return Ok(runtime);
-    }
-    let runtime = build_cuda_tensor_runtime()?;
-    let _ = CUDA_TENSOR_RUNTIME.set(runtime);
-    CUDA_TENSOR_RUNTIME
-        .get()
-        .ok_or_else(|| "failed to initialize cuda tensor runtime".to_string())
-}
-
-fn build_cuda_tensor_runtime() -> Result<CudaTensorRuntime, String> {
-    let source = r#"
-#include <cuda_runtime.h>
-#include <stddef.h>
-#include <stdlib.h>
-
-#define CUDA_CHECK(expr) do { cudaError_t err__ = (expr); if (err__ != cudaSuccess) abort(); } while (0)
-
-extern "C" float* i_cuda_tensor_alloc(size_t len) {
-  float* data = NULL;
-  CUDA_CHECK(cudaMallocManaged((void**)&data, len * sizeof(float)));
-  return data;
-}
-
-extern "C" void i_cuda_tensor_free(float* data) {
-  CUDA_CHECK(cudaFree(data));
-}
-
-extern "C" void i_cuda_tensor_copy_from_host(float* dst, const float* src, size_t len) {
-  CUDA_CHECK(cudaMemcpy(dst, src, len * sizeof(float), cudaMemcpyHostToDevice));
-}
-
-extern "C" void i_cuda_tensor_copy_to_host(float* dst, const float* src, size_t len) {
-  CUDA_CHECK(cudaMemcpy(dst, src, len * sizeof(float), cudaMemcpyDeviceToHost));
-}
-"#;
-    let path = build_cuda(source)?;
-    unsafe {
-        let library = Library::open(&path)?;
-        let alloc =
-            library.symbol::<unsafe extern "C" fn(usize) -> *mut f32>(c"i_cuda_tensor_alloc")?;
-        let free = library.symbol::<unsafe extern "C" fn(*mut f32)>(c"i_cuda_tensor_free")?;
-        let copy_from_host = library.symbol::<unsafe extern "C" fn(*mut f32, *const f32, usize)>(
-            c"i_cuda_tensor_copy_from_host",
-        )?;
-        let copy_to_host = library.symbol::<unsafe extern "C" fn(*mut f32, *const f32, usize)>(
-            c"i_cuda_tensor_copy_to_host",
-        )?;
-        Ok(CudaTensorRuntime {
-            _library: library,
-            path,
-            alloc,
-            free,
-            copy_from_host,
-            copy_to_host,
-        })
-    }
-}
-
-fn dylib_ext() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "dylib"
-    } else if cfg!(target_os = "windows") {
-        "dll"
-    } else {
-        "so"
-    }
-}
-
-fn unique_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
+    backends::cuda::render(component)
 }
 
 fn read_str<'a>(s: *const c_char) -> Option<&'a str> {
@@ -696,17 +474,5 @@ fn empty_outputs() -> i_outputs {
     i_outputs {
         tensors: ptr::null_mut(),
         count: 0,
-    }
-}
-
-impl Drop for CudaTensorRuntime {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-impl Drop for i_program {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
