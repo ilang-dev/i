@@ -10,7 +10,7 @@ from . import ffi
 from .inputs import _inputs
 from .tensor import Device, Tensor, _OwnedOutputs
 
-__all__ = ["Bench", "Component", "I", "i"]
+__all__ = ["Bench", "Component", "I"]
 
 
 @dataclass
@@ -385,6 +385,3 @@ def _shape_array(
 
 I: Component = Component(_ptr=ffi._core.i_identity())  # noqa: E741
 
-
-def i(src: str) -> Component:
-    return Component(src)
