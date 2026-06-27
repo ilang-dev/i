@@ -4,13 +4,13 @@ import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from math import floor, log10, sqrt
-from typing import Any
+from typing import Any, ClassVar
 
 from . import ffi
 from .inputs import _inputs
 from .tensor import Device, Tensor, _OwnedOutputs
 
-__all__ = ["Bench", "Component", "I"]
+__all__ = ["Bench", "Component"]
 
 
 @dataclass
@@ -47,6 +47,8 @@ class Bench:
 
 
 class Component:
+    I: ClassVar[Component]  # noqa: E741
+
     def __init__(
         self, src: str | None = None, _ptr: ctypes.c_void_p | None = None
     ) -> None:
@@ -383,5 +385,5 @@ def _shape_array(
     return shape, arr
 
 
-I: Component = Component(_ptr=ffi._core.i_identity())  # noqa: E741
+Component.I = Component(_ptr=ffi._core.i_identity())  # noqa: E741
 

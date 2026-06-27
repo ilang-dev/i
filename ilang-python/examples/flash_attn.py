@@ -1,6 +1,5 @@
 import numpy as np
-from ilang import Component as i
-from ilang import I
+from ilang import i
 
 
 def rand(shape, dtype=np.float32, seed=0):
@@ -50,11 +49,11 @@ def np_attention(q, k, v):
 def i_attention(q, k, v):
     """FlashAttention. Produces a single kernel with minimal intermediate allocations."""
     mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
-    row_max_shift = (I & i(">ij~i | i:16,j:16 | ji0i'j'")) >> i(
+    row_max_shift = (i.I & i(">ij~i | i:16,j:16 | ji0i'j'")) >> i(
         "ij-i~ij | i:16,j:16 | ji01i'j'"
     )
     exp = i("^ij~ij | i:16,j:16 | ji0i'j'")
-    row_normalize = (I & i("+ij~i | i:16,j:16 | ji0i'j'")) >> i(
+    row_normalize = (i.I & i("+ij~i | i:16,j:16 | ji0i'j'")) >> i(
         "ij/i~ij | i:16,j:16 | ji01i'j'"
     )
     mm = i("ij*jk~ikj | i:16,j:16 | ji0i'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")
@@ -67,11 +66,11 @@ def i_attention(q, k, v):
 def i_attuntion(q, k, v):
     """Naive attention. Produces 5 tiled kernels, allocating full intermediate buffers."""
     mm_t = i("ik*jk~ijk | i:16,j:16 | jii'j'k") >> i("+ijk~ij | i:16,j:16 | jii'j'k0")
-    row_max_shift = (I & i(">ij~i | i:16,j:16 | jii'j'")) >> i(
+    row_max_shift = (i.I & i(">ij~i | i:16,j:16 | jii'j'")) >> i(
         "ij-i~ij | i:16,j:16 | 1jii'j'"
     )
     exp = i("^ij~ij | i:16,j:16 | jii'j'")
-    row_normalize = (I & i("+ij~i | i:16,j:16 | jii'j'")) >> i(
+    row_normalize = (i.I & i("+ij~i | i:16,j:16 | jii'j'")) >> i(
         "ij/i~ij | i:16,j:16 | 1jii'j'"
     )
     mm = i("ij*jk~ikj | i:16,j:16 | jii'kj'") >> i("+ikj~ik | i:16,j:16 | jii'kj'0")

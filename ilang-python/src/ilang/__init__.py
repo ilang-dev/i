@@ -1,6 +1,6 @@
 """Python front-end for 𝚒."""
 
-from .component import Bench, Component, I
+from .component import Bench, Component
 from .tensor import Device, Tensor
 
 class _i:
@@ -10,11 +10,11 @@ class _i:
 
     @property
     def I(self) -> Component:
-        return I
+        return Component.I
 
     def __call__(self, expr: str) -> Component:
         return Component(expr)
 
 i = _i()
 
-__all__ = ["Bench", "Component", "Device", "Tensor", "I", "i"]
+__all__ = ["Bench", "Component", "Device", "Tensor", "i"]

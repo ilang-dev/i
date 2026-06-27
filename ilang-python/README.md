@@ -2,36 +2,51 @@
 
 Python front-end for 𝚒.
 
-This package exposes 𝚒 components as Python objects. Components compile lazily, execute on CPU or CUDA according to their inputs, and interoperate with `ilang.Tensor`, NumPy arrays, and Torch tensors.
+This package exposes 𝚒 components as Python objects. Components compile lazily,
+execute on CPU or CUDA according to their inputs, and interoperate with
+`i.Tensor`, NumPy `array`s, and Torch `tensor`s.
 
-## Public module
+## Package-style API
 
 ```python
-import ilang as i
+import ilang
 ```
 
 Exports:
 
-- `i.i`
-- `i.I`
-- `i.Component`
-- `i.Tensor`
-- `i.DEVICE`
-- `i.Bench`
+- `ilang.Component`
+- `ilang.Tensor`
+- `ilang.Device`
+- `ilang.Bench`
+- `ilang.i`
+
+## Preferred "DSL-style" API
+
+The package exported object `i` acts as a callable "namespace" that enables a
+more compact style of 𝚒 code. When called, it acts as a `Component` constructor,
+but it also re-exposes much of the same package-level API.
+
+```python
+from ilang import i
+
+i("+i~.")   # <ilang.component.Component object at ...>
+i.Tensor    # <class 'ilang.tensor.Tensor'>
+i.Component # <class 'ilang.component.Component'>
+i.Device    # <enum 'Device'>
+i.I         # mirrors `ilang.Component.I`
+```
 
 ## Components
 
 A component is a parsed 𝚒 program tree.
 
 ```python
-f = i.i("ik*kj~ij")
+f = i("ik*kj~ij")
 ```
 
-`i.i(src: str) -> Component` parses one component from source text.
+`i(src: str) -> Component` parses one component from source text.
 
-`i.I` is the identity component. It forwards one input to one output.
-
-`Component(src: str)` constructs a component directly. Prefer `i.i(src)` for source components.
+`i.I` is the identity component. Forwards one input to one output.
 
 ### Component combinators
 
@@ -66,7 +81,7 @@ Semantics:
 A string operand is parsed as a component before combination.
 
 ```python
-f = i.i("+ij~ij") >> "*ij~ij"
+f = i("ik*kj~ijk") >> i("+ijk~ij")
 ```
 
 ### Generated source
@@ -88,7 +103,8 @@ These methods are diagnostic API.
 x = i.Tensor([[1, 2], [3, 4]])
 ```
 
-Construction accepts a scalar or rectangular nested Python lists. Values are stored as `float32`.
+Construction accepts a scalar or rectangular nested Python lists. Values are
+stored as `float32`.
 
 Explicit flat data and shape are accepted.
 
@@ -100,7 +116,7 @@ x = i.Tensor([1, 2, 3, 4], shape=(2, 2))
 
 ```python
 x.shape   # tuple[int, ...]
-x.device  # i.DEVICE.CPU or i.DEVICE.CUDA
+x.device  # i.Device.CPU or i.Device.CUDA
 ```
 
 ### Tensor data
@@ -109,17 +125,18 @@ x.device  # i.DEVICE.CPU or i.DEVICE.CUDA
 x.data  # list[float]
 ```
 
-`data` is defined only for CPU tensors. CUDA tensor data is not directly accessible.
+`data` is defined only for CPU tensors. CUDA tensor data is not directly
+accessible.
 
 ```python
-x.to(i.DEVICE.CPU).data
+x.to(i.Device.CPU).data
 ```
 
 ### Devices
 
 ```python
-i.DEVICE.CPU
-i.DEVICE.CUDA
+i.Device.CPU
+i.Device.CUDA
 ```
 
 String aliases are accepted where a device is required:
@@ -133,13 +150,15 @@ String aliases are accepted where a device is required:
 ### Tensor transfer
 
 ```python
-x_cuda = x.to(i.DEVICE.CUDA)
-x_cpu = x_cuda.to(i.DEVICE.CPU)
+x_cuda = x.to("cuda")
+x_cpu = x_cuda.to("cpu")
 ```
 
-`to` returns a tensor. If the tensor is already on the requested device, the same object is returned. Otherwise a new tensor is allocated and copied.
+`to` returns a tensor. If the tensor is already on the requested device, the
+same object is returned. Otherwise a new tensor is allocated and copied.
 
-CUDA tensor allocation and copy are implemented by a lazily generated CUDA tensor runtime library. The core library does not link CUDA directly.
+CUDA tensor allocation and copy are implemented by a lazily generated CUDA
+tensor runtime library. The core library does not link CUDA directly.
 
 ## Execution
 
@@ -155,7 +174,8 @@ Execution device is determined by the input devices:
 - All CUDA inputs execute the CUDA program.
 - Mixed-device inputs are invalid.
 
-The component compiles lazily for the selected backend. CPU execution uses generated C. CUDA execution uses generated CUDA.
+The component compiles lazily for the selected backend. CPU execution uses
+generated C. CUDA execution uses generated CUDA.
 
 ### Input types
 
@@ -183,15 +203,17 @@ Torch inputs:
 
 ### Output type inference
 
-Without `into`, the output container type is inferred from the input container type.
+Without `into`, the output container type is inferred from the input container
+type.
 
 ```python
-f.exec(i.Tensor(...))      # returns ilang.Tensor or tuple[ilang.Tensor, ...]
-f.exec(np_array)           # returns numpy.ndarray or tuple[numpy.ndarray, ...]
-f.exec(torch_tensor)       # returns torch.Tensor or tuple[torch.Tensor, ...]
+f.exec(i.Tensor(...))  # returns ilang.Tensor or tuple[ilang.Tensor, ...]
+f.exec(np_array)       # returns numpy.ndarray or tuple[numpy.ndarray, ...]
+f.exec(torch_tensor)   # returns torch.Tensor or tuple[torch.Tensor, ...]
 ```
 
-A single-output component returns one object. A multi-output component returns a tuple in output order.
+A single-output component returns one object. A multi-output component returns
+a tuple in output order.
 
 Output device follows execution device:
 
@@ -207,9 +229,6 @@ Output device follows execution device:
 
 ```python
 f.exec(x, into=i.Tensor)
-f.exec(x, into="tensor")
-f.exec(x, into="numpy")
-f.exec(x, into="torch")
 f.exec(x, into=np.ndarray)
 f.exec(x, into=torch.Tensor)
 ```
@@ -217,6 +236,8 @@ f.exec(x, into=torch.Tensor)
 Accepted tensor aliases are `"tensor"`, `"ilang"`, and `"i"`.
 
 Accepted NumPy aliases are `"numpy"` and `"np"`.
+
+Accepted Torch aliases is `"torch"`.
 
 CUDA execution with NumPy output is invalid.
 
@@ -226,7 +247,8 @@ CUDA execution with NumPy output is invalid.
 shapes = f.output_shapes(*inputs)
 ```
 
-`output_shapes` returns one shape tuple per output. Shapes are computed from input shapes without executing kernels.
+`output_shapes` returns one shape tuple per output. Shapes are computed from
+input shapes without executing kernels.
 
 ## Benchmarking
 
@@ -250,18 +272,21 @@ bench.runs       # list[datetime.timedelta]
 
 ## Errors
 
-Invalid programs, invalid input types, invalid dtypes, non-contiguous arrays, device mismatches, and backend failures raise Python exceptions.
+Invalid programs, invalid input types, invalid dtypes, non-contiguous arrays,
+device mismatches, and backend failures raise Python exceptions.
 
-Execution requires all inputs to reside on one device. No implicit CPU/CUDA input synchronization is performed by `exec`.
+Execution requires all inputs to reside on one device. No implicit CPU/CUDA
+input synchronization is performed by `exec`.
 
-CUDA tensor data is not read by `repr` and is not exposed by `.data`. Copy to CPU explicitly.
+CUDA tensor data is not read by `repr` and is not exposed by `.data`. Copy to
+CPU explicitly.
 
 ## Examples
 
 Native tensor execution:
 
 ```python
-import ilang as i
+from ilang import i
 
 f = i.i("+ij~ij")
 x = i.Tensor([[1, 2], [3, 4]])
@@ -271,9 +296,9 @@ y = f.exec(x)
 CUDA tensor execution:
 
 ```python
-x = i.Tensor([[1, 2], [3, 4]]).to(i.DEVICE.CUDA)
+x = i.Tensor([[1, 2], [3, 4]]).to("cuda")
 y = f.exec(x)
-z = y.to(i.DEVICE.CPU)
+z = y.to("cpu")
 ```
 
 NumPy execution:

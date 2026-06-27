@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 import numpy as np
-from ilang import Component as i
-from ilang import I, Tensor
+from ilang import i
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -14,7 +13,7 @@ def as_numpy(x):
 
 
 def as_i(x):
-    return Tensor(x.tolist())
+    return i.Tensor(x.tolist())
 
 
 def assert_allclose(name, got, ref, rtol=1e-5, atol=1e-8):
@@ -83,11 +82,11 @@ def i_attention(q, k, v):
     mm_t = i("bhij*bhkj~bhikj | i:16,k:16 | bhkii'k'j") >> i(
         "+bhikj~bhik | i:16,k:16 | bhkii'k'j0"
     )
-    row_max_shift = (I & i(">bhik~bhi | i:16,k:16 | bhkii'k'")) >> i(
+    row_max_shift = (i.I & i(">bhik~bhi | i:16,k:16 | bhkii'k'")) >> i(
         "bhik-bhi~bhik | i:16,k:16 | bh1kii'k'"
     )
     exp = i("^bhik~bhik | i:16,k:16 | bhkii'k'")
-    row_normalize = (I & i("+bhik~bhi | i:16,k:16 | bhkii'k'")) >> i(
+    row_normalize = (i.I & i("+bhik~bhi | i:16,k:16 | bhkii'k'")) >> i(
         "bhik/bhi~bhik | i:16,k:16 | bh1kii'k'"
     )
     mm = i("bhik*bhkj~bhijk | i:16,k:16 | bhkii'jk'") >> i(
