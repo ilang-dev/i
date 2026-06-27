@@ -6,23 +6,23 @@ from typing import Any
 
 from . import ffi
 
-__all__ = ["DEVICE", "Tensor"]
+__all__ = ["Device", "Tensor"]
 
 
 
-class DEVICE(Enum):
+class Device(Enum):
     CPU = "cpu"
     CUDA = "cuda"
 
     @classmethod
-    def coerce(cls, value: DEVICE | str) -> DEVICE:
-        if isinstance(value, DEVICE):
+    def coerce(cls, value: Device | str) -> Device:
+        if isinstance(value, Device):
             return value
         name = str(value).lower()
         if name in {"cpu", "device.cpu"}:
-            return DEVICE.CPU
+            return Device.CPU
         if name in {"cuda", "gpu", "device.cuda"}:
-            return DEVICE.CUDA
+            return Device.CUDA
         raise ValueError(f"unknown device {value!r}")
 
 
@@ -99,22 +99,22 @@ class Tensor:
         x: Any,
         shape: tuple[int, ...] | None = None,
         *,
-        device: DEVICE | str = DEVICE.CPU,
+        device: Device | str = Device.CPU,
     ) -> None:
-        device = DEVICE.coerce(device)
+        device = Device.coerce(device)
         if shape is None:
             shape, data = _flatten(x)
         else:
             shape = tuple(int(d) for d in shape)
             data = [float(v) for v in x]
         self.shape: tuple[int, ...] = tuple(shape)
-        self.device: DEVICE = DEVICE.CPU
+        self.device: Device = Device.CPU
         self._len: int = len(data)
         self._data: Any = (ctypes.c_float * self._len)(*data)
         self._shape, self._shape_buf = _shape_array(self.shape)
         self._owner: _OwnedOutputs | _CudaOwner | None = None
-        if device is DEVICE.CUDA:
-            moved = self.to(DEVICE.CUDA)
+        if device is Device.CUDA:
+            moved = self.to(Device.CUDA)
             self.device = moved.device
             self._data = moved._data
             self._owner = moved._owner
@@ -127,7 +127,7 @@ class Tensor:
         raw = outputs.tensors[index]
         self: Tensor = cls.__new__(cls)
         self.shape = tuple(raw.shape[i] for i in range(raw.rank))
-        self.device = DEVICE.CPU
+        self.device = Device.CPU
         self._len = raw.len
         self._data = raw.data
         self._shape, self._shape_buf = _shape_array(self.shape)
@@ -135,14 +135,14 @@ class Tensor:
         return self
 
     @classmethod
-    def _empty(cls, shape: tuple[int, ...], device: DEVICE | str) -> Tensor:
-        device = DEVICE.coerce(device)
+    def _empty(cls, shape: tuple[int, ...], device: Device | str) -> Tensor:
+        device = Device.coerce(device)
         self: Tensor = cls.__new__(cls)
         self.shape = tuple(int(d) for d in shape)
         self.device = device
         self._len = _numel(self.shape)
         self._shape, self._shape_buf = _shape_array(self.shape)
-        if device is DEVICE.CPU:
+        if device is Device.CPU:
             self._data = (ctypes.c_float * self._len)()
             self._owner = None
         else:
@@ -158,22 +158,22 @@ class Tensor:
 
     @property
     def data(self) -> list[float]:
-        if self.device is not DEVICE.CPU:
+        if self.device is not Device.CPU:
             raise RuntimeError(
-                "CUDA tensor data is not directly accessible; call .to(DEVICE.CPU) first"
+                "CUDA tensor data is not directly accessible; call .to(Device.CPU) first"
             )
         return [self._data[i] for i in range(self._len)]
 
-    def to(self, device: DEVICE | str) -> Tensor:
-        device = DEVICE.coerce(device)
+    def to(self, device: Device | str) -> Tensor:
+        device = Device.coerce(device)
         if device is self.device:
             return self
         out = Tensor._empty(self.shape, device)
-        if self.device is DEVICE.CPU and device is DEVICE.CUDA:
+        if self.device is Device.CPU and device is Device.CUDA:
             ffi._check(
                 ffi._core.i_cuda_copy_from_host(out._data, self._data, self._len)
             )
-        elif self.device is DEVICE.CUDA and device is DEVICE.CPU:
+        elif self.device is Device.CUDA and device is Device.CPU:
             ffi._check(ffi._core.i_cuda_copy_to_host(out._data, self._data, self._len))
         else:
             raise RuntimeError(f"unsupported tensor copy {self.device} -> {device}")
@@ -194,6 +194,6 @@ class Tensor:
         self._owner = None
 
     def __repr__(self) -> str:
-        if self.device is DEVICE.CPU:
+        if self.device is Device.CPU:
             return f"Tensor(shape={self.shape}, device=CPU, data={self.data})"
         return f"Tensor(shape={self.shape}, device=CUDA)"

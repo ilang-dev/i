@@ -8,7 +8,7 @@ from typing import Any
 
 from . import ffi
 from .inputs import _inputs
-from .tensor import DEVICE, Tensor, _OwnedOutputs
+from .tensor import Device, Tensor, _OwnedOutputs
 
 __all__ = ["Bench", "Component", "I", "i"]
 
@@ -160,8 +160,8 @@ class Component:
 
     def exec(self, *inputs: Any, into: Any = None) -> Any:
         target, device = _resolve_target(inputs, into)
-        program = self._compile() if device is DEVICE.CPU else self._cuda_compile()
-        if target == "tensor" and device is DEVICE.CPU:
+        program = self._compile() if device is Device.CPU else self._cuda_compile()
+        if target == "tensor" and device is Device.CPU:
             return self._exec_owned(program, *inputs)
         return self._exec_allocated(program, target, device, *inputs)
 
@@ -179,19 +179,19 @@ class Component:
         return tuple(tensors)
 
     def _exec_allocated(
-        self, program: ctypes.c_void_p, target: str, device: DEVICE, *inputs: Any
+        self, program: ctypes.c_void_p, target: str, device: Device, *inputs: Any
     ) -> Any:
         shapes: list[tuple[int, ...]] = self.output_shapes(*inputs, _program=program)
         if target == "numpy":
             import numpy as np
 
-            if device is not DEVICE.CPU:
+            if device is not Device.CPU:
                 raise TypeError("NumPy outputs only support CPU execution")
             outs: list[Any] = [np.empty(shape, dtype=np.float32) for shape in shapes]
         elif target == "torch":
             import torch
 
-            torch_device = "cuda" if device is DEVICE.CUDA else "cpu"
+            torch_device = "cuda" if device is Device.CUDA else "cpu"
             outs = [
                 torch.empty(shape, dtype=torch.float32, device=torch_device)
                 for shape in shapes
@@ -259,7 +259,7 @@ class Component:
         )
 
 
-def _resolve_target(inputs: tuple[Any, ...], into: Any) -> tuple[str, DEVICE]:
+def _resolve_target(inputs: tuple[Any, ...], into: Any) -> tuple[str, Device]:
     infos = [_input_info(x) for x in inputs]
     devices = {device for _kind, device in infos}
     if len(devices) != 1:
@@ -313,7 +313,7 @@ def _target_from_marker(marker: Any) -> str:
     )
 
 
-def _input_info(x: Any) -> tuple[str, DEVICE]:
+def _input_info(x: Any) -> tuple[str, Device]:
     if isinstance(x, Tensor):
         return "tensor", x.device
 
@@ -323,7 +323,7 @@ def _input_info(x: Any) -> tuple[str, DEVICE]:
         if isinstance(x, np.ndarray):
             if x.dtype != np.float32 or not x.flags.c_contiguous:
                 raise TypeError("NumPy inputs must be float32 and C-contiguous")
-            return "numpy", DEVICE.CPU
+            return "numpy", Device.CPU
     except ImportError:
         pass
 
@@ -335,7 +335,7 @@ def _input_info(x: Any) -> tuple[str, DEVICE]:
                 raise TypeError("Torch tensors must be float32")
             if not x.is_contiguous():
                 raise TypeError("Torch tensors must be contiguous")
-            return "torch", DEVICE.CUDA if x.is_cuda else DEVICE.CPU
+            return "torch", Device.CUDA if x.is_cuda else Device.CPU
     except ImportError:
         pass
 

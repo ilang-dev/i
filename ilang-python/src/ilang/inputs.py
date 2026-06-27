@@ -4,7 +4,7 @@ import ctypes
 from typing import Any
 
 from . import ffi
-from .tensor import DEVICE, Tensor, _shape_array
+from .tensor import Device, Tensor, _shape_array
 
 __all__: list[str] = []
 
