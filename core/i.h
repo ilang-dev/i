@@ -53,12 +53,6 @@ void i_cuda_free(float* data);
 int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
 int i_cuda_copy_to_host(float* dst, const float* src, size_t len);
 
-i_device i_program_device(const i_program* program);
-float* i_cuda_alloc(size_t len);
-void i_cuda_free(float* data);
-int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
-int i_cuda_copy_to_host(float* dst, const float* src, size_t len);
-
 size_t i_output_count(const i_program* program);
 int i_output_ranks(const i_program* program, size_t* ranks);
 int i_output_shapes(
