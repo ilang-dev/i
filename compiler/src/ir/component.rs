@@ -38,4 +38,9 @@ pub enum Component {
     Pair(Box<Component>, Box<Component>),
     /// Swaps the first two outputs of one component.
     Swap(Box<Component>),
+    /// Marks one physical input as bound.
+    ///
+    /// Bound inputs remain part of the runtime input ABI, but are skipped by
+    /// combinator boundary wiring.
+    BindInput(Box<Component>, usize),
 }

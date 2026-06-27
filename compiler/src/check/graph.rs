@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn accepts_valid_graph() {
         let graph = Graph {
-            inputs: vec![Input, Input],
+            inputs: vec![Input::Free, Input::Free],
             nodes: vec![
                 Node {
                     inner: 1usize,
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn rejects_nonexistent_node_input() {
         let graph = Graph {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![Node {
                 inner: 1usize,
                 inputs: vec![Source::Node(NodeId(1), OutputId(0))],
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn rejects_forward_node_input() {
         let graph = Graph {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![
                 Node {
                     inner: 1usize,
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn rejects_nonexistent_output_node() {
         let graph = Graph::<usize> {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![],
             outputs: vec![Source::Node(NodeId(0), OutputId(0))],
         };
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn rejects_invalid_graph_node() {
         let graph = Graph {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![Node {
                 inner: IrNode {
                     op: Op::Add,
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn rejects_node_graph_input_len_mismatch() {
         let graph = Graph {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![Node {
                 inner: IrNode {
                     op: Op::Add,
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn rejects_node_graph_multi_output_node() {
         let graph = Graph {
-            inputs: vec![Input],
+            inputs: vec![Input::Free],
             nodes: vec![Node {
                 inner: IrNode {
                     op: Op::Add,

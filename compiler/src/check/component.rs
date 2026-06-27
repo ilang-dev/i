@@ -28,6 +28,7 @@ fn validate_component_inner(
             validate_component_inner(right, next_expr)
         }
         Component::Swap(inner) => validate_component_inner(inner, next_expr),
+        Component::BindInput(inner, _) => validate_component_inner(inner, next_expr),
     }
 }
 

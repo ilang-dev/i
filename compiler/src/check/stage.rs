@@ -516,7 +516,7 @@ mod tests {
             by: AxisRef::Consumer(AxisId(0)),
         };
         let graph = Graph {
-            inputs: vec![GraphInput],
+            inputs: vec![GraphInput::Free],
             nodes: vec![Node {
                 inner: stage,
                 inputs: vec![Source::Input(crate::ir::graph::InputId(0))],

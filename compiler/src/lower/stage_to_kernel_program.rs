@@ -2252,7 +2252,7 @@ mod tests {
                 nodes: vec![],
             },
             graph: crate::ir::graph::Graph {
-                inputs: vec![crate::ir::graph::Input],
+                inputs: vec![crate::ir::graph::Input::Free],
                 nodes: vec![],
                 outputs: vec![Source::Input(crate::ir::graph::InputId(0))],
             },

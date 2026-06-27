@@ -155,6 +155,37 @@ def i_rowaccum(x):
     return i("+ij~i").exec(x)
 
 
+# --- binding ---
+
+
+def make_bind_inputs():
+    x = rand((8,), seed=1)
+    y = rand((8,), seed=2)
+    return x, y
+
+
+def np_bind_sub(x, y):
+    return x - y
+
+
+def i_bind_sub(x, y):
+    return i("i-i~i")(x)(y)()
+
+
+def i_bind_skip_sub(x, y):
+    return i("i-i~i")(None, y)(x)()
+
+
+def np_chain_bound(x, y):
+    return y - x
+
+
+def i_chain_bound(x, y):
+    f = i("i~i")
+    g = i("i-i~i")
+    return (f >> g(y))(x)()
+
+
 if __name__ == "__main__":
     cases = [
         ("matmul", make_matmul_inputs, i_matmul, np_matmul),
@@ -163,6 +194,9 @@ if __name__ == "__main__":
         ("rowmax", make_rowmax_inputs, i_rowmax, np_rowmax),
         ("rowmin", make_rowmin_inputs, i_rowmin, np_rowmin),
         ("rowaccum", make_rowaccum_inputs, i_rowaccum, np_rowaccum),
+        ("bind_sub", make_bind_inputs, i_bind_sub, np_bind_sub),
+        ("bind_skip_sub", make_bind_inputs, i_bind_skip_sub, np_bind_sub),
+        ("chain_bound", make_bind_inputs, i_chain_bound, np_chain_bound),
     ]
 
     fails = 0

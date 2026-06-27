@@ -50,13 +50,30 @@ class Component:
     I: ClassVar[Component]  # noqa: E741
 
     def __init__(
-        self, src: str | None = None, _ptr: ctypes.c_void_p | None = None
+        self,
+        src: str | None = None,
+        _ptr: ctypes.c_void_p | None = None,
+        _bindings: tuple[Any | None, ...] | None = None,
     ) -> None:
         if _ptr is None:
             if src is None:
                 raise TypeError("Component needs source")
             _ptr = ffi._core.i_parse(src.encode())
         self._ptr: ctypes.c_void_p | None = ffi._check_ptr(_ptr)
+        input_count = self._input_count()
+        self._bindings: tuple[Any | None, ...] = (
+            tuple(None for _ in range(input_count)) if _bindings is None else _bindings
+        )
+        if len(self._bindings) != input_count:
+            raise RuntimeError(
+                f"binding metadata has {len(self._bindings)} input(s), component has {input_count}"
+            )
+        states = self._input_states(input_count)
+        for index, (binding, state) in enumerate(zip(self._bindings, states)):
+            if (binding is None) != (state == 0):
+                raise RuntimeError(
+                    f"binding metadata for input {index} disagrees with component state"
+                )
         self._program: ctypes.c_void_p | None = None
         self._cuda_program: ctypes.c_void_p | None = None
 
@@ -74,25 +91,104 @@ class Component:
             ffi._core.i_component_free(ptr)
             self._ptr = None
 
-    def _bin(self, other: Component | str, fn: Any) -> Component:
+    def _input_count(self) -> int:
+        out = ctypes.c_size_t()
+        ffi._check(ffi._core.i_component_input_count(self._ptr, ctypes.byref(out)))  # type: ignore[arg-type]
+        return int(out.value)
+
+    def _output_count(self) -> int:
+        out = ctypes.c_size_t()
+        ffi._check(ffi._core.i_component_output_count(self._ptr, ctypes.byref(out)))  # type: ignore[arg-type]
+        return int(out.value)
+
+    def _input_states(self, count: int | None = None) -> tuple[int, ...]:
+        if count is None:
+            count = self._input_count()
+        states = (ctypes.c_int * count)()
+        ffi._check(ffi._core.i_component_input_states(self._ptr, states))  # type: ignore[arg-type]
+        return tuple(int(states[i]) for i in range(count))
+
+    def _bin(self, other: Component | str, fn: Any, bindings_fn: Any) -> Component:
         if not isinstance(other, Component):
             other = Component(other)
-        return Component(_ptr=ffi._check_ptr(fn(self._ptr, other._ptr)))  # type: ignore[arg-type]
+        bindings = bindings_fn(other)
+        return Component(
+            _ptr=ffi._check_ptr(fn(self._ptr, other._ptr)),  # type: ignore[arg-type]
+            _bindings=bindings,
+        )
 
     def chain(self, other: Component | str) -> Component:
-        return self._bin(other, ffi._core.i_chain)
+        return self._bin(other, ffi._core.i_chain, self._chain_bindings)
 
     def compose(self, other: Component | str) -> Component:
-        return self._bin(other, ffi._core.i_compose)
+        return self._bin(other, ffi._core.i_compose, self._compose_bindings)
 
     def fanout(self, other: Component | str) -> Component:
-        return self._bin(other, ffi._core.i_fanout)
+        return self._bin(other, ffi._core.i_fanout, self._fanout_bindings)
 
     def pair(self, other: Component | str) -> Component:
-        return self._bin(other, ffi._core.i_pair)
+        return self._bin(other, ffi._core.i_pair, self._pair_bindings)
 
     def swap(self) -> Component:
-        return Component(_ptr=ffi._check_ptr(ffi._core.i_swap(self._ptr)))  # type: ignore[return-value]
+        return Component(
+            _ptr=ffi._check_ptr(ffi._core.i_swap(self._ptr)),  # type: ignore[arg-type]
+            _bindings=self._bindings,
+        )
+
+    def bind(self, *args: Any) -> Component:
+        free = _free_indices(self._bindings)
+        if len(args) > len(free):
+            raise TypeError(
+                f"too many bindings: got {len(args)}, component has {len(free)} free input(s)"
+            )
+
+        bindings = list(self._bindings)
+        ptr = self._ptr
+        owned_temp = False
+        for physical_index, value in zip(free, args):
+            if value is None:
+                continue
+            new_ptr = ffi._check_ptr(ffi._core.i_bind_input(ptr, physical_index))  # type: ignore[arg-type]
+            if owned_temp:
+                ffi._core.i_component_free(ptr)
+            ptr = new_ptr
+            owned_temp = True
+            bindings[physical_index] = value
+
+        if not owned_temp:
+            return self
+        return Component(_ptr=ptr, _bindings=tuple(bindings))
+
+    def __call__(self, *args: Any, into: Any = None) -> Any:
+        if args:
+            if into is not None:
+                raise TypeError("into= is only valid when executing with an empty call")
+            return self.bind(*args)
+        return self.exec(into=into)
+
+    def _chain_bindings(self, other: Component) -> tuple[Any | None, ...]:
+        paired = min(self._output_count(), len(_free_indices(other._bindings)))
+        consumed = set(_free_indices(other._bindings)[:paired])
+        return self._bindings + tuple(
+            binding for index, binding in enumerate(other._bindings) if index not in consumed
+        )
+
+    def _compose_bindings(self, other: Component) -> tuple[Any | None, ...]:
+        paired = min(len(_free_indices(self._bindings)), other._output_count())
+        consumed = set(_free_indices(self._bindings)[:paired])
+        return other._bindings + tuple(
+            binding for index, binding in enumerate(self._bindings) if index not in consumed
+        )
+
+    def _fanout_bindings(self, other: Component) -> tuple[Any | None, ...]:
+        paired = min(len(_free_indices(self._bindings)), len(_free_indices(other._bindings)))
+        consumed = set(_free_indices(other._bindings)[:paired])
+        return self._bindings + tuple(
+            binding for index, binding in enumerate(other._bindings) if index not in consumed
+        )
+
+    def _pair_bindings(self, other: Component) -> tuple[Any | None, ...]:
+        return self._bindings + other._bindings
 
     def __rshift__(self, other: Component | str) -> Component:
         return self.chain(other)
@@ -141,9 +237,27 @@ class Component:
         finally:
             ffi._core.i_string_free(s)
 
+    def _physical_inputs(self, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
+        free = _free_indices(self._bindings)
+        if len(inputs) > len(free):
+            raise TypeError(
+                f"too many inputs: got {len(inputs)}, component has {len(free)} free input(s)"
+            )
+
+        merged = list(self._bindings)
+        for physical_index, value in zip(free, inputs):
+            merged[physical_index] = value
+
+        missing = [index for index, value in enumerate(merged) if value is None]
+        if missing:
+            raise TypeError(f"component is not fully bound; missing input(s) {missing}")
+        return tuple(merged)
+
     def output_shapes(
-        self, *inputs: Any, _program: ctypes.c_void_p | None = None
+        self, *inputs: Any, _program: ctypes.c_void_p | None = None, _physical: bool = False
     ) -> list[tuple[int, ...]]:
+        if not _physical:
+            inputs = self._physical_inputs(inputs)
         program = _program if _program is not None else self._compile()
         input_arr, _keepalive = _inputs(inputs)
         count = ffi._core.i_output_count(program)
@@ -161,6 +275,7 @@ class Component:
         ]
 
     def exec(self, *inputs: Any, into: Any = None) -> Any:
+        inputs = self._physical_inputs(inputs)
         target, device = _resolve_target(inputs, into)
         program = self._compile() if device is Device.CPU else self._cuda_compile()
         if target == "tensor" and device is Device.CPU:
@@ -183,7 +298,7 @@ class Component:
     def _exec_allocated(
         self, program: ctypes.c_void_p, target: str, device: Device, *inputs: Any
     ) -> Any:
-        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs, _program=program)
+        shapes: list[tuple[int, ...]] = self.output_shapes(*inputs, _program=program, _physical=True)
         if target == "numpy":
             import numpy as np
 
@@ -259,6 +374,10 @@ class Component:
             n_runs=n_runs,
             runs=runs,
         )
+
+
+def _free_indices(bindings: tuple[Any | None, ...]) -> list[int]:
+    return [index for index, binding in enumerate(bindings) if binding is None]
 
 
 def _resolve_target(inputs: tuple[Any, ...], into: Any) -> tuple[str, Device]:

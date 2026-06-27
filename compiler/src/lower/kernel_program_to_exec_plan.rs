@@ -1063,7 +1063,7 @@ mod tests {
             }],
             outputs: vec![BufferId(0)],
             graph: Graph {
-                inputs: vec![GraphInput],
+                inputs: vec![GraphInput::Free],
                 nodes: vec![],
                 outputs: vec![],
             },
@@ -1094,7 +1094,7 @@ mod tests {
             ],
             outputs: vec![BufferId(2)],
             graph: Graph {
-                inputs: vec![GraphInput],
+                inputs: vec![GraphInput::Free],
                 nodes: vec![GraphNode {
                     inner: Kernel {
                         reads: vec![BufferId(0)],
@@ -1207,7 +1207,7 @@ mod tests {
             ],
             outputs: vec![BufferId(1)],
             graph: Graph {
-                inputs: vec![GraphInput],
+                inputs: vec![GraphInput::Free],
                 nodes: vec![],
                 outputs: vec![],
             },

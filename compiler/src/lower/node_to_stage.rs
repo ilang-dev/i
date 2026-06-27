@@ -1489,7 +1489,7 @@ mod tests {
     #[test]
     fn root_compute_site_uses_physical_layout_without_pruning() {
         let graph = Graph {
-            inputs: vec![GraphInput],
+            inputs: vec![GraphInput::Free],
             nodes: vec![GraphNode {
                 inner: Node {
                     op: Op::Add,
@@ -1520,7 +1520,7 @@ mod tests {
     #[test]
     fn split_axis_with_multiple_factors_expands_in_layout_order() {
         let graph = Graph {
-            inputs: vec![GraphInput],
+            inputs: vec![GraphInput::Free],
             nodes: vec![GraphNode {
                 inner: Node {
                     op: Op::Add,

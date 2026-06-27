@@ -91,6 +91,14 @@ def _bind_functions(core: ctypes.CDLL) -> None:
         _fn.restype = ctypes.c_void_p
     core.i_swap.argtypes = [ctypes.c_void_p]
     core.i_swap.restype = ctypes.c_void_p
+    core.i_bind_input.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    core.i_bind_input.restype = ctypes.c_void_p
+    core.i_component_input_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    core.i_component_input_count.restype = ctypes.c_int
+    core.i_component_output_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    core.i_component_output_count.restype = ctypes.c_int
+    core.i_component_input_states.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+    core.i_component_input_states.restype = ctypes.c_int
     core.i_code.argtypes = [ctypes.c_void_p]
     core.i_code.restype = ctypes.c_void_p
     core.i_cuda_code.argtypes = [ctypes.c_void_p]

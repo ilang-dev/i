@@ -33,8 +33,16 @@ pub struct Node<T> {
 }
 
 /// One ordered graph input.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Input;
+///
+/// `Free` inputs are visible to component combinators and user calls. `Bound`
+/// inputs are still physical runtime inputs, but combinators skip over them
+/// when wiring component boundaries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Input {
+    #[default]
+    Free,
+    Bound,
+}
 
 /// One ordered node output.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

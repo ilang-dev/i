@@ -363,7 +363,7 @@ mod tests {
             ],
             outputs: vec![BufferId(1)],
             graph: Graph {
-                inputs: vec![crate::ir::graph::Input],
+                inputs: vec![crate::ir::graph::Input::Free],
                 nodes: vec![Node {
                     inner: Kernel {
                         reads: vec![BufferId(0)],

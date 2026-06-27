@@ -12,7 +12,7 @@ pub fn lower_component_to_graph(component: &Component) -> Result<Graph<IrNode>, 
     validate_component(component).map_err(LowerError::from_component)?;
     let partial = lower_component_to_partial(component)?;
     let graph = Graph {
-        inputs: vec![Input; partial.inputs],
+        inputs: partial.inputs,
         nodes: partial.nodes,
         outputs: partial.outputs,
     };
@@ -23,14 +23,14 @@ pub fn lower_component_to_graph(component: &Component) -> Result<Graph<IrNode>, 
 fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, LowerError> {
     match component {
         Component::Identity => Ok(PartialGraph {
-            inputs: 1,
+            inputs: vec![Input::Free],
             nodes: Vec::new(),
             outputs: vec![Source::Input(InputId(0))],
         }),
         Component::Expr(expr) => {
             let node = lower_expr_to_node_unchecked(expr).map_err(LowerError::from_expr)?;
             Ok(PartialGraph {
-                inputs: node.inputs.len(),
+                inputs: vec![Input::Free; node.inputs.len()],
                 nodes: vec![Node {
                     inner: node,
                     inputs: (0..expr.inputs.len())
@@ -68,44 +68,67 @@ fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, Low
             }
             Ok(inner)
         }
+        Component::BindInput(inner, index) => {
+            let mut inner = lower_component_to_partial(inner)?;
+            let Some(input) = inner.inputs.get_mut(*index) else {
+                return Err(LowerError::new(format!(
+                    "cannot bind nonexistent input {index}"
+                )));
+            };
+            if *input == Input::Bound {
+                return Err(LowerError::new(format!("input {index} is already bound")));
+            }
+            *input = Input::Bound;
+            Ok(inner)
+        }
     }
 }
 
 fn pair_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
-    let left_input_map = input_sources(0, left.inputs);
+    let left_input_map = input_sources(0, left.inputs.len());
     let left_outputs = remap_outputs(&left.outputs, &left_input_map, 0);
     let left_nodes = remap_nodes(left.nodes, &left_input_map, 0);
 
-    let right_input_base = left.inputs;
-    let right_input_map = input_sources(right_input_base, right.inputs);
+    let right_input_base = left.inputs.len();
+    let right_input_map = input_sources(right_input_base, right.inputs.len());
     let right_node_offset = left_nodes.len();
     let right_outputs = remap_outputs(&right.outputs, &right_input_map, right_node_offset);
     let right_nodes = remap_nodes(right.nodes, &right_input_map, right_node_offset);
 
     PartialGraph {
-        inputs: right_input_base + right.inputs,
+        inputs: left.inputs.into_iter().chain(right.inputs).collect(),
         nodes: left_nodes.into_iter().chain(right_nodes).collect(),
         outputs: left_outputs.into_iter().chain(right_outputs).collect(),
     }
 }
 
 fn chain_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
-    let paired = left.outputs.len().min(right.inputs);
+    let right_consumed = first_free_indices(&right.inputs, left.outputs.len());
+    let paired = right_consumed.len();
 
-    let left_input_map = input_sources(0, left.inputs);
+    let left_input_map = input_sources(0, left.inputs.len());
     let left_outputs = remap_outputs(&left.outputs, &left_input_map, 0);
     let left_nodes = remap_nodes(left.nodes, &left_input_map, 0);
 
-    let mut right_input_map = left_outputs[..paired].to_vec();
-    right_input_map.extend(
-        (0..(right.inputs - paired)).map(|index| Source::Input(InputId(left.inputs + index))),
-    );
+    let mut inputs = left.inputs;
+    let mut right_input_map = vec![Source::Input(InputId(0)); right.inputs.len()];
+    let mut consumed = 0usize;
+    for (index, input) in right.inputs.into_iter().enumerate() {
+        if consumed < paired && right_consumed[consumed] == index {
+            right_input_map[index] = left_outputs[consumed];
+            consumed += 1;
+        } else {
+            right_input_map[index] = Source::Input(InputId(inputs.len()));
+            inputs.push(input);
+        }
+    }
+
     let right_node_offset = left_nodes.len();
     let right_outputs = remap_outputs(&right.outputs, &right_input_map, right_node_offset);
     let right_nodes = remap_nodes(right.nodes, &right_input_map, right_node_offset);
 
     PartialGraph {
-        inputs: left.inputs + right.inputs - paired,
+        inputs,
         nodes: left_nodes.into_iter().chain(right_nodes).collect(),
         outputs: left_outputs[paired..]
             .iter()
@@ -116,22 +139,32 @@ fn chain_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
 }
 
 fn compose_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
-    let paired = left.inputs.min(right.outputs.len());
+    let left_consumed = first_free_indices(&left.inputs, right.outputs.len());
+    let paired = left_consumed.len();
 
-    let right_input_map = input_sources(0, right.inputs);
+    let right_input_map = input_sources(0, right.inputs.len());
     let right_outputs = remap_outputs(&right.outputs, &right_input_map, 0);
     let right_nodes = remap_nodes(right.nodes, &right_input_map, 0);
 
-    let mut left_input_map = right_outputs[..paired].to_vec();
-    left_input_map.extend(
-        (0..(left.inputs - paired)).map(|index| Source::Input(InputId(right.inputs + index))),
-    );
+    let mut inputs = right.inputs;
+    let mut left_input_map = vec![Source::Input(InputId(0)); left.inputs.len()];
+    let mut consumed = 0usize;
+    for (index, input) in left.inputs.into_iter().enumerate() {
+        if consumed < paired && left_consumed[consumed] == index {
+            left_input_map[index] = right_outputs[consumed];
+            consumed += 1;
+        } else {
+            left_input_map[index] = Source::Input(InputId(inputs.len()));
+            inputs.push(input);
+        }
+    }
+
     let left_node_offset = right_nodes.len();
     let left_outputs = remap_outputs(&left.outputs, &left_input_map, left_node_offset);
     let left_nodes = remap_nodes(left.nodes, &left_input_map, left_node_offset);
 
     PartialGraph {
-        inputs: right.inputs + left.inputs - paired,
+        inputs,
         nodes: right_nodes.into_iter().chain(left_nodes).collect(),
         outputs: left_outputs
             .into_iter()
@@ -141,22 +174,33 @@ fn compose_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
 }
 
 fn fanout_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
-    let paired = left.inputs.min(right.inputs);
+    let left_free = free_indices(&left.inputs);
+    let right_consumed = first_free_indices(&right.inputs, left_free.len());
+    let paired = right_consumed.len();
 
-    let left_input_map = input_sources(0, left.inputs);
+    let left_input_map = input_sources(0, left.inputs.len());
     let left_outputs = remap_outputs(&left.outputs, &left_input_map, 0);
     let left_nodes = remap_nodes(left.nodes, &left_input_map, 0);
 
-    let mut right_input_map = input_sources(0, paired);
-    right_input_map.extend(
-        (0..(right.inputs - paired)).map(|index| Source::Input(InputId(left.inputs + index))),
-    );
+    let mut inputs = left.inputs;
+    let mut right_input_map = vec![Source::Input(InputId(0)); right.inputs.len()];
+    let mut consumed = 0usize;
+    for (index, input) in right.inputs.into_iter().enumerate() {
+        if consumed < paired && right_consumed[consumed] == index {
+            right_input_map[index] = Source::Input(InputId(left_free[consumed]));
+            consumed += 1;
+        } else {
+            right_input_map[index] = Source::Input(InputId(inputs.len()));
+            inputs.push(input);
+        }
+    }
+
     let right_node_offset = left_nodes.len();
     let right_outputs = remap_outputs(&right.outputs, &right_input_map, right_node_offset);
     let right_nodes = remap_nodes(right.nodes, &right_input_map, right_node_offset);
 
     PartialGraph {
-        inputs: left.inputs + right.inputs - paired,
+        inputs,
         nodes: left_nodes.into_iter().chain(right_nodes).collect(),
         outputs: left_outputs.into_iter().chain(right_outputs).collect(),
     }
@@ -166,6 +210,18 @@ fn input_sources(base: usize, len: usize) -> Vec<Source> {
     (0..len)
         .map(|index| Source::Input(InputId(base + index)))
         .collect()
+}
+
+fn free_indices(inputs: &[Input]) -> Vec<usize> {
+    inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| (*input == Input::Free).then_some(index))
+        .collect()
+}
+
+fn first_free_indices(inputs: &[Input], limit: usize) -> Vec<usize> {
+    free_indices(inputs).into_iter().take(limit).collect()
 }
 
 fn remap_nodes(
@@ -203,7 +259,7 @@ fn remap_source(source: Source, input_map: &[Source], node_offset: usize) -> Sou
 }
 
 struct PartialGraph {
-    inputs: usize,
+    inputs: Vec<Input>,
     nodes: Vec<Node<IrNode>>,
     outputs: Vec<Source>,
 }
@@ -246,7 +302,7 @@ mod tests {
     use crate::component;
     use crate::front::parse_expr;
     use crate::ir::common::{Index, Op};
-    use crate::ir::graph::{InputId, NodeId, OutputId, Source};
+    use crate::ir::graph::{Input, InputId, NodeId, OutputId, Source};
     use crate::ir::node::{AxisRef, Site, SplitList};
 
     use super::lower_component_to_graph;
@@ -343,6 +399,57 @@ mod tests {
         assert_eq!(
             graph.nodes[2].inputs,
             vec![Source::Node(NodeId(0), OutputId(0))]
+        );
+    }
+
+    #[test]
+    fn lowers_chain_skips_bound_right_inputs() {
+        let component =
+            parse_component_expr("i~i").chain(parse_component_expr("i-i~i").bind_input(0));
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(
+            graph.nodes[1].inputs,
+            vec![
+                Source::Input(InputId(1)),
+                Source::Node(NodeId(0), OutputId(0))
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_compose_skips_bound_left_inputs() {
+        let component = parse_component_expr("i-i~i")
+            .bind_input(0)
+            .compose(parse_component_expr("i~i"));
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(
+            graph.nodes[1].inputs,
+            vec![
+                Source::Input(InputId(1)),
+                Source::Node(NodeId(0), OutputId(0))
+            ]
+        );
+    }
+
+    #[test]
+    fn lowers_fanout_skips_bound_right_inputs() {
+        let component =
+            parse_component_expr("i~i").fanout(parse_component_expr("i+i~i").bind_input(0));
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
+        assert_eq!(
+            graph.nodes[1].inputs,
+            vec![Source::Input(InputId(1)), Source::Input(InputId(0))]
         );
     }
 

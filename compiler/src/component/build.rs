@@ -30,6 +30,10 @@ pub fn swap(component: Component) -> Component {
     Component::Swap(Box::new(component))
 }
 
+pub fn bind_input(component: Component, input: usize) -> Component {
+    Component::BindInput(Box::new(component), input)
+}
+
 pub fn finalize(component: Component) -> Component {
     component
 }
@@ -65,6 +69,10 @@ impl Component {
 
     pub fn swap(self) -> Self {
         swap(self)
+    }
+
+    pub fn bind_input(self, input: usize) -> Self {
+        bind_input(self, input)
     }
 
     pub fn finalize(self) -> Self {

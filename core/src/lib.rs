@@ -3,6 +3,7 @@ mod loader;
 
 use backends::{Device as i_device, Program as i_program};
 use compiler::ir::component::Component;
+use compiler::ir::graph::Input;
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
@@ -104,6 +105,103 @@ pub unsafe extern "C" fn i_swap(component: *const i_component) -> *mut i_compone
     Box::into_raw(Box::new(i_component {
         inner: component.inner.clone().swap(),
     }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn i_bind_input(
+    component: *const i_component,
+    input: usize,
+) -> *mut i_component {
+    let Some(component) = component.as_ref() else {
+        return null_with_error("null component");
+    };
+
+    Box::into_raw(Box::new(i_component {
+        inner: component.inner.clone().bind_input(input),
+    }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn i_component_input_count(
+    component: *const i_component,
+    out: *mut usize,
+) -> i32 {
+    let Some(component) = component.as_ref() else {
+        set_error("null component");
+        return -1;
+    };
+    if out.is_null() {
+        set_error("null input count output");
+        return -1;
+    }
+
+    match component_boundary(&component.inner) {
+        Ok((inputs, _outputs)) => {
+            *out = inputs.len();
+            0
+        }
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn i_component_output_count(
+    component: *const i_component,
+    out: *mut usize,
+) -> i32 {
+    let Some(component) = component.as_ref() else {
+        set_error("null component");
+        return -1;
+    };
+    if out.is_null() {
+        set_error("null output count output");
+        return -1;
+    }
+
+    match component_boundary(&component.inner) {
+        Ok((_inputs, outputs)) => {
+            *out = outputs;
+            0
+        }
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn i_component_input_states(
+    component: *const i_component,
+    states: *mut i32,
+) -> i32 {
+    let Some(component) = component.as_ref() else {
+        set_error("null component");
+        return -1;
+    };
+    if states.is_null() {
+        set_error("null input states");
+        return -1;
+    }
+
+    match component_boundary(&component.inner) {
+        Ok((inputs, _outputs)) => {
+            for (index, input) in inputs.iter().enumerate() {
+                *states.add(index) = match input {
+                    Input::Free => 0,
+                    Input::Bound => 1,
+                };
+            }
+            0
+        }
+        Err(err) => {
+            set_error(err);
+            -1
+        }
+    }
 }
 
 #[no_mangle]
@@ -450,6 +548,93 @@ fn render_component(component: &Component) -> Result<String, String> {
 
 fn render_cuda_component(component: &Component) -> Result<String, String> {
     backends::cuda::render(component)
+}
+
+fn component_boundary(component: &Component) -> Result<(Vec<Input>, usize), String> {
+    match component {
+        Component::Identity => Ok((vec![Input::Free], 1)),
+        Component::Expr(expr) => Ok((vec![Input::Free; expr.inputs.len()], 1)),
+        Component::Compose(left, right) => {
+            let (left_inputs, left_outputs) = component_boundary(left)?;
+            let (right_inputs, right_outputs) = component_boundary(right)?;
+            let consumed = first_free_indices(&left_inputs, right_outputs);
+            let paired = consumed.len();
+            let inputs = right_inputs
+                .into_iter()
+                .chain(
+                    left_inputs
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
+                )
+                .collect();
+            Ok((inputs, left_outputs + right_outputs - paired))
+        }
+        Component::Chain(left, right) => {
+            let (left_inputs, left_outputs) = component_boundary(left)?;
+            let (right_inputs, right_outputs) = component_boundary(right)?;
+            let consumed = first_free_indices(&right_inputs, left_outputs);
+            let paired = consumed.len();
+            let inputs = left_inputs
+                .into_iter()
+                .chain(
+                    right_inputs
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
+                )
+                .collect();
+            Ok((inputs, left_outputs + right_outputs - paired))
+        }
+        Component::Fanout(left, right) => {
+            let (left_inputs, left_outputs) = component_boundary(left)?;
+            let (right_inputs, right_outputs) = component_boundary(right)?;
+            let consumed = first_free_indices(&right_inputs, free_count(&left_inputs));
+            let inputs = left_inputs
+                .into_iter()
+                .chain(
+                    right_inputs
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
+                )
+                .collect();
+            Ok((inputs, left_outputs + right_outputs))
+        }
+        Component::Pair(left, right) => {
+            let (left_inputs, left_outputs) = component_boundary(left)?;
+            let (right_inputs, right_outputs) = component_boundary(right)?;
+            Ok((
+                left_inputs.into_iter().chain(right_inputs).collect(),
+                left_outputs + right_outputs,
+            ))
+        }
+        Component::Swap(inner) => component_boundary(inner),
+        Component::BindInput(inner, index) => {
+            let (mut inputs, outputs) = component_boundary(inner)?;
+            let Some(input) = inputs.get_mut(*index) else {
+                return Err(format!("cannot bind nonexistent input {index}"));
+            };
+            if *input == Input::Bound {
+                return Err(format!("input {index} is already bound"));
+            }
+            *input = Input::Bound;
+            Ok((inputs, outputs))
+        }
+    }
+}
+
+fn free_count(inputs: &[Input]) -> usize {
+    inputs.iter().filter(|input| **input == Input::Free).count()
+}
+
+fn first_free_indices(inputs: &[Input], limit: usize) -> Vec<usize> {
+    inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, input)| (*input == Input::Free).then_some(index))
+        .take(limit)
+        .collect()
 }
 
 fn read_str<'a>(s: *const c_char) -> Option<&'a str> {
