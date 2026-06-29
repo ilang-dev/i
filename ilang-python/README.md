@@ -4,7 +4,7 @@ Python front-end for 𝚒.
 
 This package exposes 𝚒 components as Python objects. Components compile lazily,
 execute on CPU or CUDA according to their inputs, and interoperate with
-`i.Tensor`, NumPy `array`s, and Torch `tensor`s.
+`i.Tensor`, Python scalar/list literals, NumPy `array`s, and Torch `tensor`s.
 
 ## Package-style API
 
@@ -184,6 +184,7 @@ Inputs must be homogeneous by result type unless `into` is supplied.
 Supported input types:
 
 - `ilang.Tensor`
+- Python scalars and rectangular nested `list`/`tuple` values
 - `numpy.ndarray`
 - `torch.Tensor`
 
@@ -199,7 +200,8 @@ Torch inputs:
 - must be contiguous
 - may be CPU or CUDA
 
-`ilang.Tensor` inputs carry their own device.
+`ilang.Tensor` inputs carry their own device. Python scalars/lists are
+promoted to CPU `ilang.Tensor` inputs.
 
 ### Output type inference
 
@@ -208,6 +210,7 @@ type.
 
 ```python
 f.exec(i.Tensor(...))  # returns ilang.Tensor or tuple[ilang.Tensor, ...]
+f.exec([1, 2, 3])      # returns ilang.Tensor or tuple[ilang.Tensor, ...]
 f.exec(np_array)       # returns numpy.ndarray or tuple[numpy.ndarray, ...]
 f.exec(torch_tensor)   # returns torch.Tensor or tuple[torch.Tensor, ...]
 ```

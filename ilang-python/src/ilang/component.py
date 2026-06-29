@@ -475,7 +475,17 @@ def _input_info(x: Any) -> tuple[str, Device]:
     except ImportError:
         pass
 
-    raise TypeError("inputs must be ilang.Tensor, NumPy arrays, or Torch tensors")
+    try:
+        Tensor(x)
+    except (TypeError, ValueError):
+        pass
+    else:
+        return "tensor", Device.CPU
+
+    raise TypeError(
+        "inputs must be ilang.Tensor, NumPy arrays, Torch tensors, "
+        "or Python scalars/lists"
+    )
 
 
 def _output(x: Any) -> tuple[ffi._CTensorMut, tuple[Any, ...]]:

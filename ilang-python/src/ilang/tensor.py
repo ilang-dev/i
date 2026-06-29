@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from enum import Enum
+from numbers import Real
 from typing import Any
 
 from . import ffi
@@ -35,7 +36,7 @@ def _shape_array(
 
 
 def _flatten(x: Any) -> tuple[tuple[int, ...], list[float]]:
-    if isinstance(x, (int, float)):
+    if isinstance(x, Real):
         return (), [float(x)]
     if not isinstance(x, (list, tuple)):
         raise TypeError("Tensor expects a scalar or nested Python lists")

@@ -204,6 +204,30 @@ def i_compose_and_bind_call(x):
     return f(f, x)()
 
 
+def make_literal_inputs():
+    return ()
+
+
+def np_literal_vector_add():
+    return np.array([5, 7, 9], dtype=np.float32)
+
+
+def i_literal_vector_exec():
+    return i("i+i~i").exec([1, 2, 3], [4, 5, 6])
+
+
+def i_literal_vector_bind():
+    return i("i+i~i")([1, 2, 3])([4, 5, 6])()
+
+
+def np_literal_scalar_add():
+    return np.array(5, dtype=np.float32)
+
+
+def i_literal_scalar_exec():
+    return i(".+.~.").exec(2.0, 3)
+
+
 if __name__ == "__main__":
     cases = [
         ("matmul", make_matmul_inputs, i_matmul, np_matmul),
@@ -221,6 +245,24 @@ if __name__ == "__main__":
             make_compose_call_inputs,
             i_compose_and_bind_call,
             np_compose_call,
+        ),
+        (
+            "literal_vector_exec",
+            make_literal_inputs,
+            i_literal_vector_exec,
+            np_literal_vector_add,
+        ),
+        (
+            "literal_vector_bind",
+            make_literal_inputs,
+            i_literal_vector_bind,
+            np_literal_vector_add,
+        ),
+        (
+            "literal_scalar_exec",
+            make_literal_inputs,
+            i_literal_scalar_exec,
+            np_literal_scalar_add,
         ),
     ]
 
