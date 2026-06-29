@@ -160,11 +160,26 @@ class Component:
         return Component(_ptr=ptr, _bindings=tuple(bindings))
 
     def __call__(self, *args: Any, into: Any = None) -> Any:
-        if args:
-            if into is not None:
-                raise TypeError("into= is only valid when executing with an empty call")
-            return self.bind(*args)
-        return self.exec(into=into)
+        if not args:
+            return self.exec(into=into)
+
+        if into is not None:
+            raise TypeError("into= is only valid when executing with an empty call")
+
+        result = self
+        pending_bindings = []
+        for arg in args:
+            if isinstance(arg, Component):
+                if pending_bindings:
+                    result = result.bind(*pending_bindings)
+                    pending_bindings = []
+                result = result.compose(arg)
+            else:
+                pending_bindings.append(arg)
+
+        if pending_bindings:
+            result = result.bind(*pending_bindings)
+        return result
 
     def _chain_bindings(self, other: Component) -> tuple[Any | None, ...]:
         paired = min(self._output_count(), len(_free_indices(other._bindings)))

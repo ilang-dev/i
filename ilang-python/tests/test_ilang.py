@@ -186,6 +186,24 @@ def i_chain_bound(x, y):
     return (f >> g(y))(x)()
 
 
+def make_compose_call_inputs():
+    return (rand((8,), seed=3),)
+
+
+def np_compose_call(x):
+    return np.exp(np.exp(x))
+
+
+def i_compose_call(x):
+    f = i("^i~i")
+    return f(f)(x)()
+
+
+def i_compose_and_bind_call(x):
+    f = i("^i~i")
+    return f(f, x)()
+
+
 if __name__ == "__main__":
     cases = [
         ("matmul", make_matmul_inputs, i_matmul, np_matmul),
@@ -197,6 +215,13 @@ if __name__ == "__main__":
         ("bind_sub", make_bind_inputs, i_bind_sub, np_bind_sub),
         ("bind_skip_sub", make_bind_inputs, i_bind_skip_sub, np_bind_sub),
         ("chain_bound", make_bind_inputs, i_chain_bound, np_chain_bound),
+        ("compose_call", make_compose_call_inputs, i_compose_call, np_compose_call),
+        (
+            "compose_and_bind_call",
+            make_compose_call_inputs,
+            i_compose_and_bind_call,
+            np_compose_call,
+        ),
     ]
 
     fails = 0
