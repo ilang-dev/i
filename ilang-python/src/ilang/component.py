@@ -51,14 +51,14 @@ class Component:
 
     def __init__(
         self,
-        src: str | None = None,
+        expr: str | None = None,
         _ptr: ctypes.c_void_p | None = None,
         _bindings: tuple[Any | None, ...] | None = None,
     ) -> None:
         if _ptr is None:
-            if src is None:
-                raise TypeError("Component needs source")
-            _ptr = ffi._core.i_parse(src.encode())
+            if expr is None:
+                raise TypeError("Component needs expression")
+            _ptr = ffi._core.i_parse(expr.encode())
         self._ptr: ctypes.c_void_p | None = ffi._check_ptr(_ptr)
         input_count = self._input_count()
         self._bindings: tuple[Any | None, ...] = (

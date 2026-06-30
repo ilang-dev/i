@@ -46,12 +46,12 @@ thread_local! {
 }
 
 #[no_mangle]
-pub extern "C" fn i_parse(src: *const c_char) -> *mut i_component {
-    let Some(src) = read_str(src) else {
-        return null_with_error("null source");
+pub extern "C" fn i_parse(expr: *const c_char) -> *mut i_component {
+    let Some(expr) = read_str(expr) else {
+        return null_with_error("null expression");
     };
 
-    match compiler::front::parse_component(src) {
+    match compiler::front::parse_component(expr) {
         Ok(inner) => Box::into_raw(Box::new(i_component { inner })),
         Err(err) => null_with_error(format!("{err:?}")),
     }

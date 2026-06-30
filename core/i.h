@@ -43,7 +43,7 @@ typedef enum {
   I_INPUT_BOUND = 1,
 } i_input_state;
 
-i_component* i_parse(const char* src);
+i_component* i_parse(const char* expr);
 i_component* i_identity(void);
 
 i_component* i_chain(const i_component* left, const i_component* right);

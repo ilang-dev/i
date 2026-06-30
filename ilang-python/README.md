@@ -44,7 +44,7 @@ A component is a parsed 𝚒 program tree.
 f = i("ik*kj~ij")
 ```
 
-`i(src: str) -> Component` parses one component from source text.
+`i(expr: str) -> Component` parses one 𝚒 expression.
 
 `i.I` is the identity component. Forwards one input to one output.
 
