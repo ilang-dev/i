@@ -2,6 +2,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct i_component i_component;
 typedef struct i_program i_program;
 
@@ -34,20 +38,32 @@ typedef enum {
   I_DEVICE_CUDA = 1,
 } i_device;
 
+typedef enum {
+  I_INPUT_FREE = 0,
+  I_INPUT_BOUND = 1,
+} i_input_state;
+
 i_component* i_parse(const char* src);
 i_component* i_identity(void);
+
 i_component* i_chain(const i_component* left, const i_component* right);
 i_component* i_compose(const i_component* left, const i_component* right);
 i_component* i_fanout(const i_component* left, const i_component* right);
 i_component* i_pair(const i_component* left, const i_component* right);
 i_component* i_swap(const i_component* component);
+i_component* i_bind_input(const i_component* component, size_t input);
+
+int i_component_input_count(const i_component* component, size_t* out);
+int i_component_output_count(const i_component* component, size_t* out);
+int i_component_input_states(const i_component* component, int* states);
 
 char* i_code(const i_component* component);
 char* i_cuda_code(const i_component* component);
+
 i_program* i_compile(const i_component* component);
 i_program* i_cuda_compile(const i_component* component);
-
 i_device i_program_device(const i_program* program);
+
 float* i_cuda_alloc(size_t len);
 void i_cuda_free(float* data);
 int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
@@ -77,7 +93,12 @@ i_outputs i_exec(
 );
 
 const char* i_error(void);
+
 void i_component_free(i_component* component);
 void i_program_free(i_program* program);
 void i_outputs_free(i_outputs outputs);
 void i_string_free(char* s);
+
+#ifdef __cplusplus
+}
+#endif
