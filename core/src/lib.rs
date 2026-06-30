@@ -5,7 +5,7 @@ use backends::{Device as i_device, Program as i_program};
 use compiler::ir::component::Component;
 use compiler::ir::graph::Input;
 use std::cell::RefCell;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
 
 #[repr(C)]
@@ -205,13 +205,13 @@ pub unsafe extern "C" fn i_component_input_states(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_code(component: *const i_component) -> *mut c_char {
+pub unsafe extern "C" fn i_code(component: *const i_component, device: i_device) -> *mut c_char {
     let Some(component) = component.as_ref() else {
         set_error("null component");
         return ptr::null_mut();
     };
 
-    match render_component(&component.inner).and_then(|source| {
+    match render_component(&component.inner, device).and_then(|source| {
         CString::new(source).map_err(|_| "source contains interior NUL".to_string())
     }) {
         Ok(source) => source.into_raw(),
@@ -223,42 +223,15 @@ pub unsafe extern "C" fn i_code(component: *const i_component) -> *mut c_char {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_cuda_code(component: *const i_component) -> *mut c_char {
-    let Some(component) = component.as_ref() else {
-        set_error("null component");
-        return ptr::null_mut();
-    };
-
-    match render_cuda_component(&component.inner).and_then(|source| {
-        CString::new(source).map_err(|_| "source contains interior NUL".to_string())
-    }) {
-        Ok(source) => source.into_raw(),
-        Err(err) => {
-            set_error(err);
-            ptr::null_mut()
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn i_compile(component: *const i_component) -> *mut i_program {
+pub unsafe extern "C" fn i_compile(
+    component: *const i_component,
+    device: i_device,
+) -> *mut i_program {
     let Some(component) = component.as_ref() else {
         return null_with_error("null component");
     };
 
-    match compile(&component.inner) {
-        Ok(program) => Box::into_raw(Box::new(program)),
-        Err(err) => null_with_error(err),
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn i_cuda_compile(component: *const i_component) -> *mut i_program {
-    let Some(component) = component.as_ref() else {
-        return null_with_error("null component");
-    };
-
-    match compile_cuda(&component.inner) {
+    match compile(&component.inner, device) {
         Ok(program) => Box::into_raw(Box::new(program)),
         Err(err) => null_with_error(err),
     }
@@ -274,63 +247,97 @@ pub unsafe extern "C" fn i_program_device(program: *const i_program) -> i_device
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_cuda_alloc(len: usize) -> *mut f32 {
-    match backends::cuda::runtime() {
-        Ok(runtime) => {
-            let ptr = runtime.alloc(len);
+pub unsafe extern "C" fn i_alloc(device: i_device, len: usize) -> *mut f32 {
+    match device {
+        i_device::I_DEVICE_CPU => {
+            let Some(bytes) = len.checked_mul(std::mem::size_of::<f32>()) else {
+                return null_with_error("allocation size overflow");
+            };
+            let ptr = malloc(bytes.max(1)) as *mut f32;
             if ptr.is_null() {
-                set_error("cuda allocation failed");
+                set_error("allocation failed");
             }
             ptr
         }
-        Err(err) => null_with_error(err),
+        i_device::I_DEVICE_CUDA => match backends::cuda::runtime() {
+            Ok(runtime) => {
+                let ptr = runtime.alloc(len);
+                if ptr.is_null() {
+                    set_error("allocation failed");
+                }
+                ptr
+            }
+            Err(err) => null_with_error(err),
+        },
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_cuda_free(data: *mut f32) {
+pub unsafe extern "C" fn i_free(device: i_device, data: *mut f32) {
     if data.is_null() {
         return;
     }
-    match backends::cuda::runtime() {
-        Ok(runtime) => runtime.free(data),
-        Err(err) => set_error(err),
+
+    match device {
+        i_device::I_DEVICE_CPU => free(data.cast::<c_void>()),
+        i_device::I_DEVICE_CUDA => match backends::cuda::runtime() {
+            Ok(runtime) => runtime.free(data),
+            Err(err) => set_error(err),
+        },
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_cuda_copy_from_host(dst: *mut f32, src: *const f32, len: usize) -> i32 {
+pub unsafe extern "C" fn i_copy(
+    dst_device: i_device,
+    dst: *mut f32,
+    src_device: i_device,
+    src: *const f32,
+    len: usize,
+) -> i32 {
     if len > 0 && (dst.is_null() || src.is_null()) {
-        set_error("null cuda copy pointer");
+        set_error("null copy pointer");
         return -1;
     }
-    match backends::cuda::runtime() {
-        Ok(runtime) => {
-            runtime.copy_from_host(dst, src, len);
-            0
-        }
-        Err(err) => {
-            set_error(err);
-            -1
-        }
+    if len == 0 {
+        return 0;
     }
-}
 
-#[no_mangle]
-pub unsafe extern "C" fn i_cuda_copy_to_host(dst: *mut f32, src: *const f32, len: usize) -> i32 {
-    if len > 0 && (dst.is_null() || src.is_null()) {
-        set_error("null cuda copy pointer");
-        return -1;
-    }
-    match backends::cuda::runtime() {
-        Ok(runtime) => {
-            runtime.copy_to_host(dst, src, len);
+    match (dst_device, src_device) {
+        (i_device::I_DEVICE_CPU, i_device::I_DEVICE_CPU) => {
+            ptr::copy_nonoverlapping(src, dst, len);
             0
         }
-        Err(err) => {
-            set_error(err);
-            -1
-        }
+        (i_device::I_DEVICE_CUDA, i_device::I_DEVICE_CPU) => match backends::cuda::runtime() {
+            Ok(runtime) => {
+                runtime.copy_from_host(dst, src, len);
+                0
+            }
+            Err(err) => {
+                set_error(err);
+                -1
+            }
+        },
+        (i_device::I_DEVICE_CPU, i_device::I_DEVICE_CUDA) => match backends::cuda::runtime() {
+            Ok(runtime) => {
+                runtime.copy_to_host(dst, src, len);
+                0
+            }
+            Err(err) => {
+                set_error(err);
+                -1
+            }
+        },
+        (i_device::I_DEVICE_CUDA, i_device::I_DEVICE_CUDA) => match backends::cuda::runtime() {
+            Ok(runtime) => {
+                runtime.copy(dst, src, len);
+                0
+            }
+            Err(err) => {
+                set_error(err);
+                -1
+            }
+        },
     }
 }
 
@@ -517,6 +524,11 @@ pub extern "C" fn i_error() -> *const c_char {
     })
 }
 
+extern "C" {
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+}
+
 unsafe fn combine(
     left: *const i_component,
     right: *const i_component,
@@ -534,20 +546,18 @@ unsafe fn combine(
     }))
 }
 
-fn compile(component: &Component) -> Result<i_program, String> {
-    backends::cpu::compile(component)
+fn compile(component: &Component, device: i_device) -> Result<i_program, String> {
+    match device {
+        i_device::I_DEVICE_CPU => backends::cpu::compile(component),
+        i_device::I_DEVICE_CUDA => backends::cuda::compile(component),
+    }
 }
 
-fn compile_cuda(component: &Component) -> Result<i_program, String> {
-    backends::cuda::compile(component)
-}
-
-fn render_component(component: &Component) -> Result<String, String> {
-    backends::cpu::render(component)
-}
-
-fn render_cuda_component(component: &Component) -> Result<String, String> {
-    backends::cuda::render(component)
+fn render_component(component: &Component, device: i_device) -> Result<String, String> {
+    match device {
+        i_device::I_DEVICE_CPU => backends::cpu::render(component),
+        i_device::I_DEVICE_CUDA => backends::cuda::render(component),
+    }
 }
 
 fn component_boundary(component: &Component) -> Result<(Vec<Input>, usize), String> {

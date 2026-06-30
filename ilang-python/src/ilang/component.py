@@ -220,20 +220,23 @@ class Component:
     def __invert__(self) -> Component:
         return self.swap()
 
-    def _compile(self) -> ctypes.c_void_p:
-        if self._program is None:
-            self._program = ffi._check_ptr(ffi._core.i_compile(self._ptr))  # type: ignore[arg-type]
-        return self._program
+    def _compile(self, device: Device = Device.CPU) -> ctypes.c_void_p:
+        if device is Device.CPU:
+            if self._program is None:
+                self._program = ffi._check_ptr(
+                    ffi._core.i_compile(self._ptr, device._as_ffi())  # type: ignore[arg-type]
+                )
+            return self._program
 
-    def _cuda_compile(self) -> ctypes.c_void_p:
         if self._cuda_program is None:
             self._cuda_program = ffi._check_ptr(
-                ffi._core.i_cuda_compile(self._ptr),  # type: ignore[arg-type]
+                ffi._core.i_compile(self._ptr, device._as_ffi())  # type: ignore[arg-type]
             )
         return self._cuda_program
 
-    def _code(self) -> str:
-        s = ffi._check_ptr(ffi._core.i_code(self._ptr))  # type: ignore[arg-type]
+    def _code(self, device: Device | str = Device.CPU) -> str:
+        device = Device.coerce(device)
+        s = ffi._check_ptr(ffi._core.i_code(self._ptr, device._as_ffi()))  # type: ignore[arg-type]
         try:
             ptr = ctypes.cast(s, ctypes.c_char_p).value
             if ptr is None:
@@ -243,14 +246,7 @@ class Component:
             ffi._core.i_string_free(s)
 
     def _cuda_code(self) -> str:
-        s = ffi._check_ptr(ffi._core.i_cuda_code(self._ptr))  # type: ignore[arg-type]
-        try:
-            ptr = ctypes.cast(s, ctypes.c_char_p).value
-            if ptr is None:
-                raise RuntimeError("Failed to decode None pointer")
-            return ptr.decode()
-        finally:
-            ffi._core.i_string_free(s)
+        return self._code(Device.CUDA)
 
     def _physical_inputs(self, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
         free = _free_indices(self._bindings)
@@ -292,7 +288,7 @@ class Component:
     def exec(self, *inputs: Any, into: Any = None) -> Any:
         inputs = self._physical_inputs(inputs)
         target, device = _resolve_target(inputs, into)
-        program = self._compile() if device is Device.CPU else self._cuda_compile()
+        program = self._compile(device)
         if target == "tensor" and device is Device.CPU:
             return self._exec_owned(program, *inputs)
         return self._exec_allocated(program, target, device, *inputs)

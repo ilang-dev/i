@@ -99,36 +99,23 @@ def _bind_functions(core: ctypes.CDLL) -> None:
     core.i_component_output_count.restype = ctypes.c_int
     core.i_component_input_states.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     core.i_component_input_states.restype = ctypes.c_int
-    core.i_code.argtypes = [ctypes.c_void_p]
+    core.i_code.argtypes = [ctypes.c_void_p, ctypes.c_int]
     core.i_code.restype = ctypes.c_void_p
-    core.i_cuda_code.argtypes = [ctypes.c_void_p]
-    core.i_cuda_code.restype = ctypes.c_void_p
-    core.i_compile.argtypes = [ctypes.c_void_p]
+    core.i_compile.argtypes = [ctypes.c_void_p, ctypes.c_int]
     core.i_compile.restype = ctypes.c_void_p
-    core.i_cuda_compile.argtypes = [ctypes.c_void_p]
-    core.i_cuda_compile.restype = ctypes.c_void_p
-    if hasattr(core, "i_program_device"):
-        core.i_program_device.argtypes = [ctypes.c_void_p]
-        core.i_program_device.restype = ctypes.c_int
-    if hasattr(core, "i_cuda_alloc"):
-        core.i_cuda_alloc.argtypes = [ctypes.c_size_t]
-        core.i_cuda_alloc.restype = ctypes.c_void_p
-    if hasattr(core, "i_cuda_free"):
-        core.i_cuda_free.argtypes = [ctypes.POINTER(ctypes.c_float)]
-    if hasattr(core, "i_cuda_copy_from_host"):
-        core.i_cuda_copy_from_host.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_size_t,
-        ]
-        core.i_cuda_copy_from_host.restype = ctypes.c_int
-    if hasattr(core, "i_cuda_copy_to_host"):
-        core.i_cuda_copy_to_host.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_size_t,
-        ]
-        core.i_cuda_copy_to_host.restype = ctypes.c_int
+    core.i_program_device.argtypes = [ctypes.c_void_p]
+    core.i_program_device.restype = ctypes.c_int
+    core.i_alloc.argtypes = [ctypes.c_int, ctypes.c_size_t]
+    core.i_alloc.restype = ctypes.c_void_p
+    core.i_free.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
+    core.i_copy.argtypes = [
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_size_t,
+    ]
+    core.i_copy.restype = ctypes.c_int
     core.i_output_count.argtypes = [ctypes.c_void_p]
     core.i_output_count.restype = ctypes.c_size_t
     core.i_output_ranks.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]

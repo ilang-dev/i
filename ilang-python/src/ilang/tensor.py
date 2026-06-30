@@ -15,6 +15,9 @@ class Device(Enum):
     CPU = "cpu"
     CUDA = "cuda"
 
+    def _as_ffi(self) -> int:
+        return 0 if self is Device.CPU else 1
+
     @classmethod
     def coerce(cls, value: Device | str) -> Device:
         if isinstance(value, Device):
@@ -83,15 +86,16 @@ class _OwnedOutputs:
             ffi._core.i_outputs_free(outputs)
 
 
-class _CudaOwner:
-    def __init__(self, data: Any) -> None:
+class _DeviceOwner:
+    def __init__(self, device: Device, data: Any) -> None:
+        self.device = device
         self.data: Any | None = data
 
     def __del__(self) -> None:
         data = getattr(self, "data", None)
         if data is not None:
             self.data = None
-            ffi._core.i_cuda_free(data)
+            ffi._core.i_free(self.device._as_ffi(), data)
 
 
 class Tensor:
@@ -113,7 +117,7 @@ class Tensor:
         self._len: int = len(data)
         self._data: Any = (ctypes.c_float * self._len)(*data)
         self._shape, self._shape_buf = _shape_array(self.shape)
-        self._owner: _OwnedOutputs | _CudaOwner | None = None
+        self._owner: _OwnedOutputs | _DeviceOwner | None = None
         if device is Device.CUDA:
             moved = self.to(Device.CUDA)
             self.device = moved.device
@@ -152,9 +156,9 @@ class Tensor:
                 self._data = ctypes.cast(torch_owner.data_ptr(), ctypes.POINTER(ctypes.c_float))
                 self._owner = torch_owner
             else:
-                data = ffi._check_ptr(ffi._core.i_cuda_alloc(self._len))
+                data = ffi._check_ptr(ffi._core.i_alloc(device._as_ffi(), self._len))
                 self._data = ctypes.cast(data, ctypes.POINTER(ctypes.c_float))
-                self._owner = _CudaOwner(self._data)
+                self._owner = _DeviceOwner(device, self._data)
         return self
 
     @property
@@ -170,14 +174,15 @@ class Tensor:
         if device is self.device:
             return self
         out = Tensor._empty(self.shape, device)
-        if self.device is Device.CPU and device is Device.CUDA:
-            ffi._check(
-                ffi._core.i_cuda_copy_from_host(out._data, self._data, self._len)
+        ffi._check(
+            ffi._core.i_copy(
+                out.device._as_ffi(),
+                out._data,
+                self.device._as_ffi(),
+                self._data,
+                self._len,
             )
-        elif self.device is Device.CUDA and device is Device.CPU:
-            ffi._check(ffi._core.i_cuda_copy_to_host(out._data, self._data, self._len))
-        else:
-            raise RuntimeError(f"unsupported tensor copy {self.device} -> {device}")
+        )
         return out
 
     def _view(self) -> ffi._CTensor:

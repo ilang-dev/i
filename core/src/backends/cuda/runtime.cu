@@ -21,3 +21,7 @@ extern "C" void i_cuda_tensor_copy_from_host(float* dst, const float* src, size_
 extern "C" void i_cuda_tensor_copy_to_host(float* dst, const float* src, size_t len) {
   CUDA_CHECK(cudaMemcpy(dst, src, len * sizeof(float), cudaMemcpyDeviceToHost));
 }
+
+extern "C" void i_cuda_tensor_copy(float* dst, const float* src, size_t len) {
+  CUDA_CHECK(cudaMemcpy(dst, src, len * sizeof(float), cudaMemcpyDeviceToDevice));
+}

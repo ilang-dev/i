@@ -57,17 +57,13 @@ int i_component_input_count(const i_component* component, size_t* out);
 int i_component_output_count(const i_component* component, size_t* out);
 int i_component_input_states(const i_component* component, int* states);
 
-char* i_code(const i_component* component);
-char* i_cuda_code(const i_component* component);
-
-i_program* i_compile(const i_component* component);
-i_program* i_cuda_compile(const i_component* component);
+char* i_code(const i_component* component, i_device device);
+i_program* i_compile(const i_component* component, i_device device);
 i_device i_program_device(const i_program* program);
 
-float* i_cuda_alloc(size_t len);
-void i_cuda_free(float* data);
-int i_cuda_copy_from_host(float* dst, const float* src, size_t len);
-int i_cuda_copy_to_host(float* dst, const float* src, size_t len);
+float* i_alloc(i_device device, size_t len);
+void i_free(i_device device, float* data);
+int i_copy(i_device dst_device, float* dst, i_device src_device, const float* src, size_t len);
 
 size_t i_output_count(const i_program* program);
 int i_output_ranks(const i_program* program, size_t* ranks);

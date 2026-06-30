@@ -90,10 +90,10 @@ Private inspection helpers return generated C/CUDA source strings.
 
 ```python
 f._code()
-f._cuda_code()
+f._code("cuda")
 ```
 
-These methods are diagnostic API.
+This method is diagnostic API.
 
 ## Tensors
 

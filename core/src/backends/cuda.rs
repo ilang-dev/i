@@ -16,6 +16,7 @@ pub struct CudaRuntime {
     free: unsafe extern "C" fn(*mut f32),
     copy_from_host: unsafe extern "C" fn(*mut f32, *const f32, usize),
     copy_to_host: unsafe extern "C" fn(*mut f32, *const f32, usize),
+    copy: unsafe extern "C" fn(*mut f32, *const f32, usize),
 }
 
 unsafe impl Send for CudaRuntime {}
@@ -61,6 +62,10 @@ impl CudaRuntime {
     pub unsafe fn copy_to_host(&self, dst: *mut f32, src: *const f32, len: usize) {
         (self.copy_to_host)(dst, src, len);
     }
+
+    pub unsafe fn copy(&self, dst: *mut f32, src: *const f32, len: usize) {
+        (self.copy)(dst, src, len);
+    }
 }
 
 impl Drop for CudaRuntime {
@@ -94,6 +99,8 @@ fn build_runtime() -> Result<CudaRuntime, String> {
         let copy_to_host = library.symbol::<unsafe extern "C" fn(*mut f32, *const f32, usize)>(
             c"i_cuda_tensor_copy_to_host",
         )?;
+        let copy = library
+            .symbol::<unsafe extern "C" fn(*mut f32, *const f32, usize)>(c"i_cuda_tensor_copy")?;
         Ok(CudaRuntime {
             _library: library,
             path,
@@ -101,6 +108,7 @@ fn build_runtime() -> Result<CudaRuntime, String> {
             free,
             copy_from_host,
             copy_to_host,
+            copy,
         })
     }
 }
