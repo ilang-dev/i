@@ -15,8 +15,18 @@ class Device(Enum):
     CPU = "cpu"
     CUDA = "cuda"
 
+    @staticmethod
+    def Remote(url: str) -> Any:
+        from .remote import RemoteDevice
+
+        return RemoteDevice(url)
+
     @classmethod
-    def coerce(cls, value: Device | str) -> Device:
+    def coerce(cls, value: Any) -> Any:
+        from .remote import is_remote_device
+
+        if is_remote_device(value):
+            return value
         if isinstance(value, Device):
             return value
         name = str(value).lower()
@@ -100,7 +110,7 @@ class Tensor:
         x: Any,
         shape: tuple[int, ...] | None = None,
         *,
-        device: Device | str = Device.CPU,
+        device: Any = Device.CPU,
     ) -> None:
         device = Device.coerce(device)
         if shape is None:
@@ -109,15 +119,22 @@ class Tensor:
             shape = tuple(int(d) for d in shape)
             data = [float(v) for v in x]
         self.shape: tuple[int, ...] = tuple(shape)
-        self.device: Device = Device.CPU
+        self.device: Any = Device.CPU
         self._len: int = len(data)
         self._data: Any = (ctypes.c_float * self._len)(*data)
         self._shape, self._shape_buf = _shape_array(self.shape)
-        self._owner: _OwnedOutputs | _CudaOwner | None = None
+        self._owner: Any = None
         if device is Device.CUDA:
             moved = self.to(Device.CUDA)
             self.device = moved.device
             self._data = moved._data
+            self._owner = moved._owner
+            moved._owner = None
+        elif getattr(device, "_is_ilang_remote_device", False):
+            moved = self.to(device)
+            self.device = moved.device
+            self._data = None
+            self._remote_id = moved._remote_id
             self._owner = moved._owner
             moved._owner = None
 
@@ -136,7 +153,7 @@ class Tensor:
         return self
 
     @classmethod
-    def _empty(cls, shape: tuple[int, ...], device: Device | str) -> Tensor:
+    def _empty(cls, shape: tuple[int, ...], device: Any) -> Tensor:
         device = Device.coerce(device)
         self: Tensor = cls.__new__(cls)
         self.shape = tuple(int(d) for d in shape)
@@ -157,18 +174,46 @@ class Tensor:
                 self._owner = _CudaOwner(self._data)
         return self
 
+    @classmethod
+    def _remote(cls, shape: tuple[int, ...], device: Any, tensor_id: str) -> Tensor:
+        from .remote.client import RemoteTensorOwner
+
+        self: Tensor = cls.__new__(cls)
+        self.shape = tuple(int(d) for d in shape)
+        self.device = device
+        self._len = _numel(self.shape)
+        self._data = None
+        self._shape, self._shape_buf = _shape_array(self.shape)
+        self._remote_id = str(tensor_id)
+        self._owner = RemoteTensorOwner(device, self._remote_id)
+        return self
+
     @property
     def data(self) -> list[float]:
+        from .remote import is_remote_device
+
+        if is_remote_device(self.device):
+            raise RuntimeError(
+                "remote tensor data is not directly accessible; call .to(Device.CPU) first"
+            )
         if self.device is not Device.CPU:
             raise RuntimeError(
                 "CUDA tensor data is not directly accessible; call .to(Device.CPU) first"
             )
         return [self._data[i] for i in range(self._len)]
 
-    def to(self, device: Device | str) -> Tensor:
+    def to(self, device: Any) -> Tensor:
+        from .remote import is_remote_device
+
         device = Device.coerce(device)
-        if device is self.device:
+        if device == self.device:
             return self
+        if is_remote_device(self.device):
+            if device is Device.CPU:
+                return self.device.download(self)
+            raise RuntimeError(f"unsupported tensor copy {self.device} -> {device}")
+        if is_remote_device(device):
+            return device.upload(self)
         out = Tensor._empty(self.shape, device)
         if self.device is Device.CPU and device is Device.CUDA:
             ffi._check(
@@ -181,6 +226,10 @@ class Tensor:
         return out
 
     def _view(self) -> ffi._CTensor:
+        from .remote import is_remote_device
+
+        if is_remote_device(self.device):
+            raise RuntimeError("remote tensors do not have local ctypes views")
         try:
             import torch
 
@@ -195,6 +244,10 @@ class Tensor:
         self._owner = None
 
     def __repr__(self) -> str:
+        from .remote import is_remote_device
+
         if self.device is Device.CPU:
             return f"Tensor(shape={self.shape}, device=CPU, data={self.data})"
+        if is_remote_device(self.device):
+            return f"Tensor(shape={self.shape}, device={self.device!r})"
         return f"Tensor(shape={self.shape}, device=CUDA)"

@@ -292,6 +292,15 @@ class Component:
     def exec(self, *inputs: Any, into: Any = None) -> Any:
         inputs = self._physical_inputs(inputs)
         target, device = _resolve_target(inputs, into)
+        from .remote import is_remote_device, exec_remote
+
+        if is_remote_device(device):
+            if target != "tensor":
+                raise TypeError(
+                    "remote execution returns remote i.Tensor outputs; "
+                    "download explicitly with .to(i.Device.CPU)"
+                )
+            return exec_remote(self, device, inputs, into=into)
         program = self._compile() if device is Device.CPU else self._cuda_compile()
         if target == "tensor" and device is Device.CPU:
             return self._exec_owned(program, *inputs)
