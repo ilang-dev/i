@@ -123,87 +123,27 @@ out = matmul.exec(x, y)
 
 `Component.exec(*inputs: TensorLike, into=None)` executes one component.
 
-For the purpose of this doc: `TensorLike = Tensor | torch.Tensor | numpy.ndarray
-| nested Python sequence`
+where `TensorLike = Tensor | torch.Tensor | numpy.ndarray | nested Python
+sequence`
 
 Execution device is determined by the input devices. All inputs must use the
-same device or an error will be raised.
-
-### Input types
-
-Inputs must be homogeneous by result type unless `into` is supplied.
-
-Supported input types:
-
-- `ilang.Tensor`
-- Python scalars and rectangular nested `list`/`tuple` values
-- `numpy.ndarray`
-- `torch.Tensor`
-
-NumPy inputs:
-
-- must be `float32`
-- must be C-contiguous
-- are CPU inputs
-
-Torch inputs:
-
-- must be `torch.float32`
-- must be contiguous
-- may be CPU or CUDA
-
-`ilang.Tensor` inputs carry their own device. Python scalars/lists are
-promoted to CPU `ilang.Tensor` inputs.
+same device. NumPy/Torch inputs must be contiguous and of dtype `float32`.
+Python scalars/lists get promoted to CPU `ilang.Tensor`.
 
 ### Output type inference
 
-Without `into`, the output container type is inferred from the input container
-type.
+The output container type and device are inferred from the input. For example,
+`f.exec(torch.tensor([...], device="cuda"))` returns an `torch.Tensor` with
+`device="cuda"`. This can be overridden with `into=`: `f.exec(nparray,
+into=i.Tensor)`.
 
-```python
-f.exec(i.Tensor(...))  # returns ilang.Tensor or tuple[ilang.Tensor, ...]
-f.exec([1, 2, 3])      # returns ilang.Tensor or tuple[ilang.Tensor, ...]
-f.exec(np_array)       # returns numpy.ndarray or tuple[numpy.ndarray, ...]
-f.exec(torch_tensor)   # returns torch.Tensor or tuple[torch.Tensor, ...]
-```
+In general, component execution returns `Tuple[Tensor]` but is automatically
+unpacked for single output results.
 
-A single-output component returns one object. A multi-output component returns
-a tuple in output order.
+### Shape inference
 
-Output device follows execution device:
-
-- CPU `ilang.Tensor` inputs produce CPU `ilang.Tensor` outputs.
-- CUDA `ilang.Tensor` inputs produce CUDA `ilang.Tensor` outputs.
-- CPU Torch inputs produce CPU Torch outputs.
-- CUDA Torch inputs produce CUDA Torch outputs.
-- NumPy outputs are CPU-only.
-
-### Explicit output target
-
-`into` selects the output container family.
-
-```python
-f.exec(x, into=i.Tensor)
-f.exec(x, into=np.ndarray)
-f.exec(x, into=torch.Tensor)
-```
-
-Accepted tensor aliases are `"tensor"`, `"ilang"`, and `"i"`.
-
-Accepted NumPy aliases are `"numpy"` and `"np"`.
-
-Accepted Torch aliases is `"torch"`.
-
-CUDA execution with NumPy output is invalid.
-
-### Shape metadata
-
-```python
-shapes = f.output_shapes(*inputs)
-```
-
-`output_shapes` returns one shape tuple per output. Shapes are computed from
-input shapes without executing kernels.
+`Component.output_shapes(*inputs)` returns one shape tuple per output. Shapes
+are computed from input shapes without executing any kernels.
 
 ## Benchmarking
 
