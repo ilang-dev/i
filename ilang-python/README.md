@@ -1,5 +1,3 @@
-# ilang-python
-
 Python front-end for 𝚒.
 
 This package exposes 𝚒 components as Python objects. Components compile lazily,
@@ -22,9 +20,9 @@ Exports:
 
 ## Preferred "DSL-style" API
 
-The package exported object `i` acts as a callable "namespace" that enables a
-more compact style of 𝚒 code. When called, it acts as a `Component` constructor,
-but it also re-exposes much of the same package-level API.
+The package-exported object `i` acts as a callable "namespace" that enables a
+more compact style of 𝚒 code. When called, it constructors a `Component`, but
+it also re-exposes much of the same package-level API as attributes.
 
 ```python
 from ilang import i
@@ -36,146 +34,100 @@ i.Device    # <enum 'Device'>
 i.I         # mirrors `ilang.Component.I`
 ```
 
-## Components
+## Devices
 
-A component is a parsed 𝚒 program tree.
+A `Device` dictates where data lives and where compuation will run.
 
 ```python
-f = i("ik*kj~ij")
+i.Device.CPU  # "cpu"
+i.Device.CUDA # "cuda"
 ```
+
+## Tensors
+
+`Tensor`s are immutable multidimensional data arrays.
+
+```python
+x = i.Tensor([[1, 2], [3, 4]]) # standard construction does shape-inference on nested list
+x = i.Tensor([1, 2, 3, 4], shape=(2, 2)) # flat data with shape also works
+```
+
+Values are stored as `float32`.
+
+### Attributes
+
+```python
+x.shape  # tuple[int, ...]
+x.device # i.Device.CPU or i.Device.CUDA
+x.data   # list[float] (only available on CPU tensors)
+```
+
+### Methods
+
+```python
+Tensor.to(device i.Device) -> Tensor # gives a new tensor on specified device
+
+# examples:
+x.to(i.Device.CUDA)
+x.to(i.Device.CPU)
+x.to("cuda")
+x.to("cpu")
+```
+
+## Components
 
 `i(expr: str) -> Component` parses one 𝚒 expression.
 
-`i.I` is the identity component. Forwards one input to one output.
+```python
+f = i("+ij~i") # row-sum
+```
+
+`i.I` is the identity component.
 
 ### Component combinators
 
-Components are immutable. Every combinator returns a new component.
+Components are combined using combinators. Components are immutable, so
+combinators each return a new component.
+
+Method forms:
 
 ```python
-f.compose(g)
-f.chain(g)
-f.fanout(g)
-f.pair(g)
-f.swap()
+f.compose(g) # wires outputs of the right component into inputs of the left component
+f.chain(g)   # wires outputs of the left component into inputs of the right component
+f.fanout(g)  # shares inputs pairwise between two components
+f.pair(g)    # concatenates the inputs and outputs of two components
+f.swap()     # swaps the first two outputs of one component
 ```
 
 Operator forms:
 
 ```python
-f << g   # f.compose(g)
-f >> g   # f.chain(g)
-f & g    # f.fanout(g)
-f | g    # f.pair(g)
-~f       # f.swap()
+f << g # f.compose(g)
+f >> g # f.chain(g)
+f & g  # f.fanout(g)
+f | g  # f.pair(g)
+~f     # f.swap()
 ```
 
-Semantics:
-
-- `compose` wires outputs of the right component into inputs of the left component.
-- `chain` wires outputs of the left component into inputs of the right component.
-- `fanout` shares inputs pairwise between two components.
-- `pair` concatenates the inputs and outputs of two components.
-- `swap` swaps the first two outputs of one component.
-
-A string operand is parsed as a component before combination.
+Example:
 
 ```python
-f = i("ik*kj~ijk") >> i("+ijk~ij")
+matmul = i("ik*kj~ijk") >> i("+ijk~ij")
 ```
-
-### Generated source
-
-Private inspection helpers return generated C/CUDA source strings.
-
-```python
-f._code()
-f._code("cuda")
-```
-
-This method is diagnostic API.
-
-## Tensors
-
-`Tensor` is the native Python tensor type for 𝚒.
-
-```python
-x = i.Tensor([[1, 2], [3, 4]])
-```
-
-Construction accepts a scalar or rectangular nested Python lists. Values are
-stored as `float32`.
-
-Explicit flat data and shape are accepted.
-
-```python
-x = i.Tensor([1, 2, 3, 4], shape=(2, 2))
-```
-
-### Tensor attributes
-
-```python
-x.shape   # tuple[int, ...]
-x.device  # i.Device.CPU or i.Device.CUDA
-```
-
-### Tensor data
-
-```python
-x.data  # list[float]
-```
-
-`data` is defined only for CPU tensors. CUDA tensor data is not directly
-accessible.
-
-```python
-x.to(i.Device.CPU).data
-```
-
-### Devices
-
-```python
-i.Device.CPU
-i.Device.CUDA
-```
-
-String aliases are accepted where a device is required:
-
-```python
-"cpu"
-"cuda"
-"gpu"
-```
-
-### Tensor transfer
-
-```python
-x_cuda = x.to("cuda")
-x_cpu = x_cuda.to("cpu")
-```
-
-`to` returns a tensor. If the tensor is already on the requested device, the
-same object is returned. Otherwise a new tensor is allocated and copied.
-
-CUDA tensor allocation and copy are implemented by a lazily generated CUDA
-tensor runtime library. The core library does not link CUDA directly.
 
 ## Execution
 
 ```python
-y = f.exec(x)
+out = matmul.exec(x, y)
 ```
 
-`Component.exec(*inputs, into=None)` executes one component.
+`Component.exec(*inputs: TensorLike, into=None)` executes one component.
 
-Execution device is determined by the input devices:
+For the purpose of this doc: `TensorLike = Tensor | torch.Tensor | numpy.ndarray
+| nested Python sequence`
 
-- All CPU inputs execute the CPU program.
-- All CUDA inputs execute the CUDA program.
-- Mixed-device inputs are invalid.
-
-The component compiles lazily for the selected backend. CPU execution uses
-generated C. CUDA execution uses generated CUDA.
+Execution device is determined by the input devices. All inputs must use the
+same device or an error will be raised.
 
 ### Input types
 
