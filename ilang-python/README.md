@@ -21,7 +21,7 @@ Exports:
 ## Preferred "DSL-style" API
 
 The package-exported object `i` acts as a callable "namespace" that enables a
-more compact style of 𝚒 code. When called, it constructors a `Component`, but
+more compact style of 𝚒 code. When called, it constructs a `Component`, but
 it also re-exposes much of the same package-level API as attributes.
 
 ```python
