@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _load_core() -> ctypes.CDLL:
-    override = os.environ.get("ILANG_CORE_LIB")
+    override = os.environ.get("I_CORE_LIB")
     if override:
         return ctypes.CDLL(override)
 
