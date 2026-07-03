@@ -132,7 +132,7 @@ graphs called 𝚒 _components_.
 | `>>`   | chain   | `(f >> g)(x) = g(f(x))`         |
 | `&`    | fanout  | `(f & g)(x) = (f(x), g(x))`     |
 | `\|`   | pair    | `(f \| g)(x, y) = (f(x), g(y))` |
-| `~`    | swap    | `~(f, g) = (f, g)`              |
+| `~`    | swap    | `~(f, g) = (g, f)`              |
 
 ## The 𝚒 scheduling model
 
