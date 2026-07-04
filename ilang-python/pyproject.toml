@@ -16,6 +16,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ilang"]
+pure-python = false
+artifacts = [
+    "src/ilang/libi_core.so",
+    "src/ilang/libi_core.dylib",
+]
 
 [tool.ruff]
 target-version = "py310"
