@@ -1,1 +1,10 @@
 __pycache__/
+
+# Python build output
+dist/
+build/
+*.egg-info/
+
+# Native libraries copied into the package during release builds
+src/ilang/libi_core.so
+src/ilang/libi_core.dylib
