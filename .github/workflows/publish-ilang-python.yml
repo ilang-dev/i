@@ -1,0 +1,78 @@
+name: Publish ilang-python
+
+on:
+  push:
+    tags:
+      - "ilang-python-v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-13
+          - macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cibuildwheel twine
+
+      - name: Build wheels
+        run: python -m cibuildwheel ilang-python --output-dir wheelhouse
+        env:
+          # Build one Python-independent wheel per platform. The package uses
+          # ctypes to load a bundled Rust cdylib, so it should be py3-none-PLAT.
+          CIBW_BUILD: "cp312-*"
+          CIBW_SKIP: "*-win* *-musllinux_* *i686 *ppc64le *s390x"
+          CIBW_ARCHS_LINUX: "x86_64"
+          CIBW_ARCHS_MACOS: "auto"
+          CIBW_BUILD_VERBOSITY: "1"
+          CIBW_BEFORE_ALL_LINUX: |
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+          CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
+          CIBW_BEFORE_BUILD: |
+            cd {project}/..
+            cargo build -p i-core --release
+            python -c "import pathlib, platform, shutil; root = pathlib.Path.cwd(); project = pathlib.Path('{project}'); name = 'libi_core.dylib' if platform.system() == 'Darwin' else 'libi_core.so'; shutil.copy2(root / 'target' / 'release' / name, project / 'src' / 'ilang' / name)"
+          CIBW_TEST_COMMAND: >-
+            python -c "import ilang; print('ilang import ok')"
+
+      - name: Check wheels
+        run: python -m twine check wheelhouse/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ilang-python-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/ilang-python-v')
+    environment: pypi
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheelhouse
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheelhouse
