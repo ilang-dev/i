@@ -30,6 +30,12 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade pip cibuildwheel twine
 
+      - name: Prepare release workspace
+        run: |
+          mkdir -p ilang-python/i-workspace
+          cp Cargo.toml Cargo.lock ilang-python/i-workspace/
+          cp -R core compiler ilang-python/i-workspace/
+
       - name: Build wheels
         run: python -m cibuildwheel ilang-python --output-dir wheelhouse
         env:
@@ -44,9 +50,9 @@ jobs:
             curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
           CIBW_ENVIRONMENT_LINUX: 'PATH="$HOME/.cargo/bin:$PATH"'
           CIBW_BEFORE_BUILD: |
-            cd {project}/..
+            cd {project}/i-workspace
             cargo build -p i-core --release
-            python -c "import pathlib, platform, shutil; root = pathlib.Path.cwd(); project = pathlib.Path('{project}'); name = 'libi_core.dylib' if platform.system() == 'Darwin' else 'libi_core.so'; shutil.copy2(root / 'target' / 'release' / name, project / 'src' / 'ilang' / name)"
+            python -c "import pathlib, platform, shutil; workspace = pathlib.Path.cwd(); project = workspace.parent; name = 'libi_core.dylib' if platform.system() == 'Darwin' else 'libi_core.so'; shutil.copy2(workspace / 'target' / 'release' / name, project / 'src' / 'ilang' / name)"
           CIBW_TEST_COMMAND: >-
             python -c "import ilang; print('ilang import ok')"
 
