@@ -16,8 +16,12 @@ This script does not publish anything. It:
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
+import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -96,8 +100,93 @@ def build_wheel() -> Path:
     wheels = sorted(DIST_DIR.glob("*.whl"))
     if len(wheels) != 1:
         raise SystemExit(f"expected exactly one wheel in {DIST_DIR}, found {len(wheels)}")
-    print(f"built {wheels[0]}")
-    return wheels[0]
+    wheel = retag_platform_wheel(wheels[0])
+    print(f"built {wheel}")
+    return wheel
+
+
+def current_platform_tag() -> str:
+    system = platform.system()
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x64"}:
+        machine = "x86_64"
+
+    if system == "Darwin":
+        if machine not in {"x86_64", "arm64"}:
+            raise SystemExit(f"unsupported macOS architecture: {machine}")
+        version = platform.mac_ver()[0]
+        major, minor, *_ = version.split(".") + ["0"]
+        return f"macosx_{major}_{minor}_{machine}"
+
+    if system == "Linux":
+        if machine in {"aarch64", "arm64"}:
+            return "linux_aarch64"
+        if machine == "x86_64":
+            return "linux_x86_64"
+        raise SystemExit(f"unsupported Linux architecture: {machine}")
+
+    raise SystemExit(f"unsupported platform for release build: {system}; expected macOS or Linux")
+
+
+def retag_platform_wheel(wheel: Path) -> Path:
+    """Convert Hatch's py3-none-any wheel into py3-none-PLATFORM.
+
+    Hatchling does not infer platform-specific tags from ctypes-loaded shared
+    libraries. The wheel contents are already correct; this fixes the wheel
+    filename and WHEEL metadata so installers do not treat it as universal.
+    """
+    old_tag = "py3-none-any"
+    new_tag = f"py3-none-{current_platform_tag()}"
+
+    if old_tag not in wheel.name:
+        return wheel
+
+    new_wheel = wheel.with_name(wheel.name.replace(old_tag, new_tag))
+    print(f"retagging wheel {old_tag} -> {new_tag}")
+
+    with tempfile.TemporaryDirectory(prefix="ilang-python-retag-") as tmp:
+        tmpdir = Path(tmp)
+        with zipfile.ZipFile(wheel) as zf:
+            zf.extractall(tmpdir)
+
+        wheel_metadata_files = list(tmpdir.glob("*.dist-info/WHEEL"))
+        if len(wheel_metadata_files) != 1:
+            raise SystemExit(f"expected exactly one WHEEL metadata file, found {len(wheel_metadata_files)}")
+
+        metadata = wheel_metadata_files[0]
+        text = metadata.read_text()
+        text = re.sub(r"^Root-Is-Purelib: true$", "Root-Is-Purelib: false", text, flags=re.MULTILINE)
+        text = re.sub(r"^Tag: py3-none-any$", f"Tag: {new_tag}", text, flags=re.MULTILINE)
+        metadata.write_text(text)
+        rewrite_record(tmpdir)
+
+        with zipfile.ZipFile(new_wheel, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(tmpdir.rglob("*")):
+                if path.is_file():
+                    zf.write(path, path.relative_to(tmpdir).as_posix())
+
+    wheel.unlink()
+    return new_wheel
+
+
+def rewrite_record(root: Path) -> None:
+    record_files = list(root.glob("*.dist-info/RECORD"))
+    if len(record_files) != 1:
+        raise SystemExit(f"expected exactly one RECORD metadata file, found {len(record_files)}")
+
+    record = record_files[0]
+    rows: list[list[str]] = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        if path == record:
+            rows.append([rel, "", ""])
+            continue
+        data = path.read_bytes()
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        rows.append([rel, f"sha256={digest}", str(len(data))])
+
+    with record.open("w", newline="") as f:
+        csv.writer(f).writerows(rows)
 
 
 def verify_wheel(wheel: Path, native_name: str) -> None:

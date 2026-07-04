@@ -48,15 +48,8 @@ jobs:
               python -m pip install --upgrade pip build auditwheel
 
               cd /io
-              rm -rf ilang-python/dist ilang-python/build ilang-python/*.egg-info
-              rm -f ilang-python/src/ilang/libi_core.so ilang-python/src/ilang/libi_core.dylib
-
-              cargo build -p i-core --release
-              cp target/release/libi_core.so ilang-python/src/ilang/
-
-              cd ilang-python
-              python -m build --wheel
-              auditwheel repair dist/*.whl -w /io/wheelhouse
+              python ilang-python/build-release.py --skip-twine --skip-test
+              auditwheel repair ilang-python/dist/*.whl -w /io/wheelhouse
 
               python -m pip install --no-deps --force-reinstall /io/wheelhouse/*.whl
               python -c "import ilang; print('\''ilang import ok'\'')"
