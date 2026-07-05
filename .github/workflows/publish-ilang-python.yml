@@ -29,6 +29,8 @@ jobs:
 
       - name: Build macOS wheel
         if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           python -m pip install --upgrade pip build twine
           python ilang-python/build-release.py

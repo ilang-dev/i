@@ -114,8 +114,12 @@ def current_platform_tag() -> str:
     if system == "Darwin":
         if machine not in {"x86_64", "arm64"}:
             raise SystemExit(f"unsupported macOS architecture: {machine}")
-        version = platform.mac_ver()[0]
+        version = os.environ.get("MACOSX_DEPLOYMENT_TARGET") or platform.mac_ver()[0]
         major, minor, *_ = version.split(".") + ["0"]
+        # For macOS 11+, wheel tags use major.0, not the actual OS minor
+        # version. For example, macOS 14.8 must be tagged macosx_14_0_arm64.
+        if int(major) >= 11:
+            minor = "0"
         return f"macosx_{major}_{minor}_{machine}"
 
     if system == "Linux":
