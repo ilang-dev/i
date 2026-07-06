@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::check::component::validate_component;
 use crate::check::graph::validate_node_graph;
+use crate::ir::common::BindId;
 use crate::ir::component::Component;
 use crate::ir::graph::{Graph, Input, InputId, Node, NodeId, Output, OutputId, Source};
 use crate::ir::node::Node as IrNode;
@@ -10,7 +12,7 @@ use super::expr_to_node::{lower_expr_to_node_unchecked, LowerError as ExprLowerE
 
 pub fn lower_component_to_graph(component: &Component) -> Result<Graph<IrNode>, LowerError> {
     validate_component(component).map_err(LowerError::from_component)?;
-    let partial = lower_component_to_partial(component)?;
+    let partial = canonicalize_external_inputs(lower_component_to_partial(component)?);
     let graph = Graph {
         inputs: partial.inputs,
         nodes: partial.nodes,
@@ -24,6 +26,11 @@ fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, Low
     match component {
         Component::Identity => Ok(PartialGraph {
             inputs: vec![Input::Free],
+            nodes: Vec::new(),
+            outputs: vec![Source::Input(InputId(0))],
+        }),
+        Component::Bound(id) => Ok(PartialGraph {
+            inputs: vec![Input::Bound(*id)],
             nodes: Vec::new(),
             outputs: vec![Source::Input(InputId(0))],
         }),
@@ -66,19 +73,6 @@ fn lower_component_to_partial(component: &Component) -> Result<PartialGraph, Low
             if inner.outputs.len() >= 2 {
                 inner.outputs.swap(0, 1);
             }
-            Ok(inner)
-        }
-        Component::BindInput(inner, index) => {
-            let mut inner = lower_component_to_partial(inner)?;
-            let Some(input) = inner.inputs.get_mut(*index) else {
-                return Err(LowerError::new(format!(
-                    "cannot bind nonexistent input {index}"
-                )));
-            };
-            if *input == Input::Bound {
-                return Err(LowerError::new(format!("input {index} is already bound")));
-            }
-            *input = Input::Bound;
             Ok(inner)
         }
     }
@@ -206,6 +200,39 @@ fn fanout_graphs(left: PartialGraph, right: PartialGraph) -> PartialGraph {
     }
 }
 
+fn canonicalize_external_inputs(partial: PartialGraph) -> PartialGraph {
+    let mut inputs = Vec::new();
+    let mut bound_inputs: BTreeMap<BindId, InputId> = BTreeMap::new();
+    let mut input_map = Vec::with_capacity(partial.inputs.len());
+
+    for input in partial.inputs {
+        let id = match input {
+            Input::Free => {
+                let id = InputId(inputs.len());
+                inputs.push(Input::Free);
+                id
+            }
+            Input::Bound(binding) => {
+                if let Some(id) = bound_inputs.get(&binding).copied() {
+                    id
+                } else {
+                    let id = InputId(inputs.len());
+                    inputs.push(Input::Bound(binding));
+                    bound_inputs.insert(binding, id);
+                    id
+                }
+            }
+        };
+        input_map.push(Source::Input(id));
+    }
+
+    PartialGraph {
+        inputs,
+        nodes: remap_nodes(partial.nodes, &input_map, 0),
+        outputs: remap_outputs(&partial.outputs, &input_map, 0),
+    }
+}
+
 fn input_sources(base: usize, len: usize) -> Vec<Source> {
     (0..len)
         .map(|index| Source::Input(InputId(base + index)))
@@ -301,7 +328,7 @@ impl std::error::Error for LowerError {}
 mod tests {
     use crate::component;
     use crate::front::parse_expr;
-    use crate::ir::common::{Index, Op};
+    use crate::ir::common::{BindId, Index, Op};
     use crate::ir::graph::{Input, InputId, NodeId, OutputId, Source};
     use crate::ir::node::{AxisRef, Site, SplitList};
 
@@ -403,12 +430,65 @@ mod tests {
     }
 
     #[test]
-    fn lowers_chain_skips_bound_right_inputs() {
-        let component =
-            parse_component_expr("i~i").chain(parse_component_expr("i-i~i").bind_input(0));
+    fn lowers_bound_as_direct_input_output() {
+        let graph = lower_component_to_graph(&component::bind(BindId(7))).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Bound(BindId(7))]);
+        assert!(graph.nodes.is_empty());
+        assert_eq!(graph.outputs, vec![Source::Input(InputId(0))]);
+    }
+
+    #[test]
+    fn deduplicates_equal_bound_inputs() {
+        let component = component::bind(BindId(7)).pair(component::bind(BindId(7)));
         let graph = lower_component_to_graph(&component).unwrap();
 
-        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.inputs, vec![Input::Bound(BindId(7))]);
+        assert_eq!(
+            graph.outputs,
+            vec![Source::Input(InputId(0)), Source::Input(InputId(0))]
+        );
+    }
+
+    #[test]
+    fn keeps_distinct_bound_inputs() {
+        let component = component::bind(BindId(7)).pair(component::bind(BindId(8)));
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(
+            graph.inputs,
+            vec![Input::Bound(BindId(7)), Input::Bound(BindId(8))]
+        );
+        assert_eq!(
+            graph.outputs,
+            vec![Source::Input(InputId(0)), Source::Input(InputId(1))]
+        );
+    }
+
+    #[test]
+    fn remaps_node_uses_of_deduplicated_bound_inputs() {
+        let component = component::bind(BindId(7))
+            .fanout(component::bind(BindId(7)))
+            .chain(parse_component_expr("i+i~i"));
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Bound(BindId(7))]);
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(
+            graph.nodes[0].inputs,
+            vec![Source::Input(InputId(0)), Source::Input(InputId(0))]
+        );
+    }
+
+    #[test]
+    fn lowers_chain_skips_bound_right_inputs() {
+        let right = component::bind(BindId(7))
+            .pair(component::identity())
+            .chain(parse_component_expr("i-i~i"));
+        let component = parse_component_expr("i~i").chain(right);
+        let graph = lower_component_to_graph(&component).unwrap();
+
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound(BindId(7))]);
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
@@ -422,12 +502,13 @@ mod tests {
 
     #[test]
     fn lowers_compose_skips_bound_left_inputs() {
-        let component = parse_component_expr("i-i~i")
-            .bind_input(0)
-            .compose(parse_component_expr("i~i"));
+        let left = component::bind(BindId(7))
+            .pair(component::identity())
+            .chain(parse_component_expr("i-i~i"));
+        let component = left.compose(parse_component_expr("i~i"));
         let graph = lower_component_to_graph(&component).unwrap();
 
-        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound(BindId(7))]);
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
@@ -441,11 +522,13 @@ mod tests {
 
     #[test]
     fn lowers_fanout_skips_bound_right_inputs() {
-        let component =
-            parse_component_expr("i~i").fanout(parse_component_expr("i+i~i").bind_input(0));
+        let right = component::bind(BindId(7))
+            .pair(component::identity())
+            .chain(parse_component_expr("i+i~i"));
+        let component = parse_component_expr("i~i").fanout(right);
         let graph = lower_component_to_graph(&component).unwrap();
 
-        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound]);
+        assert_eq!(graph.inputs, vec![Input::Free, Input::Bound(BindId(7))]);
         assert_eq!(graph.nodes[0].inputs, vec![Source::Input(InputId(0))]);
         assert_eq!(
             graph.nodes[1].inputs,

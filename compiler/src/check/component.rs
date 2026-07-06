@@ -14,7 +14,7 @@ fn validate_component_inner(
     next_expr: &mut usize,
 ) -> Result<(), ValidationError> {
     match component {
-        Component::Identity => Ok(()),
+        Component::Identity | Component::Bound(_) => Ok(()),
         Component::Expr(expr) => {
             let expr_index = *next_expr;
             *next_expr += 1;
@@ -28,7 +28,6 @@ fn validate_component_inner(
             validate_component_inner(right, next_expr)
         }
         Component::Swap(inner) => validate_component_inner(inner, next_expr),
-        Component::BindInput(inner, _) => validate_component_inner(inner, next_expr),
     }
 }
 

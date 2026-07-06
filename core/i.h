@@ -41,21 +41,26 @@ typedef enum {
 typedef enum {
   I_INPUT_FREE = 0,
   I_INPUT_BOUND = 1,
-} i_input_state;
+} i_input_kind;
+
+typedef struct {
+  i_input_kind kind;
+  size_t id; // meaningful only when kind == I_INPUT_BOUND
+} i_input;
 
 i_component* i_parse(const char* expr);
 i_component* i_identity(void);
+i_component* i_bind(size_t id);
 
 i_component* i_chain(const i_component* left, const i_component* right);
 i_component* i_compose(const i_component* left, const i_component* right);
 i_component* i_fanout(const i_component* left, const i_component* right);
 i_component* i_pair(const i_component* left, const i_component* right);
 i_component* i_swap(const i_component* component);
-i_component* i_bind_input(const i_component* component, size_t input);
 
 int i_component_input_count(const i_component* component, size_t* out);
 int i_component_output_count(const i_component* component, size_t* out);
-int i_component_input_states(const i_component* component, int* states);
+int i_component_inputs(const i_component* component, i_input* out);
 
 char* i_code(const i_component* component, i_device device);
 i_program* i_compile(const i_component* component, i_device device);

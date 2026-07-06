@@ -80,25 +80,32 @@ class _COutputs(ctypes.Structure):
     ]
 
 
+class _CInput(ctypes.Structure):
+    _fields_ = [
+        ("kind", ctypes.c_int),
+        ("id", ctypes.c_size_t),
+    ]
+
+
 def _bind_functions(core: ctypes.CDLL) -> None:
     core.i_parse.argtypes = [ctypes.c_char_p]
     core.i_parse.restype = ctypes.c_void_p
     core.i_identity.argtypes = []
     core.i_identity.restype = ctypes.c_void_p
+    core.i_bind.argtypes = [ctypes.c_size_t]
+    core.i_bind.restype = ctypes.c_void_p
     for _name in ("i_chain", "i_compose", "i_fanout", "i_pair"):
         _fn = getattr(core, _name)
         _fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         _fn.restype = ctypes.c_void_p
     core.i_swap.argtypes = [ctypes.c_void_p]
     core.i_swap.restype = ctypes.c_void_p
-    core.i_bind_input.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-    core.i_bind_input.restype = ctypes.c_void_p
     core.i_component_input_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
     core.i_component_input_count.restype = ctypes.c_int
     core.i_component_output_count.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
     core.i_component_output_count.restype = ctypes.c_int
-    core.i_component_input_states.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
-    core.i_component_input_states.restype = ctypes.c_int
+    core.i_component_inputs.argtypes = [ctypes.c_void_p, ctypes.POINTER(_CInput)]
+    core.i_component_inputs.restype = ctypes.c_int
     core.i_code.argtypes = [ctypes.c_void_p, ctypes.c_int]
     core.i_code.restype = ctypes.c_void_p
     core.i_compile.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -148,4 +155,4 @@ def _bind_functions(core: ctypes.CDLL) -> None:
 _core: ctypes.CDLL = _load_core()
 _bind_functions(_core)
 
-__all__ = ["_core", "_check_ptr", "_check", "_CTensor", "_CTensorMut"]
+__all__ = ["_core", "_check_ptr", "_check", "_CTensor", "_CTensorMut", "_CInput"]

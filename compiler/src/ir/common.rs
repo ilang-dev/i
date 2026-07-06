@@ -1,5 +1,9 @@
 pub type Axis = char;
 
+/// Identifier for one bound external source.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BindId(pub usize);
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Index(pub usize);
 

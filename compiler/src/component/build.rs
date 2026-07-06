@@ -1,9 +1,13 @@
 use std::ops::{BitAnd, BitOr};
 
-use crate::ir::component::{Component, Expr};
+use crate::ir::component::{BindId, Component, Expr};
 
 pub fn identity() -> Component {
     Component::Identity
+}
+
+pub fn bind(id: BindId) -> Component {
+    Component::Bound(id)
 }
 
 pub fn expr(expr: Expr) -> Component {
@@ -30,10 +34,6 @@ pub fn swap(component: Component) -> Component {
     Component::Swap(Box::new(component))
 }
 
-pub fn bind_input(component: Component, input: usize) -> Component {
-    Component::BindInput(Box::new(component), input)
-}
-
 pub fn finalize(component: Component) -> Component {
     component
 }
@@ -49,6 +49,10 @@ impl From<Expr> for Component {
 impl Component {
     pub fn identity() -> Self {
         identity()
+    }
+
+    pub fn bind(id: BindId) -> Self {
+        bind(id)
     }
 
     pub fn compose(self, other: Self) -> Self {
@@ -69,10 +73,6 @@ impl Component {
 
     pub fn swap(self) -> Self {
         swap(self)
-    }
-
-    pub fn bind_input(self, input: usize) -> Self {
-        bind_input(self, input)
     }
 
     pub fn finalize(self) -> Self {
@@ -98,8 +98,10 @@ impl BitOr for Component {
 
 #[cfg(test)]
 mod tests {
-    use super::{chain, compose, expr, fanout, finalize, identity, pair, renumber_expr_ids, swap};
-    use crate::ir::common::Op;
+    use super::{
+        bind, chain, compose, expr, fanout, finalize, identity, pair, renumber_expr_ids, swap,
+    };
+    use crate::ir::common::{BindId, Op};
     use crate::ir::component::Component;
     use crate::ir::expr::Expr;
     #[test]
@@ -116,6 +118,12 @@ mod tests {
     fn builds_identity_component() {
         assert_eq!(identity(), Component::Identity);
         assert_eq!(Component::identity(), Component::Identity);
+    }
+
+    #[test]
+    fn builds_bound_component() {
+        assert_eq!(bind(BindId(7)), Component::Bound(BindId(7)));
+        assert_eq!(Component::bind(BindId(7)), Component::Bound(BindId(7)));
     }
 
     #[test]

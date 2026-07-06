@@ -2,6 +2,7 @@ mod backends;
 mod loader;
 
 use backends::{Device as i_device, Program as i_program};
+use compiler::ir::common::BindId;
 use compiler::ir::component::Component;
 use compiler::ir::graph::Input;
 use std::cell::RefCell;
@@ -36,6 +37,22 @@ pub struct i_outputs {
     pub count: usize,
 }
 
+#[repr(C)]
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum i_input_kind {
+    I_INPUT_FREE = 0,
+    I_INPUT_BOUND = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct i_input {
+    pub kind: i_input_kind,
+    /// Meaningful only when `kind == I_INPUT_BOUND`.
+    pub id: usize,
+}
+
 #[allow(non_camel_case_types)]
 pub struct i_component {
     inner: Component,
@@ -61,6 +78,13 @@ pub extern "C" fn i_parse(expr: *const c_char) -> *mut i_component {
 pub extern "C" fn i_identity() -> *mut i_component {
     Box::into_raw(Box::new(i_component {
         inner: compiler::component::identity(),
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn i_bind(id: usize) -> *mut i_component {
+    Box::into_raw(Box::new(i_component {
+        inner: compiler::component::bind(BindId(id)),
     }))
 }
 
@@ -108,20 +132,6 @@ pub unsafe extern "C" fn i_swap(component: *const i_component) -> *mut i_compone
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_bind_input(
-    component: *const i_component,
-    input: usize,
-) -> *mut i_component {
-    let Some(component) = component.as_ref() else {
-        return null_with_error("null component");
-    };
-
-    Box::into_raw(Box::new(i_component {
-        inner: component.inner.clone().bind_input(input),
-    }))
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn i_component_input_count(
     component: *const i_component,
     out: *mut usize,
@@ -135,7 +145,7 @@ pub unsafe extern "C" fn i_component_input_count(
         return -1;
     }
 
-    match component_boundary(&component.inner) {
+    match component_graph_boundary(&component.inner) {
         Ok((inputs, _outputs)) => {
             *out = inputs.len();
             0
@@ -161,7 +171,7 @@ pub unsafe extern "C" fn i_component_output_count(
         return -1;
     }
 
-    match component_boundary(&component.inner) {
+    match component_graph_boundary(&component.inner) {
         Ok((_inputs, outputs)) => {
             *out = outputs;
             0
@@ -174,25 +184,31 @@ pub unsafe extern "C" fn i_component_output_count(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn i_component_input_states(
+pub unsafe extern "C" fn i_component_inputs(
     component: *const i_component,
-    states: *mut i32,
+    out: *mut i_input,
 ) -> i32 {
     let Some(component) = component.as_ref() else {
         set_error("null component");
         return -1;
     };
-    if states.is_null() {
-        set_error("null input states");
-        return -1;
-    }
 
-    match component_boundary(&component.inner) {
+    match component_graph_boundary(&component.inner) {
         Ok((inputs, _outputs)) => {
+            if !inputs.is_empty() && out.is_null() {
+                set_error("null component inputs output");
+                return -1;
+            }
             for (index, input) in inputs.iter().enumerate() {
-                *states.add(index) = match input {
-                    Input::Free => 0,
-                    Input::Bound => 1,
+                *out.add(index) = match input {
+                    Input::Free => i_input {
+                        kind: i_input_kind::I_INPUT_FREE,
+                        id: 0,
+                    },
+                    Input::Bound(id) => i_input {
+                        kind: i_input_kind::I_INPUT_BOUND,
+                        id: id.0,
+                    },
                 };
             }
             0
@@ -560,91 +576,10 @@ fn render_component(component: &Component, device: i_device) -> Result<String, S
     }
 }
 
-fn component_boundary(component: &Component) -> Result<(Vec<Input>, usize), String> {
-    match component {
-        Component::Identity => Ok((vec![Input::Free], 1)),
-        Component::Expr(expr) => Ok((vec![Input::Free; expr.inputs.len()], 1)),
-        Component::Compose(left, right) => {
-            let (left_inputs, left_outputs) = component_boundary(left)?;
-            let (right_inputs, right_outputs) = component_boundary(right)?;
-            let consumed = first_free_indices(&left_inputs, right_outputs);
-            let paired = consumed.len();
-            let inputs = right_inputs
-                .into_iter()
-                .chain(
-                    left_inputs
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
-                )
-                .collect();
-            Ok((inputs, left_outputs + right_outputs - paired))
-        }
-        Component::Chain(left, right) => {
-            let (left_inputs, left_outputs) = component_boundary(left)?;
-            let (right_inputs, right_outputs) = component_boundary(right)?;
-            let consumed = first_free_indices(&right_inputs, left_outputs);
-            let paired = consumed.len();
-            let inputs = left_inputs
-                .into_iter()
-                .chain(
-                    right_inputs
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
-                )
-                .collect();
-            Ok((inputs, left_outputs + right_outputs - paired))
-        }
-        Component::Fanout(left, right) => {
-            let (left_inputs, left_outputs) = component_boundary(left)?;
-            let (right_inputs, right_outputs) = component_boundary(right)?;
-            let consumed = first_free_indices(&right_inputs, free_count(&left_inputs));
-            let inputs = left_inputs
-                .into_iter()
-                .chain(
-                    right_inputs
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, input)| (!consumed.contains(&index)).then_some(input)),
-                )
-                .collect();
-            Ok((inputs, left_outputs + right_outputs))
-        }
-        Component::Pair(left, right) => {
-            let (left_inputs, left_outputs) = component_boundary(left)?;
-            let (right_inputs, right_outputs) = component_boundary(right)?;
-            Ok((
-                left_inputs.into_iter().chain(right_inputs).collect(),
-                left_outputs + right_outputs,
-            ))
-        }
-        Component::Swap(inner) => component_boundary(inner),
-        Component::BindInput(inner, index) => {
-            let (mut inputs, outputs) = component_boundary(inner)?;
-            let Some(input) = inputs.get_mut(*index) else {
-                return Err(format!("cannot bind nonexistent input {index}"));
-            };
-            if *input == Input::Bound {
-                return Err(format!("input {index} is already bound"));
-            }
-            *input = Input::Bound;
-            Ok((inputs, outputs))
-        }
-    }
-}
-
-fn free_count(inputs: &[Input]) -> usize {
-    inputs.iter().filter(|input| **input == Input::Free).count()
-}
-
-fn first_free_indices(inputs: &[Input], limit: usize) -> Vec<usize> {
-    inputs
-        .iter()
-        .enumerate()
-        .filter_map(|(index, input)| (*input == Input::Free).then_some(index))
-        .take(limit)
-        .collect()
+fn component_graph_boundary(component: &Component) -> Result<(Vec<Input>, usize), String> {
+    let graph =
+        compiler::lower::lower_component_to_graph(component).map_err(|err| err.to_string())?;
+    Ok((graph.inputs, graph.outputs.len()))
 }
 
 fn read_str<'a>(s: *const c_char) -> Option<&'a str> {
@@ -669,5 +604,36 @@ fn empty_outputs() -> i_outputs {
     i_outputs {
         tensors: ptr::null_mut(),
         count: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_deduplicated_bound_inputs() {
+        unsafe {
+            let left = i_bind(7);
+            let right = i_bind(7);
+            let pair = i_pair(left, right);
+            assert!(!pair.is_null());
+
+            let mut count = 0usize;
+            assert_eq!(i_component_input_count(pair, &mut count), 0);
+            assert_eq!(count, 1);
+
+            let mut inputs = [i_input {
+                kind: i_input_kind::I_INPUT_FREE,
+                id: 0,
+            }];
+            assert_eq!(i_component_inputs(pair, inputs.as_mut_ptr()), 0);
+            assert_eq!(inputs[0].kind, i_input_kind::I_INPUT_BOUND);
+            assert_eq!(inputs[0].id, 7);
+
+            i_component_free(left);
+            i_component_free(right);
+            i_component_free(pair);
+        }
     }
 }

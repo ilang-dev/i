@@ -16,6 +16,9 @@
 //! - `Source::Node(NodeId(n), OutputId(o))` names `Graph.nodes[n].outputs[o]`.
 //! - `Graph.outputs` is in user-visible order.
 //!
+
+use super::common::BindId;
+
 /// One ordered dataflow graph over payloads of type `T`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Graph<T> {
@@ -34,14 +37,14 @@ pub struct Node<T> {
 
 /// One ordered graph input.
 ///
-/// `Free` inputs are visible to component combinators and user calls. `Bound`
-/// inputs are still physical runtime inputs, but combinators skip over them
-/// when wiring component boundaries.
+/// `Free` inputs are public component inputs and participate in combinator
+/// boundary wiring. `Bound` inputs name external bound sources; they are
+/// still graph inputs, but combinators skip over them when wiring boundaries.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Input {
     #[default]
     Free,
-    Bound,
+    Bound(BindId),
 }
 
 /// One ordered node output.

@@ -5,18 +5,21 @@
 //!
 //! Invariants:
 //! - Every computational leaf is an 𝚒 expression (`Expr` variant).
-//! - Zero-cost leaves carry only wiring structure.
+//! - Zero-cost leaves carry only boundary/source wiring structure.
 //! - Every interior node is a combinator (non-`Expr` variant).
 //! - Child order is explicit and preserved.
 //! - Combinator structure is explicit and preserved.
 //!
+pub use super::common::BindId;
 pub use super::expr::{Expr, Operand, PermutationAtom};
 
 /// One component tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Component {
-    /// One input forwarded to one output without compute.
+    /// One public input forwarded to one output without compute.
     Identity,
+    /// One bound external source forwarded to one output without compute.
+    Bound(BindId),
     /// One atomic 𝚒 expression.
     Expr(Expr),
     /// Wires the leaves of the left component to the roots of the right.
@@ -38,9 +41,4 @@ pub enum Component {
     Pair(Box<Component>, Box<Component>),
     /// Swaps the first two outputs of one component.
     Swap(Box<Component>),
-    /// Marks one physical input as bound.
-    ///
-    /// Bound inputs remain part of the runtime input ABI, but are skipped by
-    /// combinator boundary wiring.
-    BindInput(Box<Component>, usize),
 }
