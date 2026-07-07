@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
+from time import perf_counter
 from itertools import count
 from math import floor, log10, sqrt
 from typing import Any, ClassVar
@@ -346,19 +347,21 @@ class Component:
 
     def bench(
         self,
-        inputs: list[Tensor],
+        *inputs: Any,
         n_warmups: int = 10,
         n_runs: int = 100,
     ) -> Bench:
+        component = self.bind(*inputs) if inputs else self
+
         for _ in range(n_warmups):
-            self.exec(*inputs)
+            component.exec()
 
         runs = []
         for _ in range(n_runs):
-            start = datetime.now()
-            self.exec(*inputs)
-            end = datetime.now()
-            runs.append(end - start)
+            start = perf_counter()
+            component.exec()
+            end = perf_counter()
+            runs.append(timedelta(seconds=end - start))
 
         mean = timedelta(seconds=sum([run.total_seconds() for run in runs]) / len(runs))
         std = timedelta(

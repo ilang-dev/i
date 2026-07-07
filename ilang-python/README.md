@@ -148,10 +148,12 @@ are computed from input shapes without executing any kernels.
 ## Benchmarking
 
 ```python
-bench = f.bench([x], n_warmups=10, n_runs=100)
+bench = f.bench(x, n_warmups=10, n_runs=100)
+# equivalent:
+bench = f(x).bench(n_warmups=10, n_runs=100)
 ```
 
-`bench` executes warmup runs, records timed runs, and returns `Bench`.
+`bench` binds any inputs, executes warmup runs, records timed runs, and returns `Bench`.
 
 `Bench` fields:
 
