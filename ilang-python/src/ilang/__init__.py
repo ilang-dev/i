@@ -1,6 +1,6 @@
 """Python front-end for 𝚒."""
 
-from .component import Bench, Component
+from .component import Component
 from .tensor import Device, Tensor
 
 class _i:
@@ -17,4 +17,4 @@ class _i:
 
 i = _i()
 
-__all__ = ["Bench", "Component", "Device", "Tensor", "i"]
+__all__ = ["Component", "Device", "Tensor", "i"]

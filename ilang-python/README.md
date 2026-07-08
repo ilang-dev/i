@@ -148,12 +148,14 @@ are computed from input shapes without executing any kernels.
 ## Benchmarking
 
 ```python
-bench = f.bench(x, n_warmups=10, n_runs=100)
-# equivalent:
-bench = f(x).bench(n_warmups=10, n_runs=100)
+from ilang.testing import bench
+
+result = bench(lambda: f.exec(x), n_warmups=10, n_runs=100)
+# or benchmark a fully-bound component:
+result = bench(f(x), n_warmups=10, n_runs=100)
 ```
 
-`bench` binds any inputs, executes warmup runs, records timed runs, and returns `Bench`.
+`bench` executes warmup runs, records timed runs, and returns `Bench`.
 
 `Bench` fields:
 
