@@ -2,6 +2,7 @@
 
 import numpy as np
 from ilang import i
+from ilang.testing import allclose
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -14,6 +15,24 @@ def as_numpy(x):
 
 def as_i(x):
     return i.Tensor(x.tolist())
+
+
+def assert_i_allclose(name, got, ref, rtol=1e-5, atol=1e-8):
+    if not allclose(got, ref, rtol=rtol, atol=atol):
+        raise AssertionError(f"{name}: allclose returned False")
+
+
+def assert_i_not_allclose(name, got, ref, rtol=1e-5, atol=1e-8):
+    if allclose(got, ref, rtol=rtol, atol=atol):
+        raise AssertionError(f"{name}: allclose returned True")
+
+
+def assert_i_allclose_shape_mismatch(name, got, ref):
+    try:
+        allclose(got, ref)
+    except AssertionError:
+        return
+    raise AssertionError(f"{name}: allclose did not reject shape mismatch")
 
 
 def assert_allclose(name, got, ref, rtol=1e-5, atol=1e-8):
@@ -228,6 +247,60 @@ def i_literal_scalar_exec():
     return i(".+.~.").exec(2.0, 3)
 
 
+# --- testing helpers ---
+
+
+def test_allclose_exact_scalar():
+    assert_i_allclose("allclose_exact_scalar", i.Tensor(1.0), i.Tensor(1.0), atol=0.0)
+
+
+def test_allclose_exact_vector():
+    assert_i_allclose(
+        "allclose_exact_vector",
+        i.Tensor([1.0, 2.0, 3.0]),
+        i.Tensor([1.0, 2.0, 3.0]),
+        atol=0.0,
+    )
+
+
+def test_allclose_with_absolute_tolerance():
+    assert_i_allclose(
+        "allclose_with_absolute_tolerance_close",
+        i.Tensor([1.0, 2.001]),
+        i.Tensor([1.0, 2.0]),
+        atol=0.01,
+    )
+    assert_i_not_allclose(
+        "allclose_with_absolute_tolerance_far",
+        i.Tensor([1.0, 2.1]),
+        i.Tensor([1.0, 2.0]),
+        atol=0.01,
+    )
+
+
+def test_allclose_shape_mismatch():
+    assert_i_allclose_shape_mismatch(
+        "allclose_shape_mismatch",
+        i.Tensor([1.0, 2.0]),
+        i.Tensor([[1.0, 2.0]]),
+    )
+
+
+def test_allclose_detects_different_values():
+    assert_i_not_allclose(
+        "allclose_detects_different_values",
+        i.Tensor([1.0, 2.0]),
+        i.Tensor([1.0, 3.0]),
+        atol=0.0,
+    )
+
+
+def test_allclose_works_on_component_output():
+    got = i("i+i~i").exec([1.0, 2.0], [3.0, 4.0])
+    ref = i.Tensor([4.0, 6.0])
+    assert_i_allclose("allclose_works_on_component_output", got, ref, atol=0.0)
+
+
 if __name__ == "__main__":
     cases = [
         ("matmul", make_matmul_inputs, i_matmul, np_matmul),
@@ -266,10 +339,27 @@ if __name__ == "__main__":
         ),
     ]
 
+    testing_cases = [
+        ("allclose_exact_scalar", test_allclose_exact_scalar),
+        ("allclose_exact_vector", test_allclose_exact_vector),
+        ("allclose_with_absolute_tolerance", test_allclose_with_absolute_tolerance),
+        ("allclose_shape_mismatch", test_allclose_shape_mismatch),
+        ("allclose_detects_different_values", test_allclose_detects_different_values),
+        ("allclose_works_on_component_output", test_allclose_works_on_component_output),
+    ]
+
     fails = 0
     for name, make_inputs, i_impl, np_impl in cases:
         try:
             run_case(name, make_inputs, i_impl, np_impl)
+            print(f"{GREEN}ok{RESET}: {name}")
+        except Exception as e:
+            fails += 1
+            print(f"{RED}fail{RESET}: {name}: {e}")
+
+    for name, test in testing_cases:
+        try:
+            test()
             print(f"{GREEN}ok{RESET}: {name}")
         except Exception as e:
             fails += 1

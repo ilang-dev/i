@@ -9,6 +9,7 @@ from typing import TypeVar
 import string
 
 from . import i
+from .tensor import Tensor
 
 __all__ = ["Bench", "bench"]
 
@@ -78,4 +79,33 @@ def bench(fn: Callable[[], T], n_warmups: int = 10, n_runs: int = 100) -> Bench:
         n_runs=n_runs,
         runs=runs,
     )
+
+def allclose(val: Tensor, ref: Tensor, rtol=1e-05, atol=1e-08):
+    """elementwise_all(absolute(val - ref) <= (atol + rtol * absolute(ref)))"""
+
+    assert val.shape == ref.shape, f"{val.shape=} != {ref.shape=}"
+    assert len(val.shape) <= len(string.ascii_lowercase), "really?"
+    n = len(val.shape)
+    index = "." if n == 0 else string.ascii_lowercase[:n]
+
+    sub_ = i(f"{index}-{index}~{index}")
+    max_ = i(f"{index}>{index}~{index}")
+    neg_ = i(f"-{index}~{index}")
+    abs_ = (i.I & neg_) >> max_
+    mul_ = i(f".*{index}~{index}")
+    add_ = i(f".+{index}~{index}")
+    minr_ = i(f"<{index}~.")
+
+    left = sub_(val, ref)
+    left = abs_(left)
+
+    right = ref
+    right = abs_(ref)
+    right = mul_(rtol, right)
+    right = add_(atol, right)
+
+    diff = sub_(right, left)
+    m = minr_(diff)()
+
+    return m.data[0] >= 0
 
