@@ -79,6 +79,21 @@ reasonable tolerance.
 There is an annotated version of the C output
 [here](ilang-python/examples/annotated-flashattn.c).
 
+# Running the MNIST demo
+
+The MNIST example requires PyTorch, TorchVision, and NumPy. These dependencies
+are included in the Nix development shell. First train and save the PyTorch
+model, then run the same model with 𝚒:
+
+```bash
+cargo build --package i-core
+cd ilang-python/examples
+I_CORE_LIB=../../target/debug/libi_core.so PYTHONPATH=../src python mnist.py
+I_CORE_LIB=../../target/debug/libi_core.so PYTHONPATH=../src python mnist_infer.py
+```
+
+On macOS, use `libi_core.dylib` instead of `libi_core.so`.
+
 # Language
 
 𝚒 is a pure expression language. The base construct is the 𝚒 expression which

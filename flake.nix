@@ -18,6 +18,7 @@
       py = stable.python314.withPackages (ps: with ps; [
         numpy
         torch
+        torchvision
       ]);
     in
     {
