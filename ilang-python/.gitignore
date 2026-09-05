@@ -8,3 +8,8 @@ build/
 # Native libraries copied into the package during release builds
 src/ilang/libi_core.so
 src/ilang/libi_core.dylib
+
+# MNIST example outputs
+examples/data/
+examples/mnist_mlp.pt
+examples/mnist_mlp_weights.npz
